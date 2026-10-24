@@ -38,9 +38,9 @@ class AuthService(
     @Transactional
     fun loginCustomer(request: AuthLoginRequest): AuthProfileResponse {
         val token = verifyToken(request.idToken)
+        ensureUidAvailableFor(token.uid, Role.CUSTOMER)
         val existing = customerRepository.findByFirebaseUid(token.uid).orElse(null)
         if (existing == null) {
-            ensureUidAvailableFor(token.uid, Role.CUSTOMER)
             throw AppException(ErrorCode.ACCOUNT_NOT_FOUND)
         }
         val verifiedPhone = verifiedPhone(token, request.phoneNumber, required = true)
@@ -72,9 +72,9 @@ class AuthService(
     @Transactional
     fun loginDriver(request: AuthLoginRequest): AuthProfileResponse {
         val token = verifyToken(request.idToken)
+        ensureUidAvailableFor(token.uid, Role.DRIVER)
         val existing = driverRepository.findByFirebaseUid(token.uid).orElse(null)
         if (existing == null) {
-            ensureUidAvailableFor(token.uid, Role.DRIVER)
             throw AppException(ErrorCode.ACCOUNT_NOT_FOUND)
         }
         if (existing.deletedAt != null) throw AppException(ErrorCode.ACCOUNT_LOCKED)
@@ -108,26 +108,53 @@ class AuthService(
         val admin = adminRepository.findByFirebaseUid(token.uid).orElseThrow {
             AppException(ErrorCode.FORBIDDEN, "Tài khoản admin chưa được cấp quyền")
         }
+        ensureUidAvailableFor(token.uid, Role.ADMIN)
         if (admin.status != ACTIVE_STATUS) throw AppException(ErrorCode.ACCOUNT_LOCKED)
         return profileOf(toAuthUser(admin))
     }
 
     /** Resolve token UID to an enabled database account; login endpoints create accounts separately. */
     @Transactional(readOnly = true)
-    override fun findAuthenticatedUser(firebaseUid: String): AuthUser? =
-        authenticatedUserCache.get(firebaseUid) { loadAuthenticatedUser(firebaseUid) }
+    override fun findAuthenticatedUser(firebaseUid: String, roleHint: Role?): AuthUser? =
+        if (roleHint == null) {
+            // A roleless lookup is intentionally uncached: a second profile may be registered
+            // for this UID, after which the same request must become ambiguous immediately.
+            loadAuthenticatedUser(firebaseUid, null)
+        } else {
+            authenticatedUserCache.get(firebaseUid, roleHint) { loadAuthenticatedUser(firebaseUid, roleHint) }
+        }
 
-    private fun loadAuthenticatedUser(firebaseUid: String): AuthUser? {
-        adminRepository.findByFirebaseUid(firebaseUid).orElse(null)?.let { admin ->
-            return admin.takeIf { it.status == ACTIVE_STATUS }?.let(::toAuthUser)
+    private fun loadAuthenticatedUser(firebaseUid: String, roleHint: Role?): AuthUser? {
+        val admin = adminRepository.findByFirebaseUid(firebaseUid).orElse(null)
+        val driverProfile = driverRepository.findByFirebaseUid(firebaseUid).orElse(null)
+        val customerProfile = customerRepository.findByFirebaseUid(firebaseUid).orElse(null)
+
+        // Admin identities remain exclusive. Refuse every role when any collision exists.
+        if (admin != null && (driverProfile != null || customerProfile != null)) {
+            log.error("Firebase UID is linked to admin and user profiles; refusing authentication")
+            return null
         }
-        driverRepository.findByFirebaseUid(firebaseUid).orElse(null)?.let { driver ->
-            if (driver.deletedAt == null) return toAuthUser(driver)
+
+        if (admin != null) {
+            return if ((roleHint == null || roleHint == Role.ADMIN) && admin.status == ACTIVE_STATUS) {
+                toAuthUser(admin)
+            } else {
+                null
+            }
         }
-        customerRepository.findByFirebaseUid(firebaseUid).orElse(null)?.let { customer ->
-            return customer.takeIf { it.deletedAt == null && it.status == UserStatus.ACTIVE }?.let(::toAuthUser)
+
+        val driver = driverProfile?.takeIf { it.deletedAt == null }
+        val customer = customerProfile?.takeIf { it.deletedAt == null && it.status == UserStatus.ACTIVE }
+        return when (roleHint) {
+            Role.CUSTOMER -> customer?.let(::toAuthUser)
+            Role.DRIVER -> driver?.let(::toAuthUser)
+            Role.ADMIN -> null
+            null -> when {
+                customer != null && driver == null -> toAuthUser(customer)
+                driver != null && customer == null -> toAuthUser(driver)
+                else -> null // Require explicit role selection when both profiles exist.
+            }
         }
-        return null
     }
 
     @Transactional
@@ -186,8 +213,9 @@ class AuthService(
 
     private fun ensureUidAvailableFor(firebaseUid: String, requestedRole: Role) {
         val existsForAnotherRole = when (requestedRole) {
-            Role.CUSTOMER -> driverRepository.existsByFirebaseUid(firebaseUid) || adminRepository.existsByFirebaseUid(firebaseUid)
-            Role.DRIVER -> customerRepository.existsByFirebaseUid(firebaseUid) || adminRepository.existsByFirebaseUid(firebaseUid)
+            // Customer and driver profiles may share a Firebase identity; admin stays exclusive.
+            Role.CUSTOMER -> adminRepository.existsByFirebaseUid(firebaseUid)
+            Role.DRIVER -> adminRepository.existsByFirebaseUid(firebaseUid)
             Role.ADMIN -> customerRepository.existsByFirebaseUid(firebaseUid) || driverRepository.existsByFirebaseUid(firebaseUid)
         }
         if (existsForAnotherRole) {

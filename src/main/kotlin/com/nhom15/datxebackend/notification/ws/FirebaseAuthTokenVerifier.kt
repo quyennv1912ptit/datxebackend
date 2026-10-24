@@ -13,7 +13,7 @@ class FirebaseAuthTokenVerifier(
 ) : AuthTokenVerifier {
     override fun verify(token: String, roleHint: Role?): Recipient? {
         val decodedToken = firebaseAuth.verifyIdToken(token)
-        val user = authenticatedUserProvider.findAuthenticatedUser(decodedToken.uid) ?: return null
+        val user = authenticatedUserProvider.findAuthenticatedUser(decodedToken.uid, roleHint) ?: return null
         if (roleHint != null && user.role != roleHint) return null
 
         return when (user.role) {

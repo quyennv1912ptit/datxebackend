@@ -49,6 +49,8 @@ Phân trang thường bắt đầu từ `page=0`. `PageResponse` có các trư�
 | POST | `/api/auth/logout` | Đã đăng nhập | Gỡ FCM token theo `installationId`. |
 | DELETE | `/api/auth/account` | Đã đăng nhập | Ẩn danh hóa hồ sơ (customer đặt `phone_number=NULL` để số gốc có thể đăng ký lại), thay Firebase UID bằng tombstone, xóa tài khoản Firebase/token thiết bị và ảnh Cloudinary đã quản lý sau khi commit; bị từ chối nếu còn chuyến chưa kết thúc. Admin không thể tự xóa. Lịch sử chuyến và giao dịch được giữ lại. |
 
+Một Firebase UID có thể có cả hồ sơ `CUSTOMER` và `DRIVER`. Các API theo nhóm `/api/customer/**`, `/api/driver/**` và `/api/admin/**` tự chọn vai trò theo đường dẫn; các API dùng chung như `/api/auth/me`, `/api/auth/logout`, `/api/auth/account`, thông báo và thiết bị cần gửi `X-Role` tương ứng (`CUSTOMER`, `DRIVER` hoặc `ADMIN`). UID của admin vẫn độc quyền, được kiểm tra theo hồ sơ admin trong cơ sở dữ liệu và không thể chọn bằng header nếu không có quyền admin. Nếu UID có cả hồ sơ khách hàng và tài xế, request không chọn vai trò sẽ bị từ chối.
+
 ### Khách hàng — `/api/customer`
 
 Các route trong nhóm này yêu cầu vai trò `CUSTOMER`.
@@ -168,6 +170,7 @@ Các route trong nhóm này yêu cầu vai trò `ADMIN`.
 | GET | `/api/location/geocode` | Customer/Driver | `address`, `proximityLng`, `proximityLat` tùy chọn | Đổi địa chỉ thành tọa độ; giới hạn 60 lần/phút/người dùng, cache 24 giờ theo địa chỉ chuẩn hóa và proximity. |
 | GET | `/api/location/directions` | Customer/Driver | `origin`, `destination` | Lấy tuyến đường, khoảng cách và thời gian; giới hạn 60 lần/phút/người dùng, cache 5 phút theo tọa độ làm tròn 4 chữ số. |
 | GET | `/api/location/nearby-drivers` | Admin | `longitude`, `latitude`, `radius` | Tìm tài xế gần tọa độ. |
+| GET | `/api/location/customer/nearby-drivers` | Customer | `longitude`, `latitude` | Tìm tối đa 30 tài xế trực tuyến trong bán kính 3 km; vị trí được làm tròn để bảo vệ riêng tư. Giới hạn 15 yêu cầu/phút/tài khoản. |
 
 ### Tài chính và voucher: phạm vi route hiện có
 
@@ -204,7 +207,7 @@ Người gọi phải là khách hoặc tài xế của chuyến; người ngoà
 
 - Handshake endpoint: `ws://localhost:8080/ws-location`; production dùng `wss://<host>/ws-location`.
 - Client gửi command đến prefix `/app`; broker nhận destination `/queue` và `/topic`; user destination có prefix `/user`.
-- STOMP `CONNECT` cần native header `Authorization: Bearer <Firebase ID token>`. Có thể gửi `X-Role: CUSTOMER` hoặc `X-Role: DRIVER` để chọn role hint; server tra Firebase UID trong database và chỉ chấp nhận role có tài khoản hợp lệ, đang hoạt động. Admin không đăng nhập STOMP.
+- STOMP `CONNECT` cần native header `Authorization: Bearer <Firebase ID token>`. Gửi `X-Role: CUSTOMER` hoặc `X-Role: DRIVER` để chọn hồ sơ; header bắt buộc nếu UID có cả hai hồ sơ. Server chỉ chấp nhận role có tài khoản hợp lệ, đang hoạt động. Admin không đăng nhập STOMP.
 - Client chỉ được subscribe destination có tiền tố `/user/queue/`; cả `SUBSCRIBE` và `SEND` đều cần kết nối đã xác thực.
 - Principal được định danh có role: `CUSTOMER:{id}` hoặc `DRIVER:{id}`, tránh nhầm người dùng khác role nhưng trùng ID.
 - Broker heartbeat: 10 giây gửi/nhận.
@@ -286,7 +289,7 @@ Lỗi nghiệp vụ trả cùng cấu trúc `ApiResponse`; HTTP status do `Error
 | `OTP_INVALID`, `OTP_EXPIRED` | 400 | OTP sai hoặc hết hạn. |
 | `ACCOUNT_LOCKED`, `DRIVER_NOT_VERIFIED` | 403 | Tài khoản bị khóa hoặc tài xế chưa được duyệt. |
 | `DRIVER_DOCUMENT_NOT_FOUND`, `DRIVER_SKILL_NOT_FOUND`, `VEHICLE_NOT_FOUND`, `NOTIFICATION_NOT_FOUND` | 404 | Không tìm thấy tài liệu, kỹ năng, xe hoặc thông báo. |
-| `ACCOUNT_ALREADY_EXISTS` | 409 | Firebase UID đã liên kết với tài khoản khác. |
+| `ACCOUNT_ALREADY_EXISTS` | 409 | Hồ sơ cùng vai trò đã tồn tại hoặc Firebase UID thuộc admin; customer và driver được phép dùng chung UID. |
 | `ACCOUNT_HAS_ACTIVE_RIDES` | 409 | Tài khoản còn chuyến chưa kết thúc. |
 | `PHONE_MISMATCH` | 400 | Số điện thoại không khớp Firebase. |
 | `RIDE_NOT_FOUND` | 404 | Không tìm thấy chuyến. |

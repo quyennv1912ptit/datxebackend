@@ -56,6 +56,7 @@ class FirebaseSecurityConfig(
                     .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                     .requestMatchers("/api/chat/**").hasAnyRole("CUSTOMER", "DRIVER")
                     .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                    .requestMatchers("/api/location/customer/nearby-drivers").hasRole("CUSTOMER")
                     .requestMatchers("/api/location/nearby-drivers").hasRole("ADMIN")
                     .requestMatchers("/api/location/geocode", "/api/location/directions")
                     .hasAnyRole("CUSTOMER", "DRIVER")
@@ -84,7 +85,7 @@ class FirebaseSecurityConfig(
         val config = CorsConfiguration().apply {
             allowedOriginPatterns = corsProperties.allowedOrigins
             allowedMethods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
-            allowedHeaders = listOf("Authorization", "Content-Type", "Accept", "Idempotency-Key")
+            allowedHeaders = listOf("Authorization", "Content-Type", "Accept", "Idempotency-Key", "X-Role")
             maxAge = 3600
         }
         return UrlBasedCorsConfigurationSource().apply { registerCorsConfiguration("/**", config) }
