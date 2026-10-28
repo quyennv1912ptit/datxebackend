@@ -25,7 +25,7 @@ class StompChannel(
         envelope: WsEnvelope<*>
     ): Boolean {
         if (!isAvailable(to)) return false
-        val dest = "/user/queue/trip"
+        val dest = "/queue/trip"
         messaging.convertAndSendToUser(to.key, dest, envelope)
         return true
     }

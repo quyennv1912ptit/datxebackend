@@ -28,6 +28,8 @@ class CoordinateController(
         val driver = (principal as? StompPrincipal)?.recipient as? Recipient.Driver
             ?: throw MessagingException("Chỉ tài xế đã xác thực mới được gửi vị trí")
 
+        val now = java.time.Instant.now()
+        if (!com.nhom15.datxebackend.tracking.dto.DriverLocationPolicy.valid(currentLocation, now)) return
         locationService.saveDriverLocation(driver.id, currentLocation.location)
 
         val activeRide = activeRideQueryPort.findActiveRideForDriver(driver.id) ?: return
@@ -35,7 +37,7 @@ class CoordinateController(
         messagingTemplate.convertAndSendToUser(
             Recipient.Customer(activeRide.customerId).key,
             "/queue/rides/${activeRide.rideId}/location",
-            currentLocation,
+            currentLocation.copy(receivedAt = now),
         )
     }
 }
