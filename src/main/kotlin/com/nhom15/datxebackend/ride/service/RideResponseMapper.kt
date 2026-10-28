@@ -15,7 +15,12 @@ import com.nhom15.datxebackend.ride.entity.RideActorRole
 import com.nhom15.datxebackend.ride.entity.RideStatusHistory
 
 internal object RideResponseMapper {
-    fun estimate(quote: RideQuote, discountAmount: Long = 0) = EstimateRideResponse(
+    private fun savedRoute(ride: Ride): com.nhom15.datxebackend.routing.model.SavedRideRoute? {
+        val polyline = ride.routePolyline ?: return null
+        return com.nhom15.datxebackend.routing.model.SavedRideRoute("ride:${ride.id}", polyline, ride.routeDistanceMeters ?: return null, ride.routeDurationSeconds ?: return null, ride.routeProvider ?: "unknown", ride.vehicleType, ride.routeLimitation)
+    }
+    fun estimate(quote: RideQuote, discountAmount: Long = 0, route: com.nhom15.datxebackend.routing.model.SavedRideRoute? = null) = EstimateRideResponse(
+        route = route,
         pricingRuleId = quote.pricingRuleId,
         distanceKm = quote.distanceKm,
         estimatedDurationMinutes = quote.estimatedDurationMinutes,
@@ -30,6 +35,7 @@ internal object RideResponseMapper {
     )
 
     fun create(ride: Ride) = CreateRideResponse(
+        route = savedRoute(ride),
         id = ride.id, status = ride.status,
         estimatedFare = ride.fareEstimate,
         createdAt = ride.createdAt,
@@ -61,6 +67,7 @@ internal object RideResponseMapper {
         handoverReports: List<HandoverReportResponse>,
         unreadChatCount: Long = 0,
     ) = RideDetailResponse(
+        route = savedRoute(ride),
         id = ride.id, customerId = ride.customerId,
         driverId = ride.driverId, vehicleId = ride.vehicleId, type = ride.type,
         scheduledAt = ride.scheduledAt, pickupAddress = ride.pickup.address,

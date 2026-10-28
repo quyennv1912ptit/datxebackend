@@ -12,4 +12,5 @@ data class RideQuote(
     val nightSurcharge: Long,
     val returnFee: Long,
     val estimatedFare: Long,
+    val route: com.nhom15.datxebackend.routing.model.DrivingRoute? = null,
 )

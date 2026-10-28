@@ -52,4 +52,14 @@ class PricingRideQuoteTests {
             assertEquals(perKm / 2, quote.distanceFare)
         }
     }
-}
+    @Test
+    fun `pricing consumes the saved route without calling routing again`() {
+        Mockito.`when`(repository.findFirstByVehicleTypeAndActiveTrueOrderByCreatedAtDesc(VehicleType.CAR))
+            .thenReturn(PricingRule(baseFare = 20000, perKm = 10000, perMinuteWaiting = 0, minFare = 30000, active = true, vehicleType = VehicleType.CAR))
+        val route = DrivingRoute(2500.0, 300.0)
+        val quote = service.quote(input(VehicleType.CAR).copy(route = route))
+        assertEquals(45000L, quote.estimatedFare)
+        assertEquals(5L, quote.estimatedDurationMinutes)
+        assertEquals(route, quote.route)
+        Mockito.verifyNoInteractions(routes)
+    }}

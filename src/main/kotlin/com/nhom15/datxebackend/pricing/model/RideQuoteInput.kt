@@ -9,4 +9,5 @@ data class RideQuoteInput(
     val dropoff: GeoPoint,
     val pricingAt: Instant,
     val vehicleType: VehicleType,
+    val route: com.nhom15.datxebackend.routing.model.DrivingRoute? = null,
 )

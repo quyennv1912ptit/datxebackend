@@ -68,6 +68,17 @@ class Ride(
     @Column(name = "fare_estimate", nullable = false)
     val fareEstimate: Long,
 
+    @Column(name = "route_polyline", columnDefinition = "text")
+    var routePolyline: String? = null,
+    @Column(name = "route_distance_meters")
+    var routeDistanceMeters: Double? = null,
+    @Column(name = "route_duration_seconds")
+    var routeDurationSeconds: Double? = null,
+    @Column(name = "route_provider")
+    var routeProvider: String? = null,
+    @Column(name = "route_limitation", columnDefinition = "text")
+    var routeLimitation: String? = null,
+
     @Column(name = "final_fare")
     var finalFare: Long? = null,
 

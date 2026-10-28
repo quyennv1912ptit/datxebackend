@@ -21,10 +21,12 @@ import org.springframework.stereotype.Service
 @Service
 class RideEstimateService(
     private val quoteProvider: RideQuoteProvider,
+    private val rideRoutes: com.nhom15.datxebackend.routing.service.RideRouteService,
     private val voucherService: VoucherService,
     private val vehicleQueryPort: CustomerVehicleQueryPort,
     private val rateLimiter: RedisRateLimiter,
 ) {
+    @org.springframework.transaction.annotation.Transactional
     fun estimateRide(actor: AuthUser, request: EstimateRideRequest): EstimateRideResponse {
         if (actor.role != Role.CUSTOMER) {
             throw ForbiddenException(message = "Chỉ khách hàng mới có thể báo giá chuyến đi")
@@ -45,9 +47,10 @@ class RideEstimateService(
             pricingAt = scheduledAt ?: now,
             vehicleType = vehicle.vehicleType,
         )
-        val quote = quoteProvider.quote(input)
+        val savedRoute = rideRoutes.resolve(actor.id, request.vehicleId, vehicle.vehicleType, input.pickup, input.dropoff, request.routeQuoteId)
+        val quote = quoteProvider.quote(input.copy(route = savedRoute.drivingRoute()))
         val voucher = voucherService.calculate(actor, request.voucherCode, quote.estimatedFare)
-        return RideResponseMapper.estimate(quote, voucher?.discountAmount ?: 0)
+        return RideResponseMapper.estimate(quote, voucher?.discountAmount ?: 0, savedRoute)
     }
 
     private fun validateEstimate(request: EstimateRideRequest) {

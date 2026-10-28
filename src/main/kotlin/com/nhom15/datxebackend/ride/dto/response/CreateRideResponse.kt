@@ -10,4 +10,5 @@ data class CreateRideResponse(
     val createdAt: Instant,
     val discountAmount: Long = 0,
     val payableFare: Long = estimatedFare,
+    val route: com.nhom15.datxebackend.routing.model.SavedRideRoute? = null,
 )

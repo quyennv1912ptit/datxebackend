@@ -42,6 +42,7 @@ class RideService(
     private val rideRepository: RideRepository,
     private val vehicleQueryPort: CustomerVehicleQueryPort,
     private val quoteProvider: RideQuoteProvider,
+    private val rideRoutes: com.nhom15.datxebackend.routing.service.RideRouteService,
     private val stateMachine: RideStateMachine,
     private val voucherService: VoucherService,
     private val creationValidator: RideCreationValidator,
@@ -95,7 +96,8 @@ class RideService(
             pricingAt = request.scheduledAt ?: Instant.now(),
             vehicleType = vehicle.vehicleType,
         )
-        val quote = quoteProvider.quote(quoteInput)
+        val savedRoute = rideRoutes.resolve(actor.id, request.vehicleId, vehicle.vehicleType, quoteInput.pickup, quoteInput.dropoff, request.routeQuoteId)
+        val quote = quoteProvider.quote(quoteInput.copy(route = savedRoute.drivingRoute()))
         val appliedVoucher = voucherService.calculate(actor, request.voucherCode, quote.estimatedFare)
 
         val pendingRide = rideRepository.saveAndFlush(

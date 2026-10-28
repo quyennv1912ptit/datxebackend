@@ -27,6 +27,11 @@ internal object RideFactory {
         pickup = Location(GeoPoint(request.pickupLat, request.pickupLng), request.pickupAddress),
         dropoff = Location(GeoPoint(request.dropoffLat, request.dropoffLng), request.dropoffAddress),
         distanceKm = quote.distanceKm.toDouble(),
+        routePolyline = quote.route?.let { com.nhom15.datxebackend.routing.model.PolylineCodec.encode(it.coordinates) },
+        routeDistanceMeters = quote.route?.distanceMeters,
+        routeDurationSeconds = quote.route?.durationSeconds,
+        routeProvider = quote.route?.provider,
+        routeLimitation = quote.route?.limitation,
         fareEstimate = quote.estimatedFare,
     ).also { it.discountAmount = discountAmount }
 }

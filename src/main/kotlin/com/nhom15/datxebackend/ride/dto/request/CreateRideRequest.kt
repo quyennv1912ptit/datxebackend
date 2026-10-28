@@ -54,4 +54,6 @@ data class CreateRideRequest(
     @JsonAlias("voucherCode")
     @field:Size(max = 255)
     val voucherCode: String? = null,
+    @field:Size(max = 36)
+    val routeQuoteId: String? = null,
 )
