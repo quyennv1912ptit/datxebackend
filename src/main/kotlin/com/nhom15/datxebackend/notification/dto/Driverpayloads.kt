@@ -49,7 +49,8 @@ data class RideOfferPayload(
 
     val vehicle: VehicleInfo,
     val customer: CustomerBrief,
-    val note: String?
+    val note: String?,
+    val pickupNote: String? = null
 ) : NotificationPayload {
     override val type: PayloadType get() = PayloadType.RIDE_OFFER
 }

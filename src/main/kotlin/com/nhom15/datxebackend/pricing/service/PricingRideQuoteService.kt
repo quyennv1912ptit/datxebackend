@@ -22,6 +22,10 @@ class PricingRideQuoteService(
     private val drivingRouteProvider: DrivingRouteProvider,
 ) : RideQuoteProvider {
 
+    override fun requirePricing(vehicleType: com.nhom15.datxebackend.common.enums.VehicleType) {
+        if (pricingRuleRepository.findFirstByVehicleTypeAndActiveTrueOrderByCreatedAtDesc(vehicleType) == null) throw NotFoundException(ErrorCode.PRICING_RULE_NOT_FOUND)
+    }
+
     override fun quote(input: RideQuoteInput): RideQuote {
         val rule = pricingRuleRepository.findFirstByVehicleTypeAndActiveTrueOrderByCreatedAtDesc(input.vehicleType)
             ?: throw NotFoundException(ErrorCode.PRICING_RULE_NOT_FOUND)

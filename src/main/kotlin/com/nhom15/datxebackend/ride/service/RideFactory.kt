@@ -22,6 +22,7 @@ internal object RideFactory {
         licensePlate = vehicle.licensePlate,
         paymentMethod = request.paymentMethod,
         note = request.note?.trim(),
+        pickupNote = request.pickupNote?.trim()?.takeIf { it.isNotBlank() },
         type = request.type,
         scheduledAt = request.scheduledAt,
         pickup = Location(GeoPoint(request.pickupLat, request.pickupLng), request.pickupAddress),

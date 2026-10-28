@@ -82,5 +82,6 @@ internal object RideResponseMapper {
         completedAt = ride.completedAt, cancelledAt = ride.cancelledAt,
         cancelledByRole = ride.cancelledByRole?.let { RideActorRole.valueOf(it) }, discountAmount = ride.discountAmount,
         unreadChatCount = unreadChatCount,
+        pickupNote = ride.pickupNote,
     )
 }

@@ -10,7 +10,7 @@ import com.nhom15.datxebackend.notification.dto.VehicleInfo
 import com.nhom15.datxebackend.notification.dto.toDto
 import com.nhom15.datxebackend.customer.repository.CustomerRepository
 import com.nhom15.datxebackend.ride.repository.RideRepository
-import com.nhom15.datxebackend.routing.service.MapService
+
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.repository.findByIdOrNull
 import org.springframework.stereotype.Component
@@ -21,7 +21,6 @@ import kotlin.math.roundToLong
 @Component
 class RideOfferBuilder(
     private val rideRepository: RideRepository,
-    private val mapService: MapService,
     private val redisTemplate: StringRedisTemplate,
     private val customerRepository: CustomerRepository
 ) {
@@ -30,11 +29,6 @@ class RideOfferBuilder(
             ?: throw NotFoundException(message = "Không tìm thấy chuyến $rideId")
 
         val customer = customerRepository.findByIdOrNull(ride.customerId)
-
-        val route = mapService.getDistanceAndDuration(
-            origin = "${ride.pickup.geoPoint.lng},${ride.pickup.geoPoint.lat}",
-            destination = "${ride.dropoff.geoPoint.lng},${ride.dropoff.geoPoint.lat}"
-        )
 
         val location = redisTemplate.opsForHash<String, String>()
             .entries(RedisKeys.driverLocation(driverId.toString()))
@@ -53,11 +47,11 @@ class RideOfferBuilder(
         val toPickupKm = distanceKm(driverLocation, ride.pickup.geoPoint)
         val straightKm = distanceKm(ride.pickup.geoPoint, ride.dropoff.geoPoint)
 
-        val routeKm = route.distance / 1000.0
+        val routeKm = (ride.routeDistanceMeters ?: 0.0) / 1000.0
         val tripKm = ride.distanceKm
             ?: routeKm.takeIf { it > 0 }
             ?: (straightKm * ROAD_FACTOR)
-        val tripMin = if (route.duration > 0) ceil(route.duration / 60.0).toInt() else minutesFor(tripKm)
+        val tripMin = ride.routeDurationSeconds?.let { ceil(it / 60.0).toInt() } ?: minutesFor(tripKm)
 
         return RideOfferPayload(
             rideId = ride.id,
@@ -76,6 +70,7 @@ class RideOfferBuilder(
                 displayName = customer?.fullName?.substringAfterLast(' ')?.takeIf { it.isNotBlank() } ?: "Khách",
                 rating = customer?.averageRating ?: 5.0
             ),
+            pickupNote = ride.pickupNote,
             note = ride.note
         )
     }

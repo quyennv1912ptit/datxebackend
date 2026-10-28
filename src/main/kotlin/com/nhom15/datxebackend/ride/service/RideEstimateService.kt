@@ -47,6 +47,7 @@ class RideEstimateService(
             pricingAt = scheduledAt ?: now,
             vehicleType = vehicle.vehicleType,
         )
+        quoteProvider.requirePricing(vehicle.vehicleType)
         val savedRoute = rideRoutes.resolve(actor.id, request.vehicleId, vehicle.vehicleType, input.pickup, input.dropoff, request.routeQuoteId)
         val quote = quoteProvider.quote(input.copy(route = savedRoute.drivingRoute()))
         val voucher = voucherService.calculate(actor, request.voucherCode, quote.estimatedFare)

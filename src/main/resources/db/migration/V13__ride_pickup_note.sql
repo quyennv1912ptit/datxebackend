@@ -1,0 +1,1 @@
+ALTER TABLE rides ADD COLUMN pickup_note VARCHAR(500);

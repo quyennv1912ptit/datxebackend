@@ -91,6 +91,8 @@ class Ride(
 
     @Column(name = "note", length = 500)
     val note: String? = null,
+    @Column(name = "pickup_note", length = 500)
+    val pickupNote: String? = null,
 
     @Column(name = "scheduled_at")
     val scheduledAt: Instant? = null,

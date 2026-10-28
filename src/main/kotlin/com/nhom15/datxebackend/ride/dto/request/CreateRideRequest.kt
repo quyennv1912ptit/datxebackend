@@ -49,6 +49,8 @@ data class CreateRideRequest(
 
     @field:Size(max = 500)
     val note: String? = null,
+    @field:Size(max = 500)
+    val pickupNote: String? = null,
 
     @JsonProperty("voucher_code")
     @JsonAlias("voucherCode")
