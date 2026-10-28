@@ -7,4 +7,6 @@ data class DrivingRoute(
     val durationSeconds: Double,
     val responseBody: String = "",
     val coordinates: List<GeoPoint> = emptyList(),
+    val provider: String = "mapbox",
+    val limitation: String? = null,
 )

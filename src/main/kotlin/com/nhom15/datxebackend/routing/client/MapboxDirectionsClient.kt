@@ -2,6 +2,7 @@ package com.nhom15.datxebackend.routing.client
 
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.domain.GeoPoint
+import com.nhom15.datxebackend.common.enums.VehicleType
 import com.nhom15.datxebackend.common.exception.AppException
 import com.nhom15.datxebackend.config.properties.MapboxProperties
 import com.nhom15.datxebackend.routing.api.DrivingRouteProvider
@@ -17,8 +18,9 @@ class MapboxDirectionsClient(
     private val objectMapper: ObjectMapper,
 ) : DrivingRouteProvider {
 
-    override fun findRoute(pickup: GeoPoint, dropoff: GeoPoint, includeGeometry: Boolean): DrivingRoute {
+    override fun findRoute(pickup: GeoPoint, dropoff: GeoPoint, vehicleType: VehicleType, includeGeometry: Boolean): DrivingRoute {
         try {
+            val profile = if (vehicleType == VehicleType.MOTORCYCLE) "driving" else properties.profile
             val responseBody = restClient.get()
                 .uri { builder ->
                     val uri = builder
@@ -28,7 +30,7 @@ class MapboxDirectionsClient(
                         .queryParam("steps", false)
                         .queryParam("access_token", properties.token.trim())
                     if (includeGeometry) uri.queryParam("geometries", "geojson")
-                    uri.build(properties.profile, pickup.asMapboxCoordinate(), dropoff.asMapboxCoordinate())
+                    uri.build(profile, pickup.asMapboxCoordinate(), dropoff.asMapboxCoordinate())
                 }
                 .retrieve()
                 .body(String::class.java)
@@ -62,6 +64,8 @@ class MapboxDirectionsClient(
                 durationSeconds = duration,
                 responseBody = responseBody,
                 coordinates = coordinates,
+                provider = "mapbox",
+                limitation = if (vehicleType == VehicleType.MOTORCYCLE) "Mapbox dùng tuyến ô tô gần đúng cho xe máy; chưa bảo đảm đường cấm/hạn chế riêng tại Việt Nam." else null,
             )
         } catch (exception: Exception) {
             // Không gắn exception gốc vì request URL có chứa access token.

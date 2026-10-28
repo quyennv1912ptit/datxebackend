@@ -1,6 +1,7 @@
 package com.nhom15.datxebackend.routing.service
 
 import com.nhom15.datxebackend.common.domain.GeoPoint
+import com.nhom15.datxebackend.common.enums.VehicleType
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.exception.AppException
 import com.nhom15.datxebackend.common.redis.RedisKeys
@@ -60,11 +61,11 @@ class MapService(
         }
     }
 
-    fun getDistanceAndDuration(origin: String, destination: String): Route {
-        val pickup = origin.toGeoPoint().rounded()
-        val dropoff = destination.toGeoPoint().rounded()
+    fun getDistanceAndDuration(origin: String, destination: String, vehicleType: VehicleType = VehicleType.CAR): Route {
+        val pickup = origin.toGeoPoint()
+        val dropoff = destination.toGeoPoint()
         val cacheKey = RedisKeys.mapboxDirectionsCache(
-            sha256("${properties.profile}|${pickup.lat},${pickup.lng}|${dropoff.lat},${dropoff.lng}"),
+            sha256("exact-v3|$vehicleType|${properties.profile}|${pickup.lat},${pickup.lng}|${dropoff.lat},${dropoff.lng}"),
         )
         getRouteCache(cacheKey)?.let { return it }
 
@@ -72,6 +73,7 @@ class MapService(
             val route = drivingRouteProvider.findRoute(
                 pickup = pickup,
                 dropoff = dropoff,
+                vehicleType = vehicleType,
                 includeGeometry = true,
             )
             Route(route.distanceMeters, route.durationSeconds, route.responseBody, route.coordinates).also {

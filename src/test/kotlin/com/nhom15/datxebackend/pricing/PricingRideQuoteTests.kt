@@ -45,7 +45,7 @@ class PricingRideQuoteTests {
             Mockito.`when`(repository.findFirstByVehicleTypeAndActiveTrueOrderByCreatedAtDesc(vehicleType))
                 .thenReturn(PricingRule(baseFare = base as Long, perKm = perKm as Long, perMinuteWaiting = 0, minFare = minimum as Long, active = true, vehicleType = vehicleType))
             val request = input(vehicleType)
-            Mockito.`when`(routes.findRoute(request.pickup, request.dropoff)).thenReturn(DrivingRoute(500.0, 60.0))
+            Mockito.`when`(routes.findRoute(request.pickup, request.dropoff, vehicleType)).thenReturn(DrivingRoute(500.0, 60.0))
             val quote = service.quote(request)
             assertEquals(minimum, quote.estimatedFare)
             assertEquals(base, quote.baseFare)

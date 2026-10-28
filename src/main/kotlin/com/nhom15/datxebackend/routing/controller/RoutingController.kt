@@ -1,6 +1,7 @@
 package com.nhom15.datxebackend.routing.controller
 
 import com.nhom15.datxebackend.common.domain.GeoPoint
+import com.nhom15.datxebackend.common.enums.VehicleType
 import com.nhom15.datxebackend.common.api.ApiResponse
 import com.nhom15.datxebackend.common.exception.BadRequestException
 import com.nhom15.datxebackend.common.security.AuthUser
@@ -49,9 +50,10 @@ class RoutingController(
         @CurrentUser actor: AuthUser,
         @RequestParam origin: String,
         @RequestParam destination: String,
+        @RequestParam(defaultValue = "CAR") vehicleType: VehicleType,
     ): ApiResponse<Route> {
         mapboxRateLimiter.check(actor, "directions")
-        val result = mapService.getDistanceAndDuration(origin, destination)
+        val result = mapService.getDistanceAndDuration(origin, destination, vehicleType)
         return ApiResponse.ok(result)
     }
 }

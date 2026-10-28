@@ -26,7 +26,7 @@ class PricingRideQuoteService(
         val rule = pricingRuleRepository.findFirstByVehicleTypeAndActiveTrueOrderByCreatedAtDesc(input.vehicleType)
             ?: throw NotFoundException(ErrorCode.PRICING_RULE_NOT_FOUND)
 
-        val route = drivingRouteProvider.findRoute(input.pickup, input.dropoff)
+        val route = drivingRouteProvider.findRoute(input.pickup, input.dropoff, input.vehicleType)
         if (!route.distanceMeters.isFinite() || route.distanceMeters < 0.0 ||
             !route.durationSeconds.isFinite() || route.durationSeconds < 0.0
         ) {
