@@ -306,3 +306,19 @@ Lỗi nghiệp vụ trả cùng cấu trúc `ApiResponse`; HTTP status do `Error
 | `PAYMENT_ALREADY_PAID` | 409 | Payment đã được thanh toán. |
 | `INSUFFICIENT_BALANCE`, `INVALID_SIGNATURE`, `VOUCHER_INVALID` | 400 | Số dư không đủ, chữ ký sai hoặc voucher không hợp lệ. |
 | `RATING_ALREADY_EXISTS` | 409 | Đã đánh giá chuyến này. |
+
+## Tìm địa chỉ/địa danh Việt Nam
+
+Backend đọc `GOONG_API_KEY` (REST API key, không phải Map key) từ `.env`. Để trống key thì dùng Mapbox, không chặn khởi động; `PLACES_PROVIDER=auto` là mặc định. Có key thì tự chuyển sang Goong V2. `PLACES_PROVIDER=mapbox` buộc dùng Mapbox. Key chỉ nằm trên server, không đưa vào Expo hoặc commit `.env`.
+
+- `GET /api/location/places/search?query=...&proximityLat=...&proximityLng=...`: gợi ý có tên đầy đủ, địa chỉ và provider; Goong chưa có tọa độ cho tới khi lấy chi tiết.
+- `GET /api/location/places/detail?id=...`: lấy đúng tọa độ bằng Goong place ID sau khi người dùng chọn; không đoán tọa độ từ tên gần giống.
+- `GET /api/location/places/reverse?lat=...&lng=...`: địa chỉ tại ghim, giữ nguyên tọa độ ghim thay vì điểm do nhà cung cấp làm tròn.
+
+Cả ba endpoint yêu cầu Firebase token và vai trò CUSTOMER/DRIVER, có rate limit. Goong dùng tọa độ `lat,lng`; Mapbox dùng `lng,lat`. Goong V2 trả địa chỉ hành chính hiện hành; `secondaryAddress` giữ địa chỉ trước đây nếu có để dễ nhận biết ngõ/ngách. Lỗi nhà cung cấp trả `LOCATION_SEARCH_UNAVAILABLE`, không lộ API key hoặc response thô.
+
+Mapbox fallback tắt fuzzy matching, tối đa 10 kết quả, kiểm tra các từ/số nhà và bỏ kết quả relevance dưới 0.75. Cache geocode có version mới để không dùng lại kết quả gần đúng cũ. Vì Mapbox Geocoding v5 không còn dữ liệu POI, khi thiếu key Goong, địa danh ngoài dữ liệu sẽ trả danh sách trống thay vì các phố không khớp.
+
+Test hồi quy: `gradlew test --tests '*PlaceSearchTests'`. Test nhà cung cấp thật chỉ chạy khi `RUN_MAPBOX_LIVE_TEST=true` và `MAPBOX_LIVE_TEST_TOKEN` được cung cấp qua môi trường; mặc định không gọi dịch vụ bên ngoài.
+
+Tài liệu nhà cung cấp: https://help.goong.io/kb/rest-api-v2/autocomplete-rest-api-v2/autocomplete-v2/ và https://help.goong.io/kb/rest-api-v2/place-detail-rest-api-v2/place-detail-place-detail-v2/.

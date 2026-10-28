@@ -1,6 +1,7 @@
 package com.nhom15.datxebackend.config
 
 import com.nhom15.datxebackend.config.properties.MapboxProperties
+import org.springframework.context.annotation.Primary
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.http.client.JdkClientHttpRequestFactory
@@ -9,6 +10,7 @@ import java.net.http.HttpClient
 
 @Configuration
 class MapboxConfig {
+    @Primary
     @Bean
     fun mapboxClient(props: MapboxProperties): RestClient {
         val httpClient = HttpClient.newBuilder().connectTimeout(props.connectTimeout).build()

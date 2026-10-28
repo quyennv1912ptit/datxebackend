@@ -30,9 +30,10 @@ class MapService(
     private val log = LoggerFactory.getLogger(javaClass)
 
     fun getCoordinatesFromAddress(address: String, proximity: GeoPoint? = null): String? {
+        val reverse = address.split(',').let { it.size == 2 && it.all { part -> part.trim().toDoubleOrNull() != null } }
         val normalizedAddress = normalizeAddress(address)
         val proximityKey = proximity?.rounded()?.let { "${it.lat},${it.lng}" } ?: "-"
-        val cacheKey = RedisKeys.mapboxGeocodeCache(sha256("$normalizedAddress|$proximityKey"))
+        val cacheKey = RedisKeys.mapboxGeocodeCache(sha256("strict-v2|$normalizedAddress|$proximityKey"))
         getStringCache(cacheKey)?.let { return it }
 
         return try {
@@ -44,7 +45,9 @@ class MapService(
                         .queryParam("access_token", properties.token.trim())
                         .queryParam("country", "vn")
                         .queryParam("language", "vi")
-                        .queryParam("autocomplete", "true")
+                    if (!reverse) uri.queryParam("autocomplete", "true")
+                        .queryParam("fuzzyMatch", "false")
+                        .queryParam("limit", "10")
                     proximity?.let { uri.queryParam("proximity", "${it.lng},${it.lat}") }
                     uri.build()
                 }

@@ -58,7 +58,7 @@ class FirebaseSecurityConfig(
                     .requestMatchers("/api/admin/**").hasRole("ADMIN")
                     .requestMatchers("/api/location/customer/nearby-drivers").hasRole("CUSTOMER")
                     .requestMatchers("/api/location/nearby-drivers").hasRole("ADMIN")
-                    .requestMatchers("/api/location/geocode", "/api/location/directions")
+                    .requestMatchers("/api/location/geocode", "/api/location/directions", "/api/location/places/**")
                     .hasAnyRole("CUSTOMER", "DRIVER")
                     .requestMatchers("/api/driver/**").hasRole("DRIVER")
                     .requestMatchers("/api/customer/**").hasRole("CUSTOMER")

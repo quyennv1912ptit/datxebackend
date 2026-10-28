@@ -41,6 +41,7 @@ enum class ErrorCode(val httpStatus: HttpStatus, val defaultMessage: String) {
     RIDE_CANNOT_CANCEL(HttpStatus.CONFLICT, "Không thể hủy chuyến ở trạng thái hiện tại"),
     HANDOVER_REPORT_REQUIRED(HttpStatus.BAD_REQUEST, "Cần hoàn tất biên bản bàn giao xe"),
     PRICING_RULE_NOT_FOUND(HttpStatus.NOT_FOUND, "Chưa có bảng giá áp dụng"),
+    LOCATION_SEARCH_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "Chưa tìm được địa chỉ lúc này. Vui lòng thử lại hoặc chọn vị trí trên bản đồ."),
     ROUTE_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "Không thể lấy lộ trình chuyến đi"),
 
     // ---- Matching ----
