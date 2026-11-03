@@ -39,11 +39,10 @@ class AuthService(
     fun loginCustomer(request: AuthLoginRequest): AuthProfileResponse {
         val token = verifyToken(request.idToken)
         ensureUidAvailableFor(token.uid, Role.CUSTOMER)
-        val existing = customerRepository.findByFirebaseUid(token.uid).orElse(null)
-        if (existing == null) {
-            throw AppException(ErrorCode.ACCOUNT_NOT_FOUND)
-        }
         val verifiedPhone = verifiedPhone(token, request.phoneNumber, required = true)
+        val existing = customerRepository.findByFirebaseUid(token.uid).orElse(null)
+            ?: attachCustomerByPhone(token.uid, verifiedPhone)
+            ?: throw AppException(ErrorCode.ACCOUNT_NOT_FOUND)
 
         if (existing.deletedAt != null || existing.status != UserStatus.ACTIVE) {
             throw AppException(ErrorCode.ACCOUNT_LOCKED)
@@ -60,6 +59,9 @@ class AuthService(
         }
         ensureUidAvailableFor(token.uid, Role.CUSTOMER)
         val verifiedPhone = verifiedPhone(token, request.phoneNumber, required = true)
+        if (verifiedPhone != null && customerRepository.findByPhoneNumber(verifiedPhone).isPresent) {
+            throw AppException(ErrorCode.PHONE_ALREADY_EXISTS)
+        }
         val customer = Customer().apply {
             firebaseUid = token.uid
             fullName = request.fullName.trim()
@@ -73,12 +75,11 @@ class AuthService(
     fun loginDriver(request: AuthLoginRequest): AuthProfileResponse {
         val token = verifyToken(request.idToken)
         ensureUidAvailableFor(token.uid, Role.DRIVER)
-        val existing = driverRepository.findByFirebaseUid(token.uid).orElse(null)
-        if (existing == null) {
-            throw AppException(ErrorCode.ACCOUNT_NOT_FOUND)
-        }
-        if (existing.deletedAt != null) throw AppException(ErrorCode.ACCOUNT_LOCKED)
         val verifiedPhone = verifiedPhone(token, request.phoneNumber, required = false)
+        val existing = driverRepository.findByFirebaseUid(token.uid).orElse(null)
+            ?: attachDriverByPhone(token.uid, verifiedPhone)
+            ?: throw AppException(ErrorCode.ACCOUNT_NOT_FOUND)
+        if (existing.deletedAt != null) throw AppException(ErrorCode.ACCOUNT_LOCKED)
         if (existing.phoneNumber.isBlank() && verifiedPhone != null) existing.phoneNumber = verifiedPhone
 
         return profileOf(toAuthUser(driverRepository.save(existing)))
@@ -92,6 +93,9 @@ class AuthService(
         }
         ensureUidAvailableFor(token.uid, Role.DRIVER)
         val verifiedPhone = verifiedPhone(token, request.phoneNumber, required = true)
+        if (verifiedPhone != null && driverRepository.findByPhoneNumber(verifiedPhone).isPresent) {
+            throw AppException(ErrorCode.PHONE_ALREADY_EXISTS)
+        }
         val driver = Driver().apply {
             firebaseUid = token.uid
             phoneNumber = verifiedPhone!!
@@ -221,6 +225,39 @@ class AuthService(
         if (existsForAnotherRole) {
             throw AppException(ErrorCode.ACCOUNT_ALREADY_EXISTS, "Firebase account đã được liên kết với role khác")
         }
+    }
+
+    /**
+     * A Firebase identity can be recreated (for example after the account is removed in the
+     * Firebase console), which produces a new UID for the same verified phone number. Accounts
+     * owned by that phone still exist here, so re-attach them instead of reporting the phone as
+     * unregistered and sending the user into a registration flow that cannot finish.
+     * The claim is signed by Firebase, so it proves ownership of the number.
+     */
+    private fun attachCustomerByPhone(firebaseUid: String, verifiedPhone: String?): Customer? {
+        if (verifiedPhone == null) return null
+        val existing = customerRepository.findByPhoneNumber(verifiedPhone).orElse(null)
+            ?.takeIf { it.deletedAt == null } ?: return null
+        log.warn(
+            "Firebase UID changed for customer {}: {} -> {}; re-attached by verified phone",
+            existing.id, existing.firebaseUid, firebaseUid,
+        )
+        authenticatedUserCache.evict(existing.firebaseUid)
+        existing.firebaseUid = firebaseUid
+        return customerRepository.save(existing)
+    }
+
+    private fun attachDriverByPhone(firebaseUid: String, verifiedPhone: String?): Driver? {
+        if (verifiedPhone == null) return null
+        val existing = driverRepository.findByPhoneNumber(verifiedPhone).orElse(null)
+            ?.takeIf { it.deletedAt == null } ?: return null
+        log.warn(
+            "Firebase UID changed for driver {}: {} -> {}; re-attached by verified phone",
+            existing.id, existing.firebaseUid, firebaseUid,
+        )
+        authenticatedUserCache.evict(existing.firebaseUid)
+        existing.firebaseUid = firebaseUid
+        return driverRepository.save(existing)
     }
 
     private fun toAuthUser(customer: Customer) = AuthUser(

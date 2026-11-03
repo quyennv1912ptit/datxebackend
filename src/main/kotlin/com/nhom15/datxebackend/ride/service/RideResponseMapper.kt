@@ -6,7 +6,9 @@ import com.nhom15.datxebackend.ride.dto.response.CreateRideResponse
 import com.nhom15.datxebackend.ride.dto.response.EstimateRideResponse
 import com.nhom15.datxebackend.ride.dto.response.GeoPointResponse
 import com.nhom15.datxebackend.ride.dto.response.HandoverReportResponse
+import com.nhom15.datxebackend.ride.dto.response.RideCustomerResponse
 import com.nhom15.datxebackend.ride.dto.response.RideDetailResponse
+import com.nhom15.datxebackend.ride.dto.response.RideDriverResponse
 import com.nhom15.datxebackend.ride.dto.response.RideStatusHistoryResponse
 import com.nhom15.datxebackend.ride.dto.response.RideStatusResponse
 import com.nhom15.datxebackend.ride.dto.response.RideSummaryResponse
@@ -66,6 +68,8 @@ internal object RideResponseMapper {
         statusHistory: List<RideStatusHistoryResponse>,
         handoverReports: List<HandoverReportResponse>,
         unreadChatCount: Long = 0,
+        customer: RideCustomerResponse? = null,
+        driver: RideDriverResponse? = null,
     ) = RideDetailResponse(
         route = savedRoute(ride),
         id = ride.id, customerId = ride.customerId,
@@ -83,5 +87,10 @@ internal object RideResponseMapper {
         cancelledByRole = ride.cancelledByRole?.let { RideActorRole.valueOf(it) }, discountAmount = ride.discountAmount,
         unreadChatCount = unreadChatCount,
         pickupNote = ride.pickupNote,
+        licensePlate = ride.licensePlate,
+        vehicleType = ride.vehicleType,
+        transmission = ride.transmission,
+        driver = driver,
+        customer = customer,
     )
 }

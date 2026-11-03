@@ -56,6 +56,14 @@ services:
     ports:
       - "8080:8080"
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflare-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TOKEN}
+    depends_on:
+      - backend
+
 volumes:
   postgres_data:
   redis_data:

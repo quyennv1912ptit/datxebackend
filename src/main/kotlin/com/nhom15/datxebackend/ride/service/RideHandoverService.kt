@@ -16,6 +16,7 @@ import com.nhom15.datxebackend.ride.entity.HandoverPhase
 import com.nhom15.datxebackend.ride.entity.HandoverPhoto
 import com.nhom15.datxebackend.ride.entity.HandoverPhotoAngle
 import com.nhom15.datxebackend.ride.entity.VehicleHandoverReport
+import com.nhom15.datxebackend.ride.event.DropoffHandoverConfirmed
 import com.nhom15.datxebackend.ride.event.PickupHandoverConfirmed
 import com.nhom15.datxebackend.ride.repository.HandoverPhotoRepository
 import com.nhom15.datxebackend.ride.repository.RideRepository
@@ -233,9 +234,13 @@ class RideHandoverService(
         if (!request.confirmed) throw BadRequestException(message = "Khách hàng phải xác nhận biên bản trả xe")
         val report = reportRepository.findByRideIdAndPhase(rideId, HandoverPhase.DROPOFF)
             ?: throw BadRequestException(ErrorCode.HANDOVER_REPORT_REQUIRED, "Chưa có biên bản trả xe của chuyến này")
+        // Chỉ báo realtime khi xác nhận thực sự đổi trạng thái, tránh dội thông báo khi khách bấm lại.
         if (!report.confirmedByCustomer) {
             report.confirmedByCustomer = true
             reportRepository.saveAndFlush(report)
+            ride.driverId?.let { driverId ->
+                eventPublisher.publish(DropoffHandoverConfirmed(rideId = rideId, driverId = driverId))
+            }
         }
         val photos = photoRepository.findAllByReportIdOrderByCreatedAtAsc(report.id)
         return HandoverResponseMapper.toResponse(report, photos)

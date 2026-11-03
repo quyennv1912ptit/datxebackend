@@ -2,6 +2,7 @@ package com.nhom15.datxebackend.notification.dto
 
 import com.nhom15.datxebackend.common.enums.RideStatus
 import com.nhom15.datxebackend.common.websocket.PayloadType
+import com.nhom15.datxebackend.ride.entity.HandoverPhase
 
 data class RideUpdatedPayload(
     override val rideId: Long,
@@ -13,6 +14,7 @@ data class RideUpdatedPayload(
 data class HandoverConfirmedPayload(
     override val rideId: Long,
     val confirmedByCustomer: Boolean = true,
+    val phase: HandoverPhase? = null,
 ) : NotificationPayload {
     override val type: PayloadType get() = PayloadType.HANDOVER_CONFIRMED
 }

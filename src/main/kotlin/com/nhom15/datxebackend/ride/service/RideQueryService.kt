@@ -9,9 +9,13 @@ import com.nhom15.datxebackend.common.exception.BadRequestException
 import com.nhom15.datxebackend.common.exception.ForbiddenException
 import com.nhom15.datxebackend.common.exception.NotFoundException
 import com.nhom15.datxebackend.common.security.AuthUser
+import com.nhom15.datxebackend.customer.repository.CustomerRepository
+import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.ride.dto.request.RideListFilter
 import com.nhom15.datxebackend.ride.dto.response.HandoverReportResponse
+import com.nhom15.datxebackend.ride.dto.response.RideCustomerResponse
 import com.nhom15.datxebackend.ride.dto.response.RideDetailResponse
+import com.nhom15.datxebackend.ride.dto.response.RideDriverResponse
 import com.nhom15.datxebackend.ride.dto.response.RideStatusHistoryResponse
 import com.nhom15.datxebackend.ride.dto.response.RideSummaryResponse
 import com.nhom15.datxebackend.ride.entity.HandoverPhase
@@ -32,6 +36,8 @@ class RideQueryService(
     private val reportRepository: VehicleHandoverReportRepository,
     private val photoRepository: HandoverPhotoRepository,
     private val chatService: ChatService,
+    private val customerRepository: CustomerRepository,
+    private val driverRepository: DriverRepository,
 ) {
     @Transactional(readOnly = true)
     fun getActiveRide(actor: AuthUser): RideDetailResponse? {
@@ -84,10 +90,32 @@ class RideQueryService(
             }
         }
 
+        val customer = customerRepository.findById(ride.customerId).orElse(null)?.let {
+            RideCustomerResponse(
+                id = it.id,
+                fullName = it.fullName,
+                phoneNumber = it.phoneNumber,
+                avatarUrl = it.avatarUrl,
+                averageRating = it.averageRating,
+            )
+        }
+
+        val driver = ride.driverId?.let { driverId ->
+            driverRepository.findById(driverId).orElse(null)?.let {
+                RideDriverResponse(
+                    id = it.id,
+                    fullName = it.fullName,
+                    phoneNumber = it.phoneNumber,
+                    avatarUrl = it.avatarUrl,
+                    averageRating = it.averageRating,
+                )
+            }
+        }
+
         val unreadChatCount = if (actor.role == Role.CUSTOMER || actor.role == Role.DRIVER) {
             chatService.unreadCount(rideId, actor)
         } else 0L
-        return RideResponseMapper.detail(ride, historyResponses, reportResponses, unreadChatCount)
+        return RideResponseMapper.detail(ride, historyResponses, reportResponses, unreadChatCount, customer, driver)
     }
 
     @Transactional(readOnly = true)

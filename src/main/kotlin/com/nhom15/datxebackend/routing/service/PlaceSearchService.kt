@@ -10,6 +10,7 @@ import com.nhom15.datxebackend.routing.model.PlaceSuggestion
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.stereotype.Service
 import org.springframework.web.client.RestClient
+import java.time.Duration
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 
@@ -20,7 +21,24 @@ class PlaceSearchService(
     private val properties: PlaceSearchProperties,
     private val mapper: ObjectMapper,
 ) {
-    fun search(query: String, proximity: GeoPoint?): PlaceSearchResult = safely {
+    // Goong tính phí theo lượt gọi: cache ngắn hạn để gộp các truy vấn trùng nhau.
+    private val searchCache = PlaceQueryCache<PlaceSearchResult>(Duration.ofMinutes(10))
+    private val detailCache = PlaceQueryCache<PlaceSuggestion>(Duration.ofMinutes(30))
+    private val reverseCache = PlaceQueryCache<PlaceSuggestion>(Duration.ofMinutes(30))
+
+    fun search(query: String, proximity: GeoPoint?): PlaceSearchResult {
+        val key = buildString {
+            append(normalizeQuery(query))
+            append('|')
+            append(proximity?.let { "${quantize(it.lat, 2)},${quantize(it.lng, 2)}" } ?: "-")
+        }
+        searchCache.get(key)?.let { return it }
+        val result = searchUncached(query, proximity)
+        searchCache.put(key, result)
+        return result
+    }
+
+    private fun searchUncached(query: String, proximity: GeoPoint?): PlaceSearchResult = safely {
         if (!properties.useGoong) {
             val root = mapper.readTree(maps.getCoordinatesFromAddress(query, proximity) ?: "{}")
             val places = root.path("features").filter { it.path("relevance").asDouble(1.0) >= 0.75 }
@@ -46,7 +64,14 @@ class PlaceSearchService(
         }
     }
 
-    fun detail(id: String): PlaceSuggestion = safely {
+    fun detail(id: String): PlaceSuggestion {
+        detailCache.get(id)?.let { return it }
+        val result = detailUncached(id)
+        detailCache.put(id, result)
+        return result
+    }
+
+    private fun detailUncached(id: String): PlaceSuggestion = safely {
         if (!properties.useGoong) throw BadRequestException(message = "Nguồn tìm địa điểm đã thay đổi. Vui lòng tìm lại địa chỉ.")
         val root = call("/v2/place/detail", mapOf("place_id" to id, "has_deprecated_administrative_unit" to "true"))
         val node = root.path("result")
@@ -57,7 +82,15 @@ class PlaceSearchService(
             PlaceSearchParsing.text(node, "deprecated_description").takeIf { it.isNotBlank() && it != address })
     }
 
-    fun reverse(point: GeoPoint): PlaceSuggestion = safely {
+    fun reverse(point: GeoPoint): PlaceSuggestion {
+        val key = "${quantize(point.lat, 4)},${quantize(point.lng, 4)}"
+        reverseCache.get(key)?.let { return it }
+        val result = reverseUncached(point)
+        reverseCache.put(key, result)
+        return result
+    }
+
+    private fun reverseUncached(point: GeoPoint): PlaceSuggestion = safely {
         if (!properties.useGoong) {
             val root = mapper.readTree(maps.getCoordinatesFromAddress("${point.lng},${point.lat}") ?: "{}")
             val place = root.path("features").firstNotNullOfOrNull { PlaceSearchParsing.mapbox(it) }

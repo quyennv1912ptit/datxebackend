@@ -6,6 +6,8 @@ import com.nhom15.datxebackend.common.enums.RideStatus
 import com.nhom15.datxebackend.notification.api.NotificationPort
 import com.nhom15.datxebackend.notification.api.Recipient
 import com.nhom15.datxebackend.notification.dto.*
+import com.nhom15.datxebackend.ride.entity.HandoverPhase
+import com.nhom15.datxebackend.ride.event.DropoffHandoverConfirmed
 import com.nhom15.datxebackend.ride.event.RideStatusChanged
 import com.nhom15.datxebackend.ride.event.PickupHandoverConfirmed
 import com.nhom15.datxebackend.ride.repository.RideRepository
@@ -46,7 +48,16 @@ class RideNotificationListener(
     fun onPickupHandoverConfirmed(event: PickupHandoverConfirmed) {
         notificationPort.send(
             Recipient.Driver(event.driverId),
-            HandoverConfirmedPayload(event.rideId),
+            HandoverConfirmedPayload(event.rideId, phase = HandoverPhase.PICKUP),
+        )
+    }
+
+    // Khách xác nhận biên bản trả xe: báo ngay cho tài xế để họ hoàn tất chuyến.
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
+    fun onDropoffHandoverConfirmed(event: DropoffHandoverConfirmed) {
+        notificationPort.send(
+            Recipient.Driver(event.driverId),
+            HandoverConfirmedPayload(event.rideId, phase = HandoverPhase.DROPOFF),
         )
     }
 

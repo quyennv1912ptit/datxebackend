@@ -1,10 +1,28 @@
 package com.nhom15.datxebackend.ride.dto.response
 
 import com.nhom15.datxebackend.common.enums.RideStatus
+import com.nhom15.datxebackend.common.enums.Transmission
+import com.nhom15.datxebackend.common.enums.VehicleType
 import com.nhom15.datxebackend.ride.entity.RideType
 import com.nhom15.datxebackend.ride.entity.RideActorRole
 import java.math.BigDecimal
 import java.time.Instant
+
+data class RideCustomerResponse(
+    val id: Long,
+    val fullName: String?,
+    val phoneNumber: String?,
+    val avatarUrl: String?,
+    val averageRating: Double? = null,
+)
+
+data class RideDriverResponse(
+    val id: Long,
+    val fullName: String?,
+    val phoneNumber: String,
+    val avatarUrl: String?,
+    val averageRating: Double? = null,
+)
 
 data class RideDetailResponse(
     val id: Long,
@@ -36,4 +54,9 @@ data class RideDetailResponse(
     val unreadChatCount: Long = 0,
     val pickupNote: String? = null,
     val route: com.nhom15.datxebackend.routing.model.SavedRideRoute? = null,
+    val licensePlate: String? = null,
+    val vehicleType: VehicleType? = null,
+    val transmission: Transmission? = null,
+    val driver: RideDriverResponse? = null,
+    val customer: RideCustomerResponse? = null,
 )

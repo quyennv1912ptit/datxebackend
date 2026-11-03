@@ -230,6 +230,8 @@ Thông báo dùng envelope:
 
 Các `type` hiện có: `RIDE_OFFER`, `OFFER_EXPIRED`, `OFFER_CANCELLED`, `RIDE_UPDATED`, `HANDOVER_CONFIRMED`, `RIDE_CANCELLED`, `RIDE_COMPLETED`, `RIDE_NO_DRIVER`, `RIDE_ASSIGNED`, `DRIVER_DOCUMENT_REVIEWED`, `DRIVER_VERIFICATION_UPDATED`, `DRIVER_FORCE_OFFLINE`, `CHAT_MESSAGE`, `CHAT_READ`. Cấu trúc `payload` phụ thuộc từng loại sự kiện.
 
+`HANDOVER_CONFIRMED` được gửi cho tài xế ngay sau khi khách xác nhận biên bản, với payload `{ "rideId": 123, "confirmedByCustomer": true, "phase": "PICKUP" | "DROPOFF" }`. Xác nhận lặp lại (idempotent) không phát lại thông báo.
+
 ## FCM
 
 Client đăng ký token qua `POST /api/device-tokens`. FCM gửi data message với một data key là `payload`; giá trị là JSON serialize của envelope ở trên. Token Firebase báo `UNREGISTERED` sẽ được gỡ khỏi database.
@@ -264,7 +266,7 @@ Thông báo nghiệp vụ được lưu vào lịch sử `/api/notifications`. C
 
 - Số điện thoại customer lấy từ Firebase; API cập nhật hồ sơ không cho sửa số này.
 - Các route nghiệp vụ lấy customer/driver ID từ người đăng nhập. Với route có `{id}`, backend kiểm tra quyền sở hữu theo nghiệp vụ.
-- `GET /api/customer/rides/active` và `GET /api/driver/rides/active` trả `unreadChatCount` để app khôi phục huy hiệu chat.
+- `GET /api/customer/rides/active`, `GET /api/driver/rides/active` và chi tiết chuyến `{id}` trả `unreadChatCount`, thông tin xe (`licensePlate`, `vehicleType`, `transmission`), thông tin tóm tắt `customer` (tên, SĐT, avatar, rating) và `driver` (nếu đã gán).
 - `POST /api/auth/logout` nhận `installationId`; app cũng có thể gỡ thiết bị riêng bằng `DELETE /api/device-tokens/{installationId}`.
 - Matching và xóa tài khoản dùng outbox PostgreSQL có lease/retry; thao tác Redis, Firebase và Cloudinary được xử lý sau khi giao dịch nghiệp vụ commit.
 
