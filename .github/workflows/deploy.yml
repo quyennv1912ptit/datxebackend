@@ -15,18 +15,21 @@ jobs:
 
       - name: Create Env and Secret Files
         run: |
+          # 1. Tạo thư mục secrets
           mkdir -p secrets
           
-          echo "${{ secrets.FIREBASE_JSON }}" > secrets/firebase-service-account.json
+          cat << 'EOF' > secrets/firebase-service-account.json
+          ${{ secrets.FIREBASE_JSON }}
+          EOF
           
-          echo "${{ secrets.ENV_FILE }}" > .env
+          cat << 'EOF' > .env
+          ${{ secrets.ENV_FILE }}
+          EOF
           
           echo "CLOUDFLARE_TOKEN=${{ secrets.CLOUDFLARE_TOKEN }}" >> .env
 
       - name: Build and Deploy with Docker Compose
         run: |
           docker compose down
-          
           docker compose up -d --build
-          
           docker image prune -f
