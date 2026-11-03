@@ -35,14 +35,12 @@ class FirebaseSecurityConfig(
         val firebaseAuthFilter = FirebaseAuthFilter(firebaseAuth, authService)
         http
             .csrf { it.disable() }
-            .cors { }
+            .cors { it.configurationSource(corsConfigurationSource()) }
             .httpBasic { it.disable() }
             .formLogin { it.disable() }
             .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
             .authorizeHttpRequests {
                 it
-                    // Login and registration carry a Firebase ID token in the request body;
-                    // AuthService verifies that token before returning or creating an account.
                     .requestMatchers(
                         "/api/auth/customer/login",
                         "/api/auth/customer/register",
@@ -74,7 +72,6 @@ class FirebaseSecurityConfig(
                     writeError(res, HttpServletResponse.SC_FORBIDDEN, ErrorCode.FORBIDDEN, "Không có quyền truy cập")
                 }
             }
-            // Chạy bộ lọc firebaseAuthFilter trước khi chạy bộ lọc UsernamePasswordAuthenticationFilter của spring boot
             .addFilterBefore(firebaseAuthFilter, UsernamePasswordAuthenticationFilter::class.java)
 
         return http.build()
@@ -83,9 +80,16 @@ class FirebaseSecurityConfig(
     @Bean
     fun corsConfigurationSource(): CorsConfigurationSource {
         val config = CorsConfiguration().apply {
-            allowedOriginPatterns = corsProperties.allowedOrigins
+            allowedOriginPatterns = listOf(
+                "https://go-admin-mu.vercel.app",
+                "http://localhost:3000",
+                "http://localhost:5173",
+                *corsProperties.allowedOrigins.toTypedArray()
+            )
+
             allowedMethods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
-            allowedHeaders = listOf("Authorization", "Content-Type", "Accept", "Idempotency-Key", "X-Role")
+            allowedHeaders = listOf("*")
+            allowCredentials = true
             maxAge = 3600
         }
         return UrlBasedCorsConfigurationSource().apply { registerCorsConfiguration("/**", config) }

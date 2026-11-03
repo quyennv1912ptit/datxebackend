@@ -16,18 +16,18 @@ class DriverReleaseService(private val redisTemplate: StringRedisTemplate) {
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     fun onStatusChanged(e: RideStatusChanged) {
         when (e.to) {
-            RideStatus.COMPLETED -> releaseAfterRide(e.rideId, "COMPLETED")
-            RideStatus.CANCELLED -> releaseAfterRide(e.rideId, "CANCELLED")
+            RideStatus.COMPLETED -> releaseAfterRide(e.rideId, "COMPLETED", e.driverId)
+            RideStatus.CANCELLED -> releaseAfterRide(e.rideId, "CANCELLED", e.driverId)
             else -> Unit
         }
     }
 
-    private fun releaseAfterRide(rideId: Long, finalStatus: String) {
+    private fun releaseAfterRide(rideId: Long, finalStatus: String, eventDriverId: Long?) {
         val id = rideId.toString()
         val stateKey = RedisKeys.rideState(id)
         val hash = redisTemplate.opsForHash<String, String>()
 
-        val driverId = hash.get(stateKey, "driverId") ?: return
+        val driverId = hash.get(stateKey, "driverId") ?: eventDriverId?.toString() ?: return
 
         hash.put(stateKey, "status", finalStatus)
         redisTemplate.expire(stateKey, RedisTtl.RIDE_AFTER_END)
