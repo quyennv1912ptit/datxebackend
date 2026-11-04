@@ -1,6 +1,5 @@
 package com.nhom15.datxebackend.notification.ws
 
-import com.nhom15.datxebackend.config.properties.CorsProperties
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Lazy
@@ -16,16 +15,16 @@ import org.springframework.web.socket.config.annotation.WebSocketTransportRegist
 @EnableWebSocketMessageBroker
 class NotificationWebSocketConfig(
     private val stompAuthInterceptor: StompAuthInterceptor,
-    private val corsProperties: CorsProperties,
     @Lazy @Qualifier("messageBrokerTaskScheduler")
     private val brokerScheduler: TaskScheduler,
 ) : WebSocketMessageBrokerConfigurer {
 
     override fun registerStompEndpoints(registry: StompEndpointRegistry) {
         val endpoint = registry.addEndpoint("/ws-location")
-        if (corsProperties.allowedOrigins.isNotEmpty()) {
-            endpoint.setAllowedOriginPatterns(*corsProperties.allowedOrigins.toTypedArray())
-        }
+        // App mobile thường đi qua tunnel/proxy (Cloudflare) làm xuất hiện Origin khác
+        // với HTTP API. Xác thực đã nằm ở token trong STOMP CONNECT, không dùng cookie,
+        // nên không chặn handshake theo Origin; CORS của HTTP API vẫn giữ nguyên.
+        endpoint.setAllowedOriginPatterns("*")
     }
 
     override fun configureMessageBroker(registry: MessageBrokerRegistry) {

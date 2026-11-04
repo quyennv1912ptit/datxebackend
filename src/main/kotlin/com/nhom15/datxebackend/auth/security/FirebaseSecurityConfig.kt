@@ -92,7 +92,23 @@ class FirebaseSecurityConfig(
             allowCredentials = true
             maxAge = 3600
         }
-        return UrlBasedCorsConfigurationSource().apply { registerCorsConfiguration("/**", config) }
+        // Handshake WebSocket của app mobile có thể mang Origin do proxy/tunnel (Cloudflare)
+        // thêm vào. Xác thực nằm ở token trong STOMP CONNECT chứ không dùng cookie, nên chỉ
+        // nới CORS cho đúng endpoint handshake; CORS của HTTP API giữ nguyên.
+        val websocketConfig = CorsConfiguration().apply {
+            allowedOriginPatterns = listOf("*")
+            allowedMethods = listOf("GET")
+            allowedHeaders = listOf("*")
+            allowCredentials = true
+            maxAge = 3600
+        }
+        return UrlBasedCorsConfigurationSource().apply {
+            // UrlBasedCorsConfigurationSource trả về cấu hình khớp đầu tiên, nên phải
+            // đăng ký endpoint handshake trước pattern "/**".
+            registerCorsConfiguration("/ws-location", websocketConfig)
+            registerCorsConfiguration("/ws-location/**", websocketConfig)
+            registerCorsConfiguration("/**", config)
+        }
     }
 
     private fun writeError(res: HttpServletResponse, status: Int, errorCode: ErrorCode, message: String) {
