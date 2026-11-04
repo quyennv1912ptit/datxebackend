@@ -11,13 +11,12 @@ class DriverSkillRepository(private val jdbcTemplate: JdbcTemplate) {
     fun findVerifiedDriverIds(
         driverIds: Collection<Long>,
         vehicleType: VehicleType,
-        transmission: Transmission,
     ): Set<Long> {
         if (driverIds.isEmpty()) return emptySet()
         val placeholders = driverIds.joinToString(",") { "?" }
-        val args = driverIds.map { it as Any } + listOf(vehicleType.name, transmission.name)
+        val args = driverIds.map { it as Any } + listOf(vehicleType.name)
         return jdbcTemplate.query(
-            "SELECT driver_id FROM driver_vehicle_skills WHERE driver_id IN ($placeholders) AND vehicle_type = ? AND transmission = ? AND verified = true",
+            "SELECT driver_id FROM driver_vehicle_skills WHERE driver_id IN ($placeholders) AND vehicle_type = ? AND verified = true",
             { row, _ -> row.getLong("driver_id") },
             *args.toTypedArray(),
         ).toSet()
@@ -71,15 +70,6 @@ class DriverSkillRepository(private val jdbcTemplate: JdbcTemplate) {
             Long::class.java,
             driverId,
             vehicleType.name,
-        ) ?: 0L) > 0L
-
-    fun hasVerifiedSkill(driverId: Long, vehicleType: VehicleType, transmission: Transmission): Boolean =
-        (jdbcTemplate.queryForObject(
-            "SELECT COUNT(*) FROM driver_vehicle_skills WHERE driver_id = ? AND vehicle_type = ? AND transmission = ? AND verified = true",
-            Long::class.java,
-            driverId,
-            vehicleType.name,
-            transmission.name,
         ) ?: 0L) > 0L
 
     private fun java.sql.ResultSet.toSkill() = DriverSkillResponse(

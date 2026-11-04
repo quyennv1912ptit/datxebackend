@@ -32,7 +32,6 @@ class DriverSelectionService(
         val verifiedDriverIds = driverSkillRepository.findVerifiedDriverIds(
             nearbyDrivers.map { it.driverId }.distinct(),
             requiredVehicleType,
-            requiredTransmission,
         )
 
         return nearbyDrivers

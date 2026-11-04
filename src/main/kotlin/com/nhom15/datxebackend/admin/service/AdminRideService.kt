@@ -105,7 +105,7 @@ class AdminRideService(
             driver.onlineVehicleType != ride.vehicleType ||
             driver.licenseExpiryDate == null || driver.licenseExpiryDate!!.isBefore(LocalDate.now()) ||
             rideRepository.existsByDriverIdAndStatusIn(request.driverId, ACTIVE_RIDE_STATUSES) ||
-            !driverSkillRepository.hasVerifiedSkill(request.driverId, ride.vehicleType, ride.transmission)
+            !driverSkillRepository.hasVerifiedSkill(request.driverId, ride.vehicleType)
         ) {
             throw ConflictException(message = "Tài xế chưa online hoặc không đủ điều kiện nhận loại chuyến này")
         }

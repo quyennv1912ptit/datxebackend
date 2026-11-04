@@ -269,6 +269,7 @@ Thông báo nghiệp vụ được lưu vào lịch sử `/api/notifications`. C
 - `GET /api/customer/rides/active`, `GET /api/driver/rides/active` và chi tiết chuyến `{id}` trả `unreadChatCount`, thông tin xe (`licensePlate`, `vehicleType`, `transmission`), thông tin tóm tắt `customer` (tên, SĐT, avatar, rating) và `driver` (nếu đã gán).
 - `POST /api/auth/logout` nhận `installationId`; app cũng có thể gỡ thiết bị riêng bằng `DELETE /api/device-tokens/{installationId}`.
 - Matching và xóa tài khoản dùng outbox PostgreSQL có lease/retry; thao tác Redis, Firebase và Cloudinary được xử lý sau khi giao dịch nghiệp vụ commit.
+- Điều kiện ghép tài xế: kỹ năng đã duyệt theo **loại xe** (không bắt buộc khớp hộp số của xe khách), trạng thái online + heartbeat trong Redis; hạng bằng `B1` không nhận chuyến xe số sàn. Admin gán tài xế dùng cùng điều kiện này.
 
 ## Bảng mã lỗi
 

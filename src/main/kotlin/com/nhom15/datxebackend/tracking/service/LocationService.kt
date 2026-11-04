@@ -7,6 +7,7 @@ import com.nhom15.datxebackend.common.redis.RedisKeys
 import com.nhom15.datxebackend.common.port.NearbyDriverQueryPort
 import com.nhom15.datxebackend.common.port.NearbyDriver
 import com.nhom15.datxebackend.config.properties.MatchingProperties
+import org.slf4j.LoggerFactory
 import org.springframework.data.geo.Circle
 import org.springframework.data.geo.Distance
 import org.springframework.data.geo.Metrics
@@ -23,6 +24,8 @@ class LocationService(
     private val matchingProperties: MatchingProperties,
 ) : NearbyDriverQueryPort {
 
+    private val log = LoggerFactory.getLogger(javaClass)
+
     companion object {
         private const val MAX_LAT = 85.05112878
     }
@@ -37,17 +40,25 @@ class LocationService(
         )
         redisTemplate.opsForValue().set(RedisKeys.driverAlive(id), "1", matchingProperties.driverAliveTtl)
 
-        // Driver đã bật nhận chuyến ở DB nhưng Redis vừa được khởi động lại.
+        // Driver đã bật nhận chuyến ở DB nhưng Redis vừa được khởi động lại, hoặc Redis đã
+        // tự đặt OFFLINE vì heartbeat trước đó hết hạn. App vẫn gửi vị trí nghĩa là tài xế
+        // vẫn online, nên khôi phục trạng thái thay vì bỏ qua mọi cập nhật sau đó.
+        val unavailable = redisTemplate.hasKey(RedisKeys.driverLock(id)) == true ||
+                redisTemplate.hasKey(RedisKeys.driverCurrentRide(id)) == true
         val statusKey = RedisKeys.driverStatus(id)
-        if (redisTemplate.hasKey(statusKey) != true) {
+        val currentStatus = redisTemplate.opsForValue().get(statusKey)
+        if (!unavailable && (currentStatus == null || currentStatus == "OFFLINE")) {
             val isOnline = driverRepository.findById(driverId)
                 .map { it.status == DriverStatus.ONLINE }
                 .orElse(false)
-            if (isOnline) redisTemplate.opsForValue().set(statusKey, "ONLINE")
+            if (isOnline) {
+                redisTemplate.opsForValue().set(statusKey, "ONLINE")
+                if (currentStatus == "OFFLINE") {
+                    log.info("Tài xế {} gửi lại vị trí, khôi phục trạng thái ONLINE", driverId)
+                }
+            }
         }
 
-        val unavailable = redisTemplate.hasKey(RedisKeys.driverLock(id)) == true ||
-                redisTemplate.hasKey(RedisKeys.driverCurrentRide(id)) == true
         if (unavailable || redisTemplate.opsForValue().get(statusKey) != "ONLINE") {
             redisTemplate.opsForGeo().remove(RedisKeys.GEO_KEY, id)
             return
