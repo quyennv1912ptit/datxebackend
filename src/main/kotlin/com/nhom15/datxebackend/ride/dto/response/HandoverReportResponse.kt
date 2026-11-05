@@ -12,4 +12,7 @@ data class HandoverReportResponse(
     val confirmedByCustomer: Boolean,
     val photos: List<HandoverPhotoResponse>,
     val createdAt: Instant,
+    val revision: Int = 1,
+    val correctionReason: String? = null,
+    val correctionImages: List<com.nhom15.datxebackend.support.SupportImage> = emptyList(),
 )

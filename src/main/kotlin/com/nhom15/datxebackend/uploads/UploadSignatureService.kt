@@ -17,6 +17,11 @@ class UploadSignatureService(
         val timestamp = Instant.now().epochSecond
         var allowedFormats: List<String>? = null
         val folder = when (purpose?.uppercase()) {
+            "SUPPORT" -> {
+                if (actor.role !in setOf(Role.CUSTOMER, Role.DRIVER)) throw BadRequestException(message = "Không được tải ảnh hỗ trợ")
+                allowedFormats = CHAT_IMAGE_FORMATS
+                CloudinaryFolders.forActor(actor)
+            }
             null, "DEFAULT" -> CloudinaryFolders.forActor(actor)
             "DRIVER_DOCUMENT" -> {
                 if (actor.role != Role.DRIVER) {

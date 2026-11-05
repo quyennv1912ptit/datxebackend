@@ -28,14 +28,13 @@ class ChatPushListener(
         val data = chatService.loadPushData(event.messageId, event.rideId) ?: return
         val wsEnvelope = WsEnvelope(PayloadType.CHAT_MESSAGE, data.payload)
         val recipient = data.recipient
-        val sentToWebSocket = runCatching { stompChannel.sendIfOnline(recipient, wsEnvelope) }
+        runCatching { stompChannel.sendIfOnline(recipient, wsEnvelope) }
             .onFailure { log.warn("Không gửi được CHAT_MESSAGE qua WebSocket ride={}", event.rideId, it) }
-            .getOrDefault(false)
-        if (!sentToWebSocket) {
-            runCatching {
-                fcmChannel.send(recipient, WsEnvelope(PayloadType.CHAT_MESSAGE, data.fcmPayload))
-            }.onFailure { log.warn("Không gửi được chat FCM ride={}", event.rideId, it) }
-        }
+        // Background sockets may remain subscribed. Always send an OS-visible alert,
+        // sharing the envelope ID so foreground clients can deduplicate both channels.
+        runCatching {
+            fcmChannel.send(recipient, WsEnvelope(PayloadType.CHAT_MESSAGE, data.fcmPayload, wsEnvelope.messageId))
+        }.onFailure { log.warn("Không gửi được chat FCM ride={}", event.rideId, it) }
     }
 
     @Async("chatTaskExecutor")

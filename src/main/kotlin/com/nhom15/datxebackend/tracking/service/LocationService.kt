@@ -31,14 +31,17 @@ class LocationService(
     }
 
     /** Lưu/cập nhật vị trí driver và gia hạn heartbeat. */
-    fun saveDriverLocation(driverId: Long, location: GeoPoint) {
+    fun saveDriverLocation(driverId: Long, location: GeoPoint, sampledAt: java.time.Instant = java.time.Instant.now()) {
         validate(location)
         val id = driverId.toString()
+        // An old GPS sample must not renew dispatch eligibility merely because it was resent.
+        val remainingFreshness = java.time.Duration.between(java.time.Instant.now(), sampledAt.plusSeconds(30))
+        if (remainingFreshness.isNegative || remainingFreshness.isZero) return
         redisTemplate.opsForHash<String, String>().putAll(
             RedisKeys.driverLocation(id),
-            mapOf("lat" to location.lat.toString(), "lng" to location.lng.toString()),
+            mapOf("lat" to location.lat.toString(), "lng" to location.lng.toString(), "sampledAt" to sampledAt.toString()),
         )
-        redisTemplate.opsForValue().set(RedisKeys.driverAlive(id), "1", matchingProperties.driverAliveTtl)
+        redisTemplate.opsForValue().set(RedisKeys.driverAlive(id), "1", minOf(matchingProperties.driverAliveTtl, remainingFreshness))
 
         // Driver đã bật nhận chuyến ở DB nhưng Redis vừa được khởi động lại, hoặc Redis đã
         // tự đặt OFFLINE vì heartbeat trước đó hết hạn. App vẫn gửi vị trí nghĩa là tài xế
@@ -78,6 +81,8 @@ class LocationService(
         if (redisTemplate.hasKey(RedisKeys.driverAlive(id)) != true) return
 
         val location = redisTemplate.opsForHash<String, String>().entries(RedisKeys.driverLocation(id))
+        val sampledAt = runCatching { java.time.Instant.parse(location["sampledAt"]) }.getOrNull() ?: return
+        if (sampledAt.isBefore(java.time.Instant.now().minusSeconds(30))) return
         val lat = location["lat"]?.toDoubleOrNull() ?: return
         val lng = location["lng"]?.toDoubleOrNull() ?: return
         redisTemplate.opsForGeo().add(RedisKeys.GEO_KEY, Point(lng, lat), id)

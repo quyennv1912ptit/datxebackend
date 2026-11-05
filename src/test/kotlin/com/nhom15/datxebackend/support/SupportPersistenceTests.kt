@@ -1,0 +1,107 @@
+package com.nhom15.datxebackend.support
+
+import com.cloudinary.Cloudinary
+import com.nhom15.datxebackend.common.enums.Role
+import com.nhom15.datxebackend.common.exception.*
+import com.nhom15.datxebackend.common.security.AuthUser
+import com.nhom15.datxebackend.ride.repository.RideRepository
+import com.nhom15.datxebackend.uploads.CloudinaryAssetService
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
+import org.mockito.Mockito
+import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.jdbc.datasource.SingleConnectionDataSource
+import java.nio.file.Files
+import java.nio.file.Path
+import java.sql.Connection
+import java.sql.DriverManager
+import java.util.UUID
+
+/** All migrations and writes run inside a unique transactional schema and are rolled back. */
+@EnabledIfEnvironmentVariable(named = "TEST_DB_URL", matches = ".+")
+class SupportPersistenceTests {
+    private lateinit var connection: Connection
+    private lateinit var jdbc: JdbcTemplate
+    private lateinit var service: SupportService
+    private val customer = AuthUser(11, "customer", Role.CUSTOMER, "Khách", null, null, "ACTIVE")
+    private val driver = customer.copy(role = Role.DRIVER)
+    private val admin = customer.copy(id = 3, role = Role.ADMIN)
+
+    @BeforeEach fun setup() {
+        connection = DriverManager.getConnection(System.getenv("TEST_DB_URL"), System.getenv("TEST_DB_USER"), System.getenv("TEST_DB_PASSWORD"))
+        connection.autoCommit = false
+        jdbc = JdbcTemplate(SingleConnectionDataSource(connection, true))
+        val schema = "support_test_" + UUID.randomUUID().toString().replace("-", "")
+        jdbc.execute("CREATE SCHEMA $schema")
+        jdbc.execute("SET LOCAL search_path TO $schema")
+        Files.list(Path.of("src/main/resources/db/migration")).use { paths ->
+            paths.filter { it.fileName.toString().endsWith(".sql") }.sorted(compareBy { it.fileName.toString().substringBefore("__").drop(1).toInt() }).forEach { jdbc.execute(Files.readString(it)) }
+        }
+        service = SupportService(jdbc, Mockito.mock(RideRepository::class.java), CloudinaryAssetService(Cloudinary(mapOf("cloud_name" to "test-cloud"))))
+    }
+    @AfterEach fun cleanup() { if (::connection.isInitialized) { connection.rollback(); connection.close() } }
+
+    @Test fun `lost-response retries have one persistent receipt and owner role is isolated`() {
+        val request = CreateSupportTicket(UUID.randomUUID(), category = "ACCOUNT", description = "Không cập nhật được hồ sơ")
+        val first = service.create(customer, request)
+        val retry = service.create(customer, request)
+        assertEquals(first.id, retry.id)
+        assertEquals("HT-${first.id}", retry.code)
+        assertEquals(1, service.list(customer, 0).size)
+        assertTrue(service.list(driver, 0).isEmpty())
+        assertThrows(NotFoundException::class.java) { service.detail(driver, first.id) }
+        assertThrows(NotFoundException::class.java) { service.detail(customer.copy(id = 99), first.id) }
+        val reopenedService = SupportService(jdbc, Mockito.mock(RideRepository::class.java), CloudinaryAssetService(Cloudinary(mapOf("cloud_name" to "test-cloud"))))
+        assertEquals(first.id, reopenedService.list(customer, 0).single().id)
+    }
+
+    @Test fun `official admin queue can respond and customer reads persistent resolution`() {
+        val ticket = service.create(driver, CreateSupportTicket(UUID.randomUUID(), category = "OTHER", description = "Tôi cần hỗ trợ về tài khoản"))
+        assertEquals(ticket.id, service.list(admin, 0, "OPEN").single().id)
+        assertThrows(ForbiddenException::class.java) { service.update(driver, ticket.id, UpdateSupportTicket("RESOLVED", "Tự đóng")) }
+        assertThrows(BadRequestException::class.java) { service.update(admin, ticket.id, UpdateSupportTicket("RESOLVED", " ")) }
+        service.update(admin, ticket.id, UpdateSupportTicket("IN_PROGRESS", "Đang kiểm tra"))
+        service.update(admin, ticket.id, UpdateSupportTicket("RESOLVED", "Đã xử lý yêu cầu của bạn"))
+        val refreshed = service.detail(driver, ticket.id)
+        assertEquals("RESOLVED", refreshed.status)
+        assertEquals("Đã xử lý yêu cầu của bạn", refreshed.response)
+        assertTrue(service.list(admin, 0, "OPEN").isEmpty())
+    }
+
+    @Test fun `support image belongs to sender and is retained with receipt`() {
+        val publicId = "app_dat_xe/customer/11/real-photo"
+        val image = SupportImage("https://res.cloudinary.com/test-cloud/image/upload/v1/$publicId.jpg", publicId)
+        val request = CreateSupportTicket(UUID.randomUUID(), category = "OTHER", description = "Ảnh sự cố cần kiểm tra", images = listOf(image))
+        assertEquals(listOf(image), service.create(customer, request).images)
+        assertEquals(listOf(image), service.create(customer, request).images)
+        assertThrows(BadRequestException::class.java) { service.create(driver, request.copy(clientRequestId = UUID.randomUUID())) }
+    }
+
+    @Test fun `cash receipt survives a fresh service and repeated confirmation preserves paidAt`() {
+        jdbc.update("INSERT INTO customers(id,firebase_uid) VALUES (11,'test-customer')")
+        jdbc.update("INSERT INTO drivers(id,firebase_uid,phone_number) VALUES (11,'test-driver','0900000000')")
+        jdbc.update("INSERT INTO vehicles(id,customer_id,plate_number) VALUES (2,11,'TEST-01')")
+        jdbc.update("INSERT INTO rides(id,customer_id,driver_id,vehicle_id,type,status,fare_estimate,payment_method,transmission,vehicle_type) VALUES (12,11,11,2,'INSTANT','COMPLETED',30000,'CASH','AUTO','CAR')")
+        jdbc.update("INSERT INTO payments(ride_id,customer_id,driver_id,amount,method,status) VALUES (12,11,11,30000,'CASH','PENDING')")
+        val rides = Mockito.mock(RideRepository::class.java)
+        val ride = com.nhom15.datxebackend.ride.entity.Ride(customerId = 11, driverId = 11, vehicleId = 2,
+            type = com.nhom15.datxebackend.ride.entity.RideType.INSTANT, pickup = com.nhom15.datxebackend.common.domain.Location(), dropoff = com.nhom15.datxebackend.common.domain.Location(),
+            vehicleType = com.nhom15.datxebackend.common.enums.VehicleType.CAR, transmission = com.nhom15.datxebackend.common.enums.Transmission.AUTO, fareEstimate = 30000, paymentMethod = com.nhom15.datxebackend.common.enums.PaymentMethod.CASH).apply { id = 12; status = com.nhom15.datxebackend.common.enums.RideStatus.COMPLETED }
+        Mockito.`when`(rides.findByIdAndDriverId(12, driver.id)).thenReturn(ride)
+        val drivers = Mockito.mock(com.nhom15.datxebackend.driver.repository.DriverRepository::class.java)
+        val payments = com.nhom15.datxebackend.payment.service.PaymentService(jdbc, drivers, rides)
+        val paid = payments.confirmCashReceived(driver, 12)
+        assertEquals("PAID", paid.status)
+        assertNotNull(paid.paidAt)
+        jdbc.update("UPDATE payments SET paid_at='2026-11-01T01:02:03Z' WHERE ride_id=12")
+        val retried = payments.confirmCashReceived(driver, 12)
+        assertEquals(java.time.Instant.parse("2026-11-01T01:02:03Z"), retried.paidAt)
+        val freshService = com.nhom15.datxebackend.payment.service.PaymentService(jdbc, drivers, rides)
+        assertEquals("PAID", freshService.getRidePayment(12)?.status)
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM payments WHERE ride_id=12", Int::class.java))
+        assertThrows(ForbiddenException::class.java) { payments.confirmCashReceived(customer, 12) }
+    }
+}

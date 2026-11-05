@@ -5,7 +5,7 @@ import java.time.Instant
 
 data class DriverLocation(
     val location: GeoPoint,
-    val timestamp: Instant = Instant.now(),
+    val timestamp: Instant,
     val accuracy: Double? = null,
     val receivedAt: Instant? = null,
 )

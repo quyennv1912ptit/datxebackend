@@ -6,6 +6,7 @@ import com.nhom15.datxebackend.ride.entity.HandoverPhoto
 import com.nhom15.datxebackend.ride.entity.VehicleHandoverReport
 
 internal object HandoverResponseMapper {
+    private val json = tools.jackson.module.kotlin.jacksonObjectMapper()
     fun toResponse(report: VehicleHandoverReport, photos: List<HandoverPhoto>): HandoverReportResponse {
         val photoResponses = mutableListOf<HandoverPhotoResponse>()
         for (photo in photos) {
@@ -20,6 +21,9 @@ internal object HandoverResponseMapper {
             confirmedByCustomer = report.confirmedByCustomer,
             photos = photoResponses,
             createdAt = report.createdAt,
+            revision = report.revision,
+            correctionReason = report.correctionReason,
+            correctionImages = json.readValue(report.evidenceJson, Array<com.nhom15.datxebackend.support.SupportImage>::class.java).toList(),
         )
     }
 }

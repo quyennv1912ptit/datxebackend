@@ -15,7 +15,6 @@ import com.nhom15.datxebackend.ride.dto.request.RideListFilter
 import com.nhom15.datxebackend.ride.dto.response.HandoverReportResponse
 import com.nhom15.datxebackend.ride.dto.response.RideCustomerResponse
 import com.nhom15.datxebackend.ride.dto.response.RideDetailResponse
-import com.nhom15.datxebackend.ride.dto.response.RideDriverResponse
 import com.nhom15.datxebackend.ride.dto.response.RideStatusHistoryResponse
 import com.nhom15.datxebackend.ride.dto.response.RideSummaryResponse
 import com.nhom15.datxebackend.ride.entity.HandoverPhase
@@ -38,6 +37,7 @@ class RideQueryService(
     private val chatService: ChatService,
     private val customerRepository: CustomerRepository,
     private val driverRepository: DriverRepository,
+    private val paymentService: com.nhom15.datxebackend.payment.service.PaymentService,
 ) {
     @Transactional(readOnly = true)
     fun getActiveRide(actor: AuthUser): RideDetailResponse? {
@@ -102,13 +102,7 @@ class RideQueryService(
 
         val driver = ride.driverId?.let { driverId ->
             driverRepository.findById(driverId).orElse(null)?.let {
-                RideDriverResponse(
-                    id = it.id,
-                    fullName = it.fullName,
-                    phoneNumber = it.phoneNumber,
-                    avatarUrl = it.avatarUrl,
-                    averageRating = it.averageRating,
-                )
+                RideResponseMapper.driver(it)
             }
         }
 
@@ -116,6 +110,7 @@ class RideQueryService(
             chatService.unreadCount(rideId, actor)
         } else 0L
         return RideResponseMapper.detail(ride, historyResponses, reportResponses, unreadChatCount, customer, driver)
+            .copy(payment = paymentService.getRidePayment(rideId))
     }
 
     @Transactional(readOnly = true)

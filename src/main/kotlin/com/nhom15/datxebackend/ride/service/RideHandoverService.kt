@@ -184,7 +184,7 @@ class RideHandoverService(
         if (rideId <= 0) {
             throw BadRequestException(message = "rideId phải lớn hơn 0")
         }
-        val ride = rideRepository.findById(rideId).orElseThrow {
+        val ride = rideRepository.findByIdForUpdate(rideId).orElseThrow {
             NotFoundException(ErrorCode.RIDE_NOT_FOUND)
         }
         if (ride.customerId != actor.id) {
@@ -205,6 +205,7 @@ class RideHandoverService(
                 "Chưa có biên bản nhận xe của chuyến này",
             )
 
+        requireConfirmable(report, request.revision)
         // Xác nhận lặp chỉ đọc lại, tránh lưu và đổi updatedAt của biên bản.
         if (!report.confirmedByCustomer) {
             report.confirmedByCustomer = true
@@ -223,7 +224,7 @@ class RideHandoverService(
             throw ForbiddenException(message = "Chỉ khách hàng sở hữu chuyến mới có thể xác nhận trả xe")
         }
         if (rideId <= 0) throw BadRequestException(message = "rideId phải lớn hơn 0")
-        val ride = rideRepository.findById(rideId).orElseThrow { NotFoundException(ErrorCode.RIDE_NOT_FOUND) }
+        val ride = rideRepository.findByIdForUpdate(rideId).orElseThrow { NotFoundException(ErrorCode.RIDE_NOT_FOUND) }
         if (ride.customerId != actor.id) throw NotFoundException(ErrorCode.RIDE_NOT_FOUND)
         if (ride.status !in setOf(RideStatus.VEHICLE_RETURNED, RideStatus.COMPLETED)) {
             throw ConflictException(
@@ -234,6 +235,7 @@ class RideHandoverService(
         if (!request.confirmed) throw BadRequestException(message = "Khách hàng phải xác nhận biên bản trả xe")
         val report = reportRepository.findByRideIdAndPhase(rideId, HandoverPhase.DROPOFF)
             ?: throw BadRequestException(ErrorCode.HANDOVER_REPORT_REQUIRED, "Chưa có biên bản trả xe của chuyến này")
+        requireConfirmable(report, request.revision)
         // Chỉ báo realtime khi xác nhận thực sự đổi trạng thái, tránh dội thông báo khi khách bấm lại.
         if (!report.confirmedByCustomer) {
             report.confirmedByCustomer = true
@@ -247,7 +249,7 @@ class RideHandoverService(
     }
 
     // Caller trực tiếp không đi qua @Valid của controller, nên service vẫn kiểm tra.
-    private fun validateRequest(request: CreateHandoverReportRequest, phase: HandoverPhase, rideId: Long) {
+    internal fun validateRequest(request: CreateHandoverReportRequest, phase: HandoverPhase, rideId: Long) {
         val handoverName = if (phase == HandoverPhase.PICKUP) "nhận xe" else "trả xe"
         if (request.odometer < 0) {
             throw BadRequestException(message = "Số km $handoverName không được âm")
@@ -285,4 +287,8 @@ class RideHandoverService(
         }
     }
 
+    private fun requireConfirmable(report: VehicleHandoverReport, revision: Int) {
+        if (report.revision != revision || report.correctionReason != null)
+            throw ConflictException(message = "Biên bản đã thay đổi hoặc đang chờ điều chỉnh. Hãy tải lại phiên bản mới.")
+    }
 }

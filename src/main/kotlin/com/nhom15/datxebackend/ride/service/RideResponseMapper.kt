@@ -1,6 +1,7 @@
 package com.nhom15.datxebackend.ride.service
 
 import com.nhom15.datxebackend.common.enums.RideStatus
+import com.nhom15.datxebackend.driver.entity.Driver
 import com.nhom15.datxebackend.pricing.model.RideQuote
 import com.nhom15.datxebackend.ride.dto.response.CreateRideResponse
 import com.nhom15.datxebackend.ride.dto.response.EstimateRideResponse
@@ -17,6 +18,20 @@ import com.nhom15.datxebackend.ride.entity.RideActorRole
 import com.nhom15.datxebackend.ride.entity.RideStatusHistory
 
 internal object RideResponseMapper {
+    // Only the assigned driver's public identification/contact fields belong in a ride.
+    // Do not expose identity numbers, document photos, banking or Firebase identifiers.
+    fun driver(driver: Driver) = RideDriverResponse(
+        id = driver.id,
+        fullName = driver.fullName,
+        phoneNumber = driver.phoneNumber,
+        avatarUrl = driver.avatarUrl,
+        averageRating = driver.averageRating,
+        yearsOfExperience = driver.yearsOfExperience?.takeIf { it >= 0 },
+        licenseClass = driver.licenseClass,
+        licenseVerified = driver.licenseVerified == true,
+        profileVerified = driver.verificationStatus == "APPROVED",
+    )
+
     private fun savedRoute(ride: Ride): com.nhom15.datxebackend.routing.model.SavedRideRoute? {
         val polyline = ride.routePolyline ?: return null
         return com.nhom15.datxebackend.routing.model.SavedRideRoute("ride:${ride.id}", polyline, ride.routeDistanceMeters ?: return null, ride.routeDurationSeconds ?: return null, ride.routeProvider ?: "unknown", ride.vehicleType, ride.routeLimitation)

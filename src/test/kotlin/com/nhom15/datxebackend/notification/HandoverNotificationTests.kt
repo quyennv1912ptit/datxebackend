@@ -90,7 +90,7 @@ class HandoverNotificationTests {
             eventPublisher,
             Mockito.mock(CloudinaryAssetService::class.java),
         )
-        Mockito.`when`(rideRepository.findById(rideId)).thenReturn(Optional.of(ride))
+        Mockito.`when`(rideRepository.findByIdForUpdate(rideId)).thenReturn(Optional.of(ride))
         Mockito.`when`(reportRepository.findByRideIdAndPhase(rideId, HandoverPhase.DROPOFF)).thenReturn(report)
         Mockito.`when`(photoRepository.findAllByReportIdOrderByCreatedAtAsc(report.id)).thenReturn(emptyList())
 

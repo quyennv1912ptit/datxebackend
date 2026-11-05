@@ -30,7 +30,7 @@ class CoordinateController(
 
         val now = java.time.Instant.now()
         if (!com.nhom15.datxebackend.tracking.dto.DriverLocationPolicy.valid(currentLocation, now)) return
-        locationService.saveDriverLocation(driver.id, currentLocation.location)
+        locationService.saveDriverLocation(driver.id, currentLocation.location, currentLocation.timestamp)
 
         val activeRide = activeRideQueryPort.findActiveRideForDriver(driver.id) ?: return
 

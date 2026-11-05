@@ -325,3 +325,13 @@ Mapbox fallback tắt fuzzy matching, tối đa 10 kết quả, kiểm tra các 
 Test hồi quy: `gradlew test --tests '*PlaceSearchTests'`. Test nhà cung cấp thật chỉ chạy khi `RUN_MAPBOX_LIVE_TEST=true` và `MAPBOX_LIVE_TEST_TOKEN` được cung cấp qua môi trường; mặc định không gọi dịch vụ bên ngoài.
 
 Tài liệu nhà cung cấp: https://help.goong.io/kb/rest-api-v2/autocomplete-rest-api-v2/autocomplete-v2/ và https://help.goong.io/kb/rest-api-v2/place-detail-rest-api-v2/place-detail-place-detail-v2/.
+
+## Hỗ trợ và điều chỉnh biên bản (F03–F08)
+
+Chạy migration `V14__support_and_handover_revisions.sql` bằng Flyway trước khi cập nhật mobile. `POST/GET /api/support/tickets` cho CUSTOMER/DRIVER tạo và xem yêu cầu của mình, có UUID chống gửi trùng, chuyến liên quan, tối đa 5 ảnh upload ký bằng `purpose=SUPPORT` và mã `HT-{id}`. ADMIN dùng `GET /api/admin/support/tickets` (filter `status`, `page`) và `PATCH /api/admin/support/tickets/{id}` với `{status, response}` để tiếp nhận/trả lời. Trạng thái: `OPEN`, `IN_PROGRESS`, `RESOLVED`; khi đóng phải có phản hồi. Có thể vận hành API qua Swagger bằng tài khoản ADMIN; chưa có dashboard nhân viên hoặc luồng SOS.
+
+Customer gửi `POST /api/customer/rides/{id}/handover/{pickup|dropoff}/corrections` với `{revision, reason, images}`. Driver gửi lại bằng `POST /api/driver/rides/{id}/handover/{pickup|dropoff}/revisions` với `{revision, report}`. GET cùng đường `revisions` ở mỗi role trả snapshot các bản cũ. API confirm nhận `{confirmed:true, revision}` và từ chối bản cũ/đang yêu cầu sửa. Chỉ được điều chỉnh trước xác nhận và đúng bước bàn giao; khóa ride và optimistic version bảo vệ request đồng thời.
+
+Chi tiết chuyến nay trả `payment: {amount, method, status, paidAt} | null` từ bảng thanh toán. Xác nhận tiền mặt vẫn idempotent, không ghi lại `paidAt` khi retry. GPS bắt buộc có timestamp đo thật; server chỉ gia hạn khả dụng ghép chuyến trong phần thời gian mẫu còn mới (tối đa 30 giây), không dùng thời điểm nhận frame để thay timestamp GPS.
+
+Test `SupportPersistenceTests` chạy PostgreSQL thật khi đặt `TEST_DB_URL`, `TEST_DB_USER`, `TEST_DB_PASSWORD`; tạo schema ngẫu nhiên trong transaction, chạy toàn bộ migration rồi rollback sau mỗi test. Test không ghi vào schema dữ liệu đang dùng. Test biên bản/GPS: `HandoverCorrectionTests`, `LocationFreshnessTests`, `DriverLocationPolicyTests`.

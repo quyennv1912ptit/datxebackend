@@ -95,6 +95,11 @@ class PaymentService(
         )
     }
 
+    @Transactional(readOnly = true)
+    fun getRidePayment(rideId: Long): com.nhom15.datxebackend.payment.dto.RidePaymentResponse? = loadPayment(rideId)?.let {
+        com.nhom15.datxebackend.payment.dto.RidePaymentResponse(it.amount, it.method, it.status, it.paidAt)
+    }
+
     private fun loadPayment(rideId: Long): PaymentRow? = jdbcTemplate.query(
         "SELECT amount, method, status, paid_at FROM payments WHERE ride_id = ?",
         { row, _ ->

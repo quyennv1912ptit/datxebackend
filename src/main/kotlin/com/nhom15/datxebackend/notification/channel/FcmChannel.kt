@@ -3,9 +3,7 @@ package com.nhom15.datxebackend.notification.channel
 
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingException
-import com.google.firebase.messaging.Message
 import com.google.firebase.messaging.MessagingErrorCode
-import com.google.firebase.messaging.AndroidConfig
 import com.nhom15.datxebackend.common.websocket.WsEnvelope
 import com.nhom15.datxebackend.notification.api.Recipient
 import com.nhom15.datxebackend.notification.token.DeviceTokenRepository
@@ -49,15 +47,7 @@ class FcmChannel(
 
         for (token in tokens) {
             try {
-                val message = Message.builder()
-                    .setToken(token.fcmToken)
-                    .putData("payload", payload)
-                    .setAndroidConfig(
-                        AndroidConfig.builder()
-                            .setPriority(AndroidConfig.Priority.HIGH)
-                            .build(),
-                    )
-                    .build()
+                val message = FcmMessageFactory.build(token.fcmToken, to, envelope, payload) ?: continue
 
                 messaging.send(message)
                 sentAtLeastOne = true

@@ -22,6 +22,10 @@ data class RideDriverResponse(
     val phoneNumber: String,
     val avatarUrl: String?,
     val averageRating: Double? = null,
+    val yearsOfExperience: Int? = null,
+    val licenseClass: String? = null,
+    val licenseVerified: Boolean = false,
+    val profileVerified: Boolean = false,
 )
 
 data class RideDetailResponse(
@@ -59,4 +63,5 @@ data class RideDetailResponse(
     val transmission: Transmission? = null,
     val driver: RideDriverResponse? = null,
     val customer: RideCustomerResponse? = null,
+    val payment: com.nhom15.datxebackend.payment.dto.RidePaymentResponse? = null,
 )

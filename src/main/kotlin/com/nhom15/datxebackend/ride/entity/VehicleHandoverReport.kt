@@ -37,4 +37,17 @@ class VehicleHandoverReport(
 
     @Column(name = "confirmed_by_customer", nullable = false)
     var confirmedByCustomer: Boolean = false,
-) : BaseEntity()
+) : BaseEntity() {
+    @Column(nullable = false)
+    var revision: Int = 1
+
+    @Column(name = "correction_reason", columnDefinition = "text")
+    var correctionReason: String? = null
+
+    @Column(name = "evidence_json", columnDefinition = "text", nullable = false)
+    var evidenceJson: String = "[]"
+
+    @jakarta.persistence.Version
+    @Column(name = "row_version", nullable = false)
+    var rowVersion: Long = 0
+}
