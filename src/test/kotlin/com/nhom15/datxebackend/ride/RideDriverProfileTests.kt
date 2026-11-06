@@ -3,11 +3,13 @@ package com.nhom15.datxebackend.ride
 import com.nhom15.datxebackend.chat.service.ChatService
 import com.nhom15.datxebackend.common.domain.Location
 import com.nhom15.datxebackend.common.enums.Role
+import com.nhom15.datxebackend.common.enums.RideStatus
 import com.nhom15.datxebackend.common.enums.PaymentMethod
 import com.nhom15.datxebackend.common.enums.Transmission
 import com.nhom15.datxebackend.common.enums.VehicleType
 import com.nhom15.datxebackend.common.exception.ForbiddenException
 import com.nhom15.datxebackend.common.security.AuthUser
+import com.nhom15.datxebackend.customer.entity.Customer
 import com.nhom15.datxebackend.customer.repository.CustomerRepository
 import com.nhom15.datxebackend.driver.entity.Driver
 import com.nhom15.datxebackend.driver.repository.DriverRepository
@@ -90,6 +92,23 @@ class RideDriverProfileTests {
         Mockito.clearInvocations(drivers)
         assertNull(service.getDetail(owner, 12).driver)
         Mockito.verifyNoInteractions(drivers)
+    }
+
+    @Test
+    fun `customer email is exposed only to the driver assigned to an active trip`() {
+        val ride = ride().apply { status = RideStatus.DRIVER_ASSIGNED }
+        val customer = Customer().apply { email = "customer@example.test" }
+        Mockito.`when`(rides.findById(12)).thenReturn(Optional.of(ride))
+        Mockito.`when`(customers.findById(11)).thenReturn(Optional.of(customer))
+        val assignedDriver = owner.copy(id = 7, role = Role.DRIVER)
+
+        assertEquals(customer.email, service.getDetail(assignedDriver, 12).customer?.email)
+        assertNull(service.getDetail(owner, 12).customer?.email)
+        assertThrows(ForbiddenException::class.java) { service.getDetail(assignedDriver.copy(id = 8), 12) }
+        for (status in listOf(RideStatus.SEARCHING, RideStatus.COMPLETED)) {
+            ride.status = status
+            assertNull(service.getDetail(assignedDriver, 12).customer?.email)
+        }
     }
 
     @Test

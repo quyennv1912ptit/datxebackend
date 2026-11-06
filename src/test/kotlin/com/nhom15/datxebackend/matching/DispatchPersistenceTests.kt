@@ -43,6 +43,27 @@ class DispatchPersistenceTests {
     }
     @AfterEach fun cleanup() { if(::connection.isInitialized) { jdbc.execute("DROP SCHEMA $schema CASCADE");connection.close() } }
 
+    @Test fun `redispatch releases the assignment without reusing the previous driver's thread`() {
+        jdbc.update("UPDATE rides SET driver_id=7, status='DRIVER_ASSIGNED' WHERE id=42")
+        jdbc.update("INSERT INTO conversations(ride_id,customer_id,driver_id) VALUES(42,1,7)")
+        val firstThread = jdbc.queryForObject("SELECT id FROM conversations WHERE ride_id=42 AND driver_id=7", Long::class.java)!!
+        jdbc.update(
+            "INSERT INTO chat_messages(conversation_id,sender_role,sender_driver_id,content) VALUES(?,'DRIVER',7,?)",
+            firstThread, "Tôi đang đến điểm đón",
+        )
+
+        assertEquals(1, jdbc.update("UPDATE rides SET driver_id=NULL, status='SEARCHING' WHERE id=42"))
+        jdbc.update("UPDATE rides SET driver_id=8, status='DRIVER_ASSIGNED' WHERE id=42")
+        jdbc.update("INSERT INTO conversations(ride_id,customer_id,driver_id) VALUES(42,1,8) ON CONFLICT (ride_id,driver_id) DO NOTHING")
+
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM conversations WHERE ride_id=42", Int::class.java))
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM chat_messages WHERE conversation_id=?", Int::class.java, firstThread))
+        assertEquals(0, jdbc.queryForObject(
+            "SELECT count(*) FROM chat_messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.ride_id=42 AND c.driver_id=8",
+            Int::class.java,
+        ))
+    }
+
     @Test fun `queue schedule during execution survives stale acknowledgement and stale retry`() {
         val queue=RideDispatchOutboxRepository(jdbc)
         queue.enqueue(42);val old=queue.claimDue().single()

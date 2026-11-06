@@ -31,6 +31,12 @@ class SequentialDispatchTests {
         status=status,
     ).apply { id=42; searchExpiresAt=Instant.now().plusSeconds(90) }
 
+    @Test fun `offer defaults allow twenty-five seconds on the client and preserve the server grace`() {
+        val properties = MatchingProperties()
+        assertEquals(27L, properties.offerTimeout.seconds)
+        assertEquals(25L, properties.offerTimeout.minus(properties.clientOfferGrace).seconds)
+    }
+
     @Test fun `empty scans expand radius then rescan max radius until absolute deadline`() {
         val rides=mock(RideRepository::class.java)
         val redis=mock(StringRedisTemplate::class.java, RETURNS_DEEP_STUBS)

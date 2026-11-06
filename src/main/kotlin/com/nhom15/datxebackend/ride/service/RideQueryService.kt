@@ -97,6 +97,9 @@ class RideQueryService(
                 phoneNumber = it.phoneNumber,
                 avatarUrl = it.avatarUrl,
                 averageRating = it.averageRating,
+                email = it.email.takeIf {
+                    actor.role == Role.DRIVER && ride.status != RideStatus.SEARCHING && ride.status in ACTIVE_RIDE_STATUSES
+                },
             )
         }
 
@@ -107,7 +110,7 @@ class RideQueryService(
         }
 
         val unreadChatCount = if (actor.role == Role.CUSTOMER || actor.role == Role.DRIVER) {
-            chatService.unreadCount(rideId, actor)
+            chatService.unreadCount(ride, actor)
         } else 0L
         return RideResponseMapper.detail(ride, historyResponses, reportResponses, unreadChatCount, customer, driver)
             .copy(payment = paymentService.getRidePayment(rideId))

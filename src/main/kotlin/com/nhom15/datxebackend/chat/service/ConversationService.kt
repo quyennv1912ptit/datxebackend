@@ -27,13 +27,12 @@ class ConversationService(
         jdbcTemplate.update(
             """INSERT INTO conversations (ride_id, customer_id, driver_id, created_at, updated_at)
                VALUES (?, ?, ?, now(), now())
-               ON CONFLICT (ride_id) DO UPDATE
-               SET customer_id = EXCLUDED.customer_id, driver_id = EXCLUDED.driver_id, updated_at = now()""".trimIndent(),
+               ON CONFLICT (ride_id, driver_id) DO NOTHING""".trimIndent(),
             rideId,
             customerId,
             driverId,
         )
-        return conversationRepository.findByRideId(rideId)
+        return conversationRepository.findByRideIdAndDriverId(rideId, driverId)
             ?: throw IllegalStateException("Không đọc lại được conversation vừa upsert cho ride $rideId")
     }
 
@@ -54,8 +53,11 @@ class ConversationService(
             Role.ADMIN -> false
         }
         if (!isParticipant) throw NotFoundException(ErrorCode.RIDE_NOT_FOUND)
-        return ParticipantConversationContext(ride, conversationRepository.findByRideId(rideId))
+        return ParticipantConversationContext(ride, forAssignment(ride))
     }
+
+    fun forAssignment(ride: Ride): Conversation? =
+        ride.driverId?.let { conversationRepository.findByRideIdAndDriverId(ride.id, it) }
 
     fun requireOpen(context: ParticipantConversationContext): Conversation {
         val conversation = context.conversation

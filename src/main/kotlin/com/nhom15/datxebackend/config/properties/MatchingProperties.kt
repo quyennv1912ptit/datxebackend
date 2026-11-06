@@ -14,7 +14,7 @@ data class MatchingProperties(
     val ignoredPenalty: Double = 20.0,
     val ignoredWindow: Duration = Duration.ofMinutes(30),
     val rankingMode: DriverRanking = DriverRanking.DISTANCE,
-    val offerTimeout: Duration = Duration.ofSeconds(12),
+    val offerTimeout: Duration = Duration.ofSeconds(27),
     val searchTimeout: Duration = Duration.ofSeconds(90),
     val rescanDelay: Duration = Duration.ofSeconds(3),
     val offerGrace: Duration = Duration.ofSeconds(1),

@@ -14,6 +14,7 @@ data class RideCustomerResponse(
     val phoneNumber: String?,
     val avatarUrl: String?,
     val averageRating: Double? = null,
+    val email: String? = null,
 )
 
 data class RideDriverResponse(

@@ -95,7 +95,7 @@ class ChatServiceTests {
         }
         Mockito.`when`(rideRepository.findById(rideId)).thenReturn(Optional.of(ride))
         Mockito.`when`(rideRepository.findByIdForUpdate(rideId)).thenReturn(Optional.of(ride))
-        Mockito.`when`(conversationRepository.findByRideId(rideId)).thenReturn(conversation)
+        Mockito.`when`(conversationRepository.findByRideIdAndDriverId(rideId, conversation.driverId)).thenReturn(conversation)
     }
 
     @Test

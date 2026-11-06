@@ -23,6 +23,7 @@ import com.nhom15.datxebackend.common.exception.ForbiddenException
 import com.nhom15.datxebackend.common.exception.NotFoundException
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.notification.api.Recipient
+import com.nhom15.datxebackend.ride.entity.Ride
 import com.nhom15.datxebackend.ride.repository.RideRepository
 import com.nhom15.datxebackend.uploads.CloudinaryAssetService
 import org.springframework.data.domain.PageRequest
@@ -120,8 +121,9 @@ class ChatService(
     ): MessagePage {
         if (actor.role != Role.ADMIN) throw ForbiddenException(message = "Chỉ admin được xem hội thoại")
         if (rideId <= 0) throw BadRequestException(message = "rideId phải lớn hơn 0")
-        rideRepository.findById(rideId).orElseThrow { NotFoundException(ErrorCode.RIDE_NOT_FOUND) }
-        val conversation = conversationRepository.findByRideId(rideId)
+        val ride = rideRepository.findById(rideId).orElseThrow { NotFoundException(ErrorCode.RIDE_NOT_FOUND) }
+        val conversation = (if (ride.driverId != null) conversationService.forAssignment(ride)
+            else conversationRepository.findFirstByRideIdOrderByIdDesc(rideId))
             ?: return MessagePage(rideId, emptyList(), false)
         return readPage(rideId, conversation.id, beforeId, afterId, size)
     }
@@ -145,9 +147,9 @@ class ChatService(
     }
 
     @Transactional(readOnly = true)
-    fun unreadCount(rideId: Long, actor: AuthUser): Long {
+    fun unreadCount(ride: Ride, actor: AuthUser): Long {
         if (actor.role == Role.ADMIN) return 0
-        val conversation = conversationRepository.findByRideId(rideId) ?: return 0
+        val conversation = conversationService.forAssignment(ride) ?: return 0
         return messageRepository.countUnreadFor(conversation.id, actor.role.name)
     }
 
@@ -155,6 +157,7 @@ class ChatService(
     fun loadPushData(messageId: Long, rideId: Long): ChatPushData? {
         val message = messageRepository.findById(messageId).orElse(null) ?: return null
         val conversation = conversationRepository.findById(message.conversationId).orElse(null) ?: return null
+        if (conversation.rideId != rideId || rideRepository.findById(rideId).orElse(null)?.driverId != conversation.driverId) return null
         val currentRecipient = when (message.senderRole) {
             Role.CUSTOMER.name -> Recipient.Driver(conversation.driverId)
             Role.DRIVER.name -> Recipient.Customer(conversation.customerId)
