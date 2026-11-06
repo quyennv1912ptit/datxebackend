@@ -1,5 +1,6 @@
 package com.nhom15.datxebackend.driver.repository
 
+import com.nhom15.datxebackend.common.enums.DriverStatus
 import com.nhom15.datxebackend.driver.entity.Driver
 import jakarta.persistence.LockModeType
 import org.springframework.data.jpa.repository.JpaRepository
@@ -9,6 +10,7 @@ import org.springframework.data.repository.query.Param
 import java.util.Optional
 
 interface DriverRepository : JpaRepository<Driver, Long> {
+    fun findByStatus(status: DriverStatus): List<Driver>
     fun findByFirebaseUid(firebaseUid: String): Optional<Driver>
     fun existsByFirebaseUid(firebaseUid: String): Boolean
     fun findByPhoneNumber(phoneNumber: String): Optional<Driver>

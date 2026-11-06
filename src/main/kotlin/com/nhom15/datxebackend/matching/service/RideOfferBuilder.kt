@@ -1,5 +1,6 @@
 package com.nhom15.datxebackend.matching.service
 
+import com.nhom15.datxebackend.config.properties.MatchingProperties
 import com.nhom15.datxebackend.common.domain.GeoPoint
 import com.nhom15.datxebackend.common.exception.NotFoundException
 import com.nhom15.datxebackend.common.redis.RedisKeys
@@ -22,9 +23,10 @@ import kotlin.math.roundToLong
 class RideOfferBuilder(
     private val rideRepository: RideRepository,
     private val redisTemplate: StringRedisTemplate,
-    private val customerRepository: CustomerRepository
+    private val customerRepository: CustomerRepository,
+    private val properties: MatchingProperties,
 ) {
-    fun build(rideId: Long, driverId: Long, expiresAt: Long): RideOfferPayload {
+    fun build(rideId: Long, driverId: Long, expiresAt: Long, offerId: String = ""): RideOfferPayload {
         val ride = rideRepository.findByIdOrNull(rideId)
             ?: throw NotFoundException(message = "Không tìm thấy chuyến $rideId")
 
@@ -56,6 +58,9 @@ class RideOfferBuilder(
         return RideOfferPayload(
             rideId = ride.id,
             expiresAt = expiresAt,
+            offerId = offerId,
+            serverTime = System.currentTimeMillis(),
+            clientExpiresAt = expiresAt - properties.clientOfferGrace.toMillis(),
             pickup = ride.pickup.toDto(),
             dropoff = ride.dropoff.toDto(),
             distanceToPickupKm = round1(toPickupKm),

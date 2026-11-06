@@ -1,5 +1,7 @@
 package com.nhom15.datxebackend.common.exception
 
+import org.springframework.dao.DataAccessResourceFailureException
+import org.springframework.transaction.CannotCreateTransactionException
 import com.nhom15.datxebackend.common.api.ApiResponse
 import com.nhom15.datxebackend.common.api.ErrorCode
 import jakarta.validation.ConstraintViolationException
@@ -8,6 +10,7 @@ import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.http.converter.HttpMessageNotReadableException
 import org.springframework.orm.ObjectOptimisticLockingFailureException
+import org.springframework.dao.DataAccessException
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.security.access.AccessDeniedException
 import org.springframework.web.ErrorResponse
@@ -22,11 +25,21 @@ class GlobalExceptionHandler {
 
     private val log = LoggerFactory.getLogger(javaClass)
 
+    @ExceptionHandler(
+        DataAccessResourceFailureException::class,
+        CannotCreateTransactionException::class,
+        DataAccessException::class,
+    )
+    fun handleResourceUnavailable(e: Exception): ResponseEntity<ApiResponse<Nothing>> {
+        log.error("Database/cache unavailable", e)
+        return respond(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.SYSTEM_UNAVAILABLE)
+    }
+
     @ExceptionHandler(AppException::class)
     fun handleApp(e: AppException): ResponseEntity<ApiResponse<Nothing>> {
         if (e.httpStatus.is5xxServerError) log.error("AppException: {}", e.message, e)
         else log.warn("AppException [{}]: {}", e.errorCode, e.message)
-        return respond(e.httpStatus, e.errorCode, e.message ?: e.errorCode.defaultMessage)
+        return respond(e.httpStatus, e.errorCode, e.message ?: e.errorCode.defaultMessage, details = e.details)
     }
 
     @ExceptionHandler(MethodArgumentNotValidException::class)

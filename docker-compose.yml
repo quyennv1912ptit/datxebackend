@@ -44,7 +44,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    env_file: .env
+    env_file: ..env
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
       DB_USERNAME: ${POSTGRES_USER}

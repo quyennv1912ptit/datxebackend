@@ -46,6 +46,7 @@ class AccountCleanupOutboxWorker(
     private fun clearDriverPresence(driverId: Long) {
         val id = driverId.toString()
         redisTemplate.opsForGeo().remove(RedisKeys.GEO_KEY, id)
+        redisTemplate.opsForZSet().remove(RedisKeys.DRIVERS_LASTSEEN, id)
         redisTemplate.delete(
             listOf(
                 RedisKeys.driverAlive(id),

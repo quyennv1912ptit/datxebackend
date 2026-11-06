@@ -3,6 +3,8 @@ package com.nhom15.datxebackend.driver.controller
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.common.security.CurrentUser
 import com.nhom15.datxebackend.common.api.ApiResponse
+import com.nhom15.datxebackend.driver.dto.DriverIdentityResponse
+import com.nhom15.datxebackend.driver.dto.UpdateDriverIdentityRequest
 import com.nhom15.datxebackend.driver.dto.DriverProfileResponse
 import com.nhom15.datxebackend.driver.dto.UpdateDriverProfileRequest
 import com.nhom15.datxebackend.driver.service.DriverProfileService
@@ -30,4 +32,10 @@ class DriverProfileController(
         @Valid @RequestBody request: UpdateDriverProfileRequest,
     ): ApiResponse<DriverProfileResponse> =
         ApiResponse.ok(driverProfileService.update(user.id, request))
+
+    @PutMapping("/profile/identity")
+    fun updateIdentity(
+        @CurrentUser user: AuthUser,
+        @Valid @RequestBody request: UpdateDriverIdentityRequest,
+    ): ApiResponse<DriverIdentityResponse> = ApiResponse.ok(driverProfileService.updateIdentity(user.id, request))
 }

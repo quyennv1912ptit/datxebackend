@@ -48,6 +48,18 @@ class FcmMessageFactoryTests {
     }
 
     @Test
+    fun `offer close pushes have a meaningful title and are pushed when the socket is absent`() {
+        val expired = FcmMessageFactory.build("token", Recipient.Driver(7), WsEnvelope(PayloadType.OFFER_EXPIRED, mapOf("rideId" to 12)), "{}", now)
+        val cancelled = FcmMessageFactory.build("token", Recipient.Driver(7), WsEnvelope(PayloadType.OFFER_CANCELLED, mapOf("rideId" to 12)), "{}", now)
+        val expiredJson = JsonParser.parseString(GsonFactory.getDefaultInstance().toString(expired)).asJsonObject
+        val cancelledJson = JsonParser.parseString(GsonFactory.getDefaultInstance().toString(cancelled)).asJsonObject
+        assertEquals("Lời mời nhận chuyến đã hết hạn", expiredJson["notification"].asJsonObject["title"].asString)
+        assertEquals("Lời mời nhận chuyến đã hủy", cancelledJson["notification"].asJsonObject["title"].asString)
+        assertEquals(DeliveryPolicy.PUSH_ALSO, PayloadType.OFFER_EXPIRED.policy)
+        assertEquals(DeliveryPolicy.PUSH_ALSO, PayloadType.OFFER_CANCELLED.policy)
+    }
+
+    @Test
     fun `chat uses generic lock screen text and visible events are pushed despite a socket`() {
         val message = FcmMessageFactory.build("token", Recipient.Customer(9), WsEnvelope(PayloadType.CHAT_MESSAGE, mapOf("content" to "private address")), "{}", now)
         val json = JsonParser.parseString(GsonFactory.getDefaultInstance().toString(message)).asJsonObject

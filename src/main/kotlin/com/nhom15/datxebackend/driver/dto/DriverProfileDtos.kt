@@ -2,6 +2,7 @@ package com.nhom15.datxebackend.driver.dto
 
 import com.fasterxml.jackson.annotation.JsonAlias
 import com.fasterxml.jackson.annotation.JsonProperty
+import jakarta.validation.constraints.Email
 import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Size
@@ -39,3 +40,15 @@ data class DriverProfileResponse(
     @JsonProperty("license_verified") val licenseVerified: Boolean,
     @JsonProperty("license_review_status") val licenseReviewStatus: String,
 )
+
+
+data class UpdateDriverIdentityRequest(
+    @field:NotBlank
+    @field:Size(max = 120)
+    val fullName: String,
+    @field:Email
+    @field:Size(max = 255)
+    val email: String? = null,
+)
+
+data class DriverIdentityResponse(val fullName: String?, val email: String?)

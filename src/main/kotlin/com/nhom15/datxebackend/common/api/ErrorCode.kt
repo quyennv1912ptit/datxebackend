@@ -5,6 +5,7 @@ import org.springframework.http.HttpStatus
 enum class ErrorCode(val httpStatus: HttpStatus, val defaultMessage: String) {
 
     // ---- Chung ----
+    SYSTEM_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "Dịch vụ tạm thời không khả dụng, vui lòng thử lại"),
     INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "Lỗi hệ thống, vui lòng thử lại sau"),
     VALIDATION_ERROR(HttpStatus.BAD_REQUEST, "Dữ liệu không hợp lệ"),
     BAD_REQUEST(HttpStatus.BAD_REQUEST, "Yêu cầu không hợp lệ"),
@@ -37,6 +38,9 @@ enum class ErrorCode(val httpStatus: HttpStatus, val defaultMessage: String) {
     RIDE_NOT_FOUND(HttpStatus.NOT_FOUND, "Không tìm thấy chuyến đi"),
     INVALID_RIDE_STATE(HttpStatus.CONFLICT, "Trạng thái chuyến đi không cho phép thao tác này"),
     RIDE_ALREADY_ASSIGNED(HttpStatus.CONFLICT, "Chuyến đã có tài xế nhận"),
+    ACTIVE_RIDE_EXISTS(HttpStatus.CONFLICT, "Bạn đang có một chuyến chưa hoàn tất"),
+    RIDE_NO_LONGER_AVAILABLE(HttpStatus.CONFLICT, "Chuyến không còn khả dụng"),
+    OUT_OF_SERVICE_AREA(HttpStatus.UNPROCESSABLE_ENTITY, "Điểm đón hoặc điểm trả nằm ngoài vùng phục vụ"),
     RIDE_ALREADY_ACTIVE(HttpStatus.CONFLICT, "Bạn đang có một chuyến chưa hoàn tất"),
     RIDE_CANNOT_CANCEL(HttpStatus.CONFLICT, "Không thể hủy chuyến ở trạng thái hiện tại"),
     HANDOVER_REPORT_REQUIRED(HttpStatus.BAD_REQUEST, "Cần hoàn tất biên bản bàn giao xe"),
@@ -46,7 +50,7 @@ enum class ErrorCode(val httpStatus: HttpStatus, val defaultMessage: String) {
 
     // ---- Matching ----
     OFFER_NOT_FOUND(HttpStatus.NOT_FOUND, "Không tìm thấy lời mời nhận chuyến"),
-    OFFER_EXPIRED(HttpStatus.CONFLICT, "Lời mời nhận chuyến đã hết hạn"),
+    OFFER_EXPIRED(HttpStatus.GONE, "Lời mời nhận chuyến đã hết hạn"),
     DRIVER_NOT_AVAILABLE(HttpStatus.CONFLICT, "Tài xế không sẵn sàng nhận chuyến"),
 
     // ---- Realtime ----

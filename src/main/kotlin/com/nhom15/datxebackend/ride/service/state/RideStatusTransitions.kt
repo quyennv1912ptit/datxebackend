@@ -7,7 +7,7 @@ private val TRANSITIONS: Map<RideStatus, Set<RideStatus>> = mapOf(
         RideStatus.SEARCHING, RideStatus.CANCELLED, RideStatus.EXPIRED
     ),
     RideStatus.SEARCHING to setOf(
-        RideStatus.DRIVER_ASSIGNED, RideStatus.NO_DRIVER_FOUND, RideStatus.CANCELLED
+        RideStatus.DRIVER_ASSIGNED, RideStatus.NO_DRIVER_FOUND, RideStatus.CANCELLED, RideStatus.FAILED_SYSTEM
     ),
     RideStatus.DRIVER_ASSIGNED to setOf(
         RideStatus.DRIVER_ARRIVING, RideStatus.CANCELLED

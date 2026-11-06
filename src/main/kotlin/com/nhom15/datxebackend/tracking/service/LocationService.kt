@@ -1,5 +1,11 @@
 package com.nhom15.datxebackend.tracking.service
 
+import com.nhom15.datxebackend.matching.service.DispatchScripts
+import com.nhom15.datxebackend.ride.repository.ACTIVE_RIDE_STATUSES
+import com.nhom15.datxebackend.ride.repository.DispatchOfferRepository
+import com.nhom15.datxebackend.ride.repository.RideRepository
+import java.time.Duration
+import java.time.Instant
 import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.common.domain.GeoPoint
 import com.nhom15.datxebackend.common.enums.DriverStatus
@@ -14,6 +20,7 @@ import org.springframework.data.geo.Metrics
 import org.springframework.data.geo.Point
 import org.springframework.data.redis.connection.RedisGeoCommands
 import org.springframework.data.redis.core.StringRedisTemplate
+import org.springframework.data.redis.core.script.DefaultRedisScript
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
 
@@ -22,26 +29,54 @@ class LocationService(
     private val redisTemplate: StringRedisTemplate,
     private val driverRepository: DriverRepository,
     private val matchingProperties: MatchingProperties,
+    private val offers: DispatchOfferRepository,
+    private val rides: RideRepository,
 ) : NearbyDriverQueryPort {
 
     private val log = LoggerFactory.getLogger(javaClass)
 
     companion object {
         private const val MAX_LAT = 85.05112878
+
+        private val REMOVE_IF_STALE = DefaultRedisScript<Long>(
+            """
+            local removed = 0
+            for i = 1, #ARGV do
+                if redis.call('EXISTS', KEYS[i + 1]) == 0 then
+                    removed = removed + redis.call('ZREM', KEYS[1], ARGV[i])
+                end
+            end
+            return removed
+            """.trimIndent(),
+            Long::class.java,
+        )
     }
 
     /** Lưu/cập nhật vị trí driver và gia hạn heartbeat. */
-    fun saveDriverLocation(driverId: Long, location: GeoPoint, sampledAt: java.time.Instant = java.time.Instant.now()) {
+    fun saveDriverLocation(driverId: Long, location: GeoPoint, sampledAt: Instant = Instant.now()): Boolean {
         validate(location)
         val id = driverId.toString()
         // An old GPS sample must not renew dispatch eligibility merely because it was resent.
-        val remainingFreshness = java.time.Duration.between(java.time.Instant.now(), sampledAt.plusSeconds(30))
-        if (remainingFreshness.isNegative || remainingFreshness.isZero) return
+        val remainingFreshness = Duration.between(Instant.now(), sampledAt.plus(matchingProperties.driverAliveTtl))
+        if (remainingFreshness.isNegative || remainingFreshness.isZero) return false
         redisTemplate.opsForHash<String, String>().putAll(
             RedisKeys.driverLocation(id),
             mapOf("lat" to location.lat.toString(), "lng" to location.lng.toString(), "sampledAt" to sampledAt.toString()),
         )
         redisTemplate.opsForValue().set(RedisKeys.driverAlive(id), "1", minOf(matchingProperties.driverAliveTtl, remainingFreshness))
+
+        redisTemplate.opsForZSet().add(RedisKeys.DRIVERS_LASTSEEN, id, sampledAt.toEpochMilli().toDouble())
+        // PostgreSQL prevents a Redis restart from making an assigned driver available again.
+        val activeRide = rides.findFirstByDriverIdAndStatusInOrderByCreatedAtDesc(driverId,
+            ACTIVE_RIDE_STATUSES)
+        if (activeRide != null) {
+            redisTemplate.opsForGeo().remove(RedisKeys.GEO_KEY, id)
+            return true
+        }
+        if (offers.driverHasOffer(driverId)) {
+            redisTemplate.opsForGeo().remove(RedisKeys.GEO_KEY, id)
+            return true
+        }
 
         // Driver đã bật nhận chuyến ở DB nhưng Redis vừa được khởi động lại, hoặc Redis đã
         // tự đặt OFFLINE vì heartbeat trước đó hết hạn. App vẫn gửi vị trí nghĩa là tài xế
@@ -64,10 +99,12 @@ class LocationService(
 
         if (unavailable || redisTemplate.opsForValue().get(statusKey) != "ONLINE") {
             redisTemplate.opsForGeo().remove(RedisKeys.GEO_KEY, id)
-            return
+            return true
         }
 
-        redisTemplate.opsForGeo().add(RedisKeys.GEO_KEY, Point(location.lng, location.lat), id)
+        redisTemplate.execute(DispatchScripts.ADD_AVAILABLE,
+            listOf(RedisKeys.GEO_KEY), id, location.lng.toString(), location.lat.toString())
+        return true
     }
 
     /** Đưa tài xế đã bật nhận chuyến vào GEO khi đã có vị trí và heartbeat mới. */
@@ -81,11 +118,12 @@ class LocationService(
         if (redisTemplate.hasKey(RedisKeys.driverAlive(id)) != true) return
 
         val location = redisTemplate.opsForHash<String, String>().entries(RedisKeys.driverLocation(id))
-        val sampledAt = runCatching { java.time.Instant.parse(location["sampledAt"]) }.getOrNull() ?: return
-        if (sampledAt.isBefore(java.time.Instant.now().minusSeconds(30))) return
+        val sampledAt = runCatching { Instant.parse(location["sampledAt"]) }.getOrNull() ?: return
+        if (sampledAt.isBefore(Instant.now().minus(matchingProperties.driverAliveTtl))) return
         val lat = location["lat"]?.toDoubleOrNull() ?: return
         val lng = location["lng"]?.toDoubleOrNull() ?: return
-        redisTemplate.opsForGeo().add(RedisKeys.GEO_KEY, Point(lng, lat), id)
+        redisTemplate.execute(DispatchScripts.ADD_AVAILABLE,
+            listOf(RedisKeys.GEO_KEY), id, lng.toString(), lat.toString())
     }
 
     /** Xóa driver khỏi tập khả dụng (tắt app, nhận chuyến, đang trong chuyến...). */
@@ -124,8 +162,11 @@ class LocationService(
             .multiGet(found.map { (id, _) -> RedisKeys.driverAlive(id.toString()) })
             ?: return emptyList()
 
+        val statuses = redisTemplate.opsForValue().multiGet(found.map { (id, _) -> RedisKeys.driverStatus(id.toString()) }).orEmpty()
+        val stale = found.filterIndexed { i, _ -> alive.getOrNull(i) == null }.map { it.first.toString() }
+        removeIfStillStale(stale)
         return found
-            .filterIndexed { i, _ -> alive.getOrNull(i) != null }
+            .filterIndexed { i, _ -> alive.getOrNull(i) != null && statuses.getOrNull(i) == "ONLINE" }
             .map { (id, result) ->
                 NearbyDriver(
                     driverId = id,
@@ -136,7 +177,7 @@ class LocationService(
     }
 
     /** Dọn driver hết heartbeat khỏi GEO set. Cần @EnableScheduling. */
-    @Scheduled(fixedDelay = 60_000)
+    @Scheduled(fixedDelayString = "\${app.matching.cleanup-interval-ms:10000}")
     fun cleanupStaleDrivers() {
         val ids = redisTemplate.opsForZSet().range(RedisKeys.GEO_KEY, 0, -1)?.toList() ?: return
         if (ids.isEmpty()) return
@@ -145,8 +186,19 @@ class LocationService(
             .multiGet(ids.map { RedisKeys.driverAlive(it) })
             ?: return
         val stale = ids.filterIndexed { i, _ -> alive.getOrNull(i) == null }
-        if (stale.isNotEmpty()) {
-            redisTemplate.opsForGeo().remove(RedisKeys.GEO_KEY, *stale.toTypedArray())
+        removeIfStillStale(stale)
+    }
+
+    private fun removeIfStillStale(ids: List<String>) {
+        if (ids.isEmpty()) return
+        // A heartbeat can arrive between multiGet and cleanup. Recheck under
+        // the same Redis operation that removes the GEO entry.
+        for (batch in ids.chunked(100)) {
+            redisTemplate.execute(
+                REMOVE_IF_STALE,
+                listOf(RedisKeys.GEO_KEY) + batch.map(RedisKeys::driverAlive),
+                *batch.toTypedArray(),
+            )
         }
     }
 

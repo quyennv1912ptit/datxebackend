@@ -7,6 +7,7 @@ import com.nhom15.datxebackend.common.exception.ConflictException
 internal object RideTransitionRules {
 
     private val transitions = mapOf(
+        RideTransitionEvent.SYSTEM_FAILURE to RideStatus.FAILED_SYSTEM,
         RideTransitionEvent.START_SEARCH to RideStatus.SEARCHING,
         RideTransitionEvent.ASSIGN_DRIVER to RideStatus.DRIVER_ASSIGNED,
         RideTransitionEvent.DRIVER_START_ARRIVING to RideStatus.DRIVER_ARRIVING,

@@ -50,6 +50,7 @@ class HandoverNotificationTests {
         notifications,
         Mockito.mock(DriverRepository::class.java),
         Mockito.mock(RideRepository::class.java),
+        Mockito.mock(org.springframework.data.redis.core.StringRedisTemplate::class.java),
     )
 
     @Test

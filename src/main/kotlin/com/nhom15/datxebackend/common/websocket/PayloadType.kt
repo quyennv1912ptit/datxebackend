@@ -3,8 +3,9 @@ package com.nhom15.datxebackend.common.websocket
 enum class PayloadType(val policy: DeliveryPolicy) {
     // A subscribed socket does not prove the mobile app is foreground/visible.
     RIDE_OFFER(DeliveryPolicy.PUSH_ALSO),
-    OFFER_EXPIRED(DeliveryPolicy.WS_ONLY),
-    OFFER_CANCELLED(DeliveryPolicy.WS_ONLY),
+    // A backgrounded driver has no live socket; the closure must still reach the phone.
+    OFFER_EXPIRED(DeliveryPolicy.PUSH_ALSO),
+    OFFER_CANCELLED(DeliveryPolicy.PUSH_ALSO),
     RIDE_UPDATED(DeliveryPolicy.PUSH_ALSO),
     HANDOVER_CONFIRMED(DeliveryPolicy.PUSH_ALSO),
     RIDE_CANCELLED(DeliveryPolicy.PUSH_ALSO),

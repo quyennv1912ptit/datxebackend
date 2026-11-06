@@ -111,6 +111,13 @@ interface RideRepository : JpaRepository<Ride, Long> {
 
     fun findAllByStatusIn(statuses: Collection<RideStatus>, pageable: Pageable): Page<Ride>
 
+    @Modifying
+    @Query(value = "UPDATE rides SET status=:next WHERE id=:rideId AND status=:expected AND version=:version", nativeQuery = true)
+    fun compareAndSetStatus(@Param("rideId") rideId: Long, @Param("expected") expected: String,
+        @Param("next") next: String, @Param("version") version: Long): Int
+
+    fun findByStatus(status: RideStatus): List<Ride>
+
     // =========================================================================
     // 4. NHÓM HÀM CẬP NHẬT TRẠNG THÁI (Ngăn Race Condition)
     // =========================================================================
@@ -127,6 +134,9 @@ interface RideRepository : JpaRepository<Ride, Long> {
             version = version + 1
         where id = :rideId
           and status = 'SEARCHING'
+          and search_expires_at > CURRENT_TIMESTAMP
+          and exists (select 1 from ride_dispatch_offers o where o.ride_id=rides.id
+              and o.driver_id=:driverId and o.status='OFFERED' and o.expires_at>CURRENT_TIMESTAMP)
         """,
         nativeQuery = true,
     )

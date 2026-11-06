@@ -1,5 +1,11 @@
 package com.nhom15.datxebackend.driver.service
 
+import com.nhom15.datxebackend.auth.security.AuthenticatedUserCache
+import com.nhom15.datxebackend.common.exception.AppException
+import com.nhom15.datxebackend.driver.dto.DriverIdentityResponse
+import com.nhom15.datxebackend.driver.dto.UpdateDriverIdentityRequest
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import com.nhom15.datxebackend.driver.entity.Driver
 import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.common.api.ErrorCode
@@ -13,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional
 @Service
 class DriverProfileService(
     private val driverRepository: DriverRepository,
+    private val authenticatedUserCache: AuthenticatedUserCache,
 ) {
     @Transactional(readOnly = true)
     fun get(driverId: Long): DriverProfileResponse = response(getDriver(driverId))
@@ -32,6 +39,23 @@ class DriverProfileService(
         }
         val saved = driverRepository.save(driver)
         return response(saved)
+    }
+
+    @Transactional
+    fun updateIdentity(driverId: Long, request: UpdateDriverIdentityRequest): DriverIdentityResponse {
+        val driver = driverRepository.findByIdForUpdate(driverId).orElseThrow {
+            NotFoundException(ErrorCode.USER_NOT_FOUND)
+        }
+        if (driver.deletedAt != null) throw AppException(ErrorCode.ACCOUNT_LOCKED)
+        driver.fullName = request.fullName.trim()
+        driver.email = request.email?.trim()?.takeIf(String::isNotEmpty)
+        val firebaseUid = driver.firebaseUid
+        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+            override fun afterCommit() {
+                authenticatedUserCache.evict(firebaseUid)
+            }
+        })
+        return DriverIdentityResponse(driver.fullName, driver.email)
     }
 
     @Transactional

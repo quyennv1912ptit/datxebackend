@@ -1,5 +1,7 @@
 package com.nhom15.datxebackend.ride.service
 
+import com.nhom15.datxebackend.common.exception.AppException
+import java.time.Duration
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.domain.GeoPoint
 import com.nhom15.datxebackend.common.enums.Role
@@ -76,11 +78,9 @@ class RideService(
             }
         }
 
-        if (rideRepository.existsByCustomerIdAndStatusIn(actor.id, ACTIVE_RIDE_STATUSES)) {
-            throw ConflictException(
-                ErrorCode.RIDE_ALREADY_ACTIVE,
-                "Bạn đang có một chuyến chưa hoàn tất",
-            )
+        rideRepository.findFirstByCustomerIdAndStatusInOrderByCreatedAtDesc(actor.id, ACTIVE_RIDE_STATUSES)?.let { active ->
+            throw AppException(ErrorCode.ACTIVE_RIDE_EXISTS,
+                details = mapOf("rideId" to active.id.toString()))
         }
 
         val vehicle = findOwnedVehicle(request.vehicleId, actor.id)
@@ -198,6 +198,6 @@ class RideService(
 
     private companion object {
         const val RIDE_QUOTE_LIMIT = 30L
-        val RIDE_QUOTE_WINDOW = java.time.Duration.ofMinutes(1)
+        val RIDE_QUOTE_WINDOW = Duration.ofMinutes(1)
     }
 }

@@ -6,6 +6,8 @@ import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.common.enums.DriverStatus
 import com.nhom15.datxebackend.common.enums.Transmission
 import com.nhom15.datxebackend.common.enums.VehicleType
+import com.nhom15.datxebackend.config.properties.DriverRanking
+import com.nhom15.datxebackend.config.properties.MatchingProperties
 import com.nhom15.datxebackend.matching.dto.RankedDriverDTO
 import com.nhom15.datxebackend.common.port.NearbyDriver
 import com.nhom15.datxebackend.driver.repository.DriverSkillRepository
@@ -15,6 +17,7 @@ import java.time.LocalDate
 class DriverSelectionService(
     private val driverRepository: DriverRepository,
     private val driverSkillRepository: DriverSkillRepository,
+    private val properties: MatchingProperties,
 ) {
     fun filterAndRankDrivers(
         nearbyDrivers: List<NearbyDriver>,
@@ -47,7 +50,12 @@ class DriverSelectionService(
                     score = calculateScore(driver, nearby.distanceKm, radiusKm)
                 )
             }
-            .sortedByDescending { it.score }
+            .let { drivers ->
+                // The standard flow asks the nearest eligible driver first. The score
+                // mode remains available for experiments through configuration.
+                if (properties.rankingMode == DriverRanking.DISTANCE) drivers.sortedBy { it.distance }
+                else drivers.sortedByDescending { it.score }
+            }
     }
 
     fun isEligible(driver: Driver, requiredVehicleType: VehicleType, requiredTransmission: Transmission): Boolean {

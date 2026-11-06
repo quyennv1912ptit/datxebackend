@@ -33,7 +33,8 @@ class RideLifecycleEventListener(
                     rideId = event.rideId,
                     event = RideTransitionEvent.NO_DRIVER_FOUND,
                     actor = SYSTEM_RIDE_ACTOR,
-                    note = "Không còn tài xế phù hợp để nhận chuyến",
+                    note = "Hết thời gian tìm tài xế phù hợp",
+                    expectedSearchGeneration = ride.redispatchCount,
                 ),
             )
         } catch (exception: ConflictException) {

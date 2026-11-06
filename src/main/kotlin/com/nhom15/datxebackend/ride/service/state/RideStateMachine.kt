@@ -1,5 +1,10 @@
 package com.nhom15.datxebackend.ride.service.state
 
+import com.nhom15.datxebackend.common.enums.DriverStatus
+import com.nhom15.datxebackend.config.properties.MatchingProperties
+import com.nhom15.datxebackend.driver.repository.DriverRepository
+import com.nhom15.datxebackend.ride.repository.DispatchOfferRepository
+import com.nhom15.datxebackend.ride.repository.RideDispatchOutboxRepository
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.chat.service.ConversationService
 import com.nhom15.datxebackend.common.domain.Money
@@ -34,6 +39,10 @@ class RideStateMachine(
     private val eventPublisher: EventPublisher,
     private val reportRepository: VehicleHandoverReportRepository,
     private val conversationService: ConversationService,
+    private val matching: MatchingProperties,
+    private val dispatchOutbox: RideDispatchOutboxRepository,
+    private val dispatchOffers: DispatchOfferRepository,
+    private val drivers: DriverRepository,
 ) {
 
     private val assignedDriverEvents = setOf(
@@ -49,6 +58,8 @@ class RideStateMachine(
     private val systemEvents = setOf(
         RideTransitionEvent.NO_DRIVER_FOUND,
         RideTransitionEvent.EXPIRE,
+        RideTransitionEvent.REDISPATCH,
+        RideTransitionEvent.SYSTEM_FAILURE,
     )
 
     @Transactional
@@ -62,12 +73,39 @@ class RideStateMachine(
         val ride = findRide(command.rideId)
         authorize(ride, command.event, command.actor)
 
+        if (command.expectedSearchGeneration != null && ride.redispatchCount != command.expectedSearchGeneration) {
+            throw ConflictException(ErrorCode.INVALID_RIDE_STATE, "Job thuộc vòng tìm tài xế cũ")
+        }
+        if (command.event == RideTransitionEvent.NO_DRIVER_FOUND &&
+            (ride.searchExpiresAt == null || ride.searchExpiresAt!!.isAfter(Instant.now()))) {
+            throw ConflictException(ErrorCode.INVALID_RIDE_STATE, "Chưa hết thời gian tìm tài xế")
+        }
         val previousStatus = ride.status
-        val nextStatus = RideTransitionRules.resolve(previousStatus, command.event)
+        val oldDriver = ride.driverId
+        val retryDispatch = (command.event == RideTransitionEvent.CANCEL && command.actor.role == Role.DRIVER ||
+            command.event == RideTransitionEvent.REDISPATCH) && previousStatus in setOf(RideStatus.DRIVER_ASSIGNED, RideStatus.DRIVER_ARRIVING)
+        val nextStatus = if (retryDispatch) {
+            if (ride.redispatchCount < matching.maxRedispatch) RideStatus.SEARCHING else RideStatus.NO_DRIVER_FOUND
+        } else RideTransitionRules.resolve(previousStatus, command.event)
 
         validateHandover(ride.id, command.event)
+        if (rideRepository.compareAndSetStatus(ride.id, previousStatus.name, nextStatus.name, ride.version) != 1) {
+            throw ConflictException(ErrorCode.INVALID_RIDE_STATE)
+        }
+        if (nextStatus == RideStatus.SEARCHING) {
+            ride.searchExpiresAt = Instant.now().plus(matching.searchTimeout)
+            if (retryDispatch) {
+                ride.redispatchCount++
+                ride.lastRedispatchReason = command.cancelReason?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: command.note?.trim()?.takeIf { it.isNotEmpty() }
+                ride.lastRedispatchAt = Instant.now()
+                ride.lastRedispatchDriverId = oldDriver
+                ride.driverId = null
+                ride.acceptedAt = null
+            }
+        }
 
-        if (command.event == RideTransitionEvent.CANCEL) {
+        if (command.event == RideTransitionEvent.CANCEL && !retryDispatch) {
             val reason = command.cancelReason?.trim()
             if (reason.isNullOrEmpty() || reason.length > 255) {
                 throw BadRequestException(message = "Lý do hủy chuyến phải có nội dung và không vượt quá 255 ký tự")
@@ -87,13 +125,26 @@ class RideStateMachine(
 
         ride.status = nextStatus
         rideRepository.saveAndFlush(ride)
+        if (nextStatus == RideStatus.SEARCHING) dispatchOutbox.schedule(ride.id)
+        if (nextStatus.terminal || retryDispatch) {
+            dispatchOffers.closeRide(ride.id)
+            oldDriver?.let { driverId ->
+                drivers.findByIdForUpdate(driverId).orElse(null)?.let { driver ->
+                    if (driver.status == DriverStatus.BUSY) {
+                        driver.status = DriverStatus.ONLINE
+                        drivers.save(driver)
+                    }
+                }
+            }
+        }
         recordHistory(ride, previousStatus, nextStatus, command.actor.userId, command.note, command.actor.persistedRole)
         publishStatusChanged(
             ride = ride,
             from = previousStatus,
             to = nextStatus,
             actorRole = command.actor.persistedRole,
-            reason = command.cancelReason?.trim(),
+            reason = if (retryDispatch && nextStatus == RideStatus.SEARCHING) "Đang tìm tài xế khác" else command.cancelReason?.trim(),
+            eventDriverId = if (retryDispatch) oldDriver else ride.driverId,
         )
 
         if (nextStatus == RideStatus.COMPLETED) {
@@ -139,6 +190,11 @@ class RideStateMachine(
         if (updatedRows == 0) return null
 
         val ride = findRide(rideId)
+        val driver = drivers.findByIdForUpdate(driverId).orElseThrow { NotFoundException(ErrorCode.USER_NOT_FOUND) }
+        if (driver.status != DriverStatus.ONLINE) throw ConflictException(ErrorCode.DRIVER_NOT_AVAILABLE)
+        driver.status = DriverStatus.BUSY
+        drivers.save(driver)
+        dispatchOffers.outstanding(rideId)?.let { dispatchOffers.close(it.offerId, "ACCEPTED") }
         conversationService.upsert(ride.id, ride.customerId, driverId)
         recordHistory(
             ride = ride,
@@ -181,6 +237,13 @@ class RideStateMachine(
             )
         }
 
+        if (rideRepository.compareAndSetStatus(ride.id, previousStatus.name, RideStatus.DRIVER_ASSIGNED.name, ride.version) != 1) {
+            throw ConflictException(ErrorCode.INVALID_RIDE_STATE)
+        }
+        drivers.findByIdForUpdate(driverId).orElseThrow { NotFoundException(ErrorCode.USER_NOT_FOUND) }.let { driver ->
+            driver.status = DriverStatus.BUSY
+            drivers.save(driver)
+        }
         ride.driverId = driverId
         ride.status = RideStatus.DRIVER_ASSIGNED
         ride.acceptedAt = Instant.now()
@@ -316,6 +379,7 @@ class RideStateMachine(
         to: RideStatus,
         actorRole: RideActorRole?,
         reason: String? = null,
+        eventDriverId: Long? = ride.driverId,
     ) {
         val eventActor = when (actorRole) {
             RideActorRole.CUSTOMER -> ActorRole.USER
@@ -327,7 +391,7 @@ class RideStateMachine(
             RideStatusChanged(
                 rideId = ride.id,
                 customerId = ride.customerId,
-                driverId = ride.driverId,
+                driverId = eventDriverId,
                 from = from,
                 to = to,
                 actor = eventActor,

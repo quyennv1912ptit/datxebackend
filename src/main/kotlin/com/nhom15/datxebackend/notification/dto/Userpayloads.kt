@@ -12,7 +12,9 @@ data class DriverBrief(
 
 data class RideAssignedPayload(
     override val rideId: Long,
-    val driver: DriverBrief
+    val driver: DriverBrief,
+    val licensePlate: String? = null,
+    val etaToPickupMin: Int? = null,
 ) : NotificationPayload {
     override val type: PayloadType get() = PayloadType.RIDE_ASSIGNED
 }

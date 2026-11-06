@@ -1,5 +1,7 @@
 package com.nhom15.datxebackend.matching.controller
 
+import com.nhom15.datxebackend.common.api.ErrorCode
+import com.nhom15.datxebackend.common.exception.AppException
 import com.nhom15.datxebackend.common.api.ApiResponse
 import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.common.security.AuthUser
@@ -12,6 +14,8 @@ import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+
+data class OfferResponseRequest(@field:jakarta.validation.constraints.NotBlank val offerId: String)
 
 @RestController
 @RequestMapping("/api/driver/offers")
@@ -28,10 +32,11 @@ class OfferController(
     @PostMapping("/{rideId}/accept")
     fun driverAcceptedOffer(
         @PathVariable rideId: Long,
-        @CurrentUser user: AuthUser
+        @CurrentUser user: AuthUser,
+        @org.springframework.web.bind.annotation.RequestBody @jakarta.validation.Valid response: OfferResponseRequest
     ): ApiResponse<String> {
-        if (!acceptanceService.accept(rideId, user.id)) {
-            throw ConflictException(message = "Lời mời đã hết hạn hoặc chuyến đã giao cho người khác.")
+        if (!acceptanceService.accept(rideId, user.id, response.offerId)) {
+            throw AppException(ErrorCode.OFFER_EXPIRED)
         }
         return ApiResponse.ok("Nhận chuyến thành công")
     }
@@ -39,9 +44,10 @@ class OfferController(
     @PostMapping("/{rideId}/reject")
     fun driverRejectedOffer(
         @PathVariable rideId: Long,
-        @CurrentUser user: AuthUser
+        @CurrentUser user: AuthUser,
+        @org.springframework.web.bind.annotation.RequestBody @jakarta.validation.Valid response: OfferResponseRequest
     ): ApiResponse<Unit> {
-        acceptanceService.reject(rideId, user.id)
+        acceptanceService.reject(rideId, user.id, response.offerId)
         return ApiResponse.ok()
     }
 }

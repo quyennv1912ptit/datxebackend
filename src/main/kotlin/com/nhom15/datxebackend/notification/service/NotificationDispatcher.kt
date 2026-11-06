@@ -1,5 +1,12 @@
 package com.nhom15.datxebackend.notification.service
 
+import com.nhom15.datxebackend.notification.dto.RideOfferPayload
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executor
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
+import org.springframework.beans.factory.annotation.Qualifier
+import org.springframework.beans.factory.annotation.Value
 import com.nhom15.datxebackend.common.websocket.WsEnvelope
 import com.nhom15.datxebackend.common.websocket.DeliveryPolicy.*
 import com.nhom15.datxebackend.notification.api.DeliveryResult
@@ -21,6 +28,10 @@ class NotificationDispatcher(
     private val fcm: FcmChannel,
     private val jdbcTemplate: JdbcTemplate,
     private val objectMapper: ObjectMapper,
+    @Qualifier("notificationExecutor")
+    private val executor: Executor,
+    @Value("\${app.notifications.delivery-timeout-ms:2000}")
+    private val deliveryTimeoutMs: Long,
 ) : NotificationPort {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -38,8 +49,10 @@ class NotificationDispatcher(
             }
 
             PUSH_ALSO -> {
-                val ws = trySend(stomp, to, envelope)
-                val push = trySend(fcm, to, envelope)
+                val wsTask = asyncSend(stomp, to, envelope)
+                val pushTask = asyncSend(fcm, to, envelope)
+                val ws = wsTask.join()
+                val push = pushTask.join()
                 when {
                     ws -> SENT_WS
                     push -> SENT_PUSH
@@ -52,9 +65,19 @@ class NotificationDispatcher(
         return result
     }
 
+    private fun asyncSend(channel: NotificationChannel, to: Recipient, envelope: WsEnvelope<*>): CompletableFuture<Boolean> =
+        try {
+            CompletableFuture.supplyAsync({ trySend(channel, to, envelope) }, executor)
+                .completeOnTimeout(false, deliveryTimeoutMs, TimeUnit.MILLISECONDS)
+        } catch (e: RejectedExecutionException) {
+            log.warn("Notification executor saturated for {}", to)
+            CompletableFuture.completedFuture(false)
+        }
+
     private fun trySend(channel: NotificationChannel, to: Recipient, env: WsEnvelope<*>): Boolean =
         try {
-            channel.isAvailable(to) && channel.send(to, env)
+            val offer = env.payload as? RideOfferPayload
+            (offer == null || offer.expiresAt > System.currentTimeMillis()) && channel.isAvailable(to) && channel.send(to, env)
         } catch (e: Exception) {
             log.warn("channel {} failed for {}: {}", channel::class.simpleName, to, e.message)
             false

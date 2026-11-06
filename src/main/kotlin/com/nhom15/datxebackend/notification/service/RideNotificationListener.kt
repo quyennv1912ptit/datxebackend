@@ -1,5 +1,8 @@
 package com.nhom15.datxebackend.notification.service
 
+import com.nhom15.datxebackend.common.domain.GeoPoint
+import com.nhom15.datxebackend.common.redis.RedisKeys
+import com.nhom15.datxebackend.common.util.GeoUtils.distanceKm
 import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.common.enums.ActorRole
 import com.nhom15.datxebackend.common.enums.RideStatus
@@ -13,7 +16,9 @@ import com.nhom15.datxebackend.ride.event.PickupHandoverConfirmed
 import com.nhom15.datxebackend.ride.repository.RideRepository
 import org.slf4j.LoggerFactory
 import org.springframework.data.repository.findByIdOrNull
+import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.stereotype.Service
+import kotlin.math.ceil
 import org.springframework.transaction.event.TransactionPhase
 import org.springframework.transaction.event.TransactionalEventListener
 
@@ -21,7 +26,8 @@ import org.springframework.transaction.event.TransactionalEventListener
 class RideNotificationListener(
     private val notificationPort: NotificationPort,
     private val driverRepository: DriverRepository,
-    private val rideRepository: RideRepository
+    private val rideRepository: RideRepository,
+    private val redisTemplate: StringRedisTemplate,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -39,8 +45,9 @@ class RideNotificationListener(
 
             RideStatus.COMPLETED -> notifyRideCompleted(event)
             RideStatus.CANCELLED -> notifyRideCancelled(event)
-            RideStatus.NO_DRIVER_FOUND, RideStatus.EXPIRED -> notifyNoDriver(event)
-            RideStatus.PENDING, RideStatus.SEARCHING -> Unit
+            RideStatus.NO_DRIVER_FOUND, RideStatus.EXPIRED, RideStatus.FAILED_SYSTEM -> notifyNoDriver(event)
+            RideStatus.SEARCHING -> if (event.driverId != null) notifyRideUpdated(event)
+            RideStatus.PENDING -> Unit
         }
     }
 
@@ -68,6 +75,7 @@ class RideNotificationListener(
             return
         }
 
+        val ride = rideRepository.findByIdOrNull(event.rideId)
         val payload = RideAssignedPayload(
             rideId = event.rideId,
             driver = DriverBrief(
@@ -76,13 +84,24 @@ class RideNotificationListener(
                 phone = driver.phoneNumber,
                 rating = driver.averageRating ?: 5.0,
                 avatarUrl = driver.avatarUrl
-            )
+            ),
+            licensePlate = ride?.licensePlate,
+            etaToPickupMin = ride?.let { etaMinutes(driverId, it.pickup.geoPoint) },
         )
         notificationPort.send(Recipient.Customer(event.customerId), payload)
     }
 
+    private fun etaMinutes(driverId: Long, pickup: GeoPoint): Int? {
+        val location = redisTemplate.opsForHash<String, String>().entries(RedisKeys.driverLocation(driverId.toString()))
+        val lat = location["lat"]?.toDoubleOrNull() ?: return null
+        val lng = location["lng"]?.toDoubleOrNull() ?: return null
+        val km = distanceKm(GeoPoint(lat, lng), pickup)
+        return ceil(km / AVG_SPEED_KMH * 60).toInt().coerceAtLeast(1)
+    }
+
     private fun notifyRideUpdated(event: RideStatusChanged) {
-        val payload = RideUpdatedPayload(event.rideId, event.to)
+        val count = if (event.to == RideStatus.SEARCHING) rideRepository.findByIdOrNull(event.rideId)?.redispatchCount ?: 0 else 0
+        val payload = RideUpdatedPayload(event.rideId, event.to, count)
         if (event.actor != ActorRole.USER) {
             notificationPort.send(Recipient.Customer(event.customerId), payload)
         }
@@ -119,5 +138,9 @@ class RideNotificationListener(
         if (event.to == RideStatus.EXPIRED) {
             event.driverId?.let { notificationPort.send(Recipient.Driver(it), payload) }
         }
+    }
+
+    private companion object {
+        const val AVG_SPEED_KMH = 25.0
     }
 }

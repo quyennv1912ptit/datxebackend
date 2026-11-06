@@ -6,7 +6,8 @@ import com.nhom15.datxebackend.ride.entity.HandoverPhase
 
 data class RideUpdatedPayload(
     override val rideId: Long,
-    val status: RideStatus
+    val status: RideStatus,
+    val redispatchCount: Int = 0,
 ) : NotificationPayload {
     override val type: PayloadType get() = PayloadType.RIDE_UPDATED
 }

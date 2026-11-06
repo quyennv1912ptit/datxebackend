@@ -7,7 +7,9 @@ object DispatchScripts {
     /** Create the Redis search state once; retrying a durable outbox event must not reset an offer. */
     val INITIALIZE_SEARCH = DefaultRedisScript<Long>(
         """
-        if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
+        local status = redis.call('HGET', KEYS[1], 'status')
+        if redis.call('HGET', KEYS[1], 'generation') == ARGV[8] and (status == 'SEARCHING' or status == 'DRIVER_ASSIGNED') then return 0 end
+        redis.call('DEL', KEYS[1])
         redis.call('HSET', KEYS[1],
             'status', ARGV[1],
             'customerId', ARGV[2],
@@ -15,7 +17,7 @@ object DispatchScripts {
             'vehicleType', ARGV[4],
             'pickupLat', ARGV[5],
             'pickupLng', ARGV[6],
-            'nextRoundIndex', '0')
+            'nextRoundIndex', '0', 'generation', ARGV[8])
         redis.call('EXPIRE', KEYS[1], ARGV[7])
         return 1
         """.trimIndent(),
@@ -29,14 +31,15 @@ object DispatchScripts {
      * KEYS[4] = dispatch:timeouts      (ZSET)
      * ARGV[1] = rideId
      * ARGV[2] = deadline (epoch ms): mốc hết hạn lời mời, cùng số với expiresAt gửi cho app tài xế
-     * ARGV[3] = thời gian sống của khoá tài xế (giây), lấy từ RedisTtl.DRIVER_LOCK
-     * ARGV[4] = thời gian sống của tập tài xế đã thử (giây)
+     * ARGV[3] = offer TTL (milliseconds); ARGV[4] = rejected TTL (seconds)
+     * ARGV[5] = offer UUID; ARGV[6] = current tick lease token
      *
      * Trả về driverId được mời, ROUND_EXHAUSTED nếu hết ứng viên ở vòng hiện tại,
      * WAIT nếu đã có offer đang chờ, hoặc NOT_SEARCHING nếu chuyến không còn được tìm.
      */
     val OFFER_NEXT = DefaultRedisScript<String>(
         """
+        if redis.call('GET', 'ride:' .. ARGV[1] .. ':tick') ~= ARGV[6] then return 'WAIT' end
         if redis.call('HGET', KEYS[1], 'status') ~= 'SEARCHING' then return 'NOT_SEARCHING' end
         if redis.call('HEXISTS', KEYS[1], 'currentDriver') == 1 then return 'WAIT' end
 
@@ -54,12 +57,15 @@ object DispatchScripts {
             local busy     = redis.call('EXISTS', 'driver:' .. d .. ':current_ride')
 
             if rejected == 0 and alive == 1 and status == 'ONLINE' and locked == 0 and busy == 0 then
-                redis.call('SET', 'driver:' .. d .. ':lock', ARGV[1], 'EX', ARGV[3])
+                local claimed = redis.call('SET', 'driver:' .. d .. ':lock', ARGV[1], 'NX', 'PX', ARGV[3])
+                if not claimed then return 'WAIT' end
+                redis.call('SET', 'ride:' .. ARGV[1] .. ':current_offer', d .. ':' .. ARGV[5], 'PX', ARGV[3])
                 redis.call('SET', 'driver:' .. d .. ':status', 'OFFERED')
-                redis.call('HSET', KEYS[1], 'currentDriver', d)
+                redis.call('HSET', KEYS[1], 'currentDriver', d, 'currentOfferId', ARGV[5], 'offerExpiresAt', ARGV[2])
                 redis.call('SADD', KEYS[3], d)
                 redis.call('EXPIRE', KEYS[3], ARGV[4])
-                redis.call('ZADD', KEYS[4], ARGV[2], ARGV[1] .. ':' .. d)
+                redis.call('ZADD', KEYS[4], ARGV[2], ARGV[1] .. ':' .. d .. ':' .. ARGV[5])
+                redis.call('ZREM', 'available_drivers', d)
                 redis.call('HINCRBY', 'driver:' .. d .. ':stats', 'offered', 1)
                 return d
             end
@@ -78,15 +84,14 @@ object DispatchScripts {
         end
 
         local round = tonumber(redis.call('HGET', KEYS[1], 'nextRoundIndex')) or 0
-        if round >= #ARGV
-           or not redis.call('HGET', KEYS[1], 'pickupLat')
+        if not redis.call('HGET', KEYS[1], 'pickupLat')
            or not redis.call('HGET', KEYS[1], 'pickupLng') then
             redis.call('HSET', KEYS[1], 'status', 'NO_DRIVER_FOUND')
             redis.call('HDEL', KEYS[1], 'currentDriver')
             return 'FINISHED'
         end
 
-        return tostring(round) .. ':' .. ARGV[round + 1]
+        return tostring(round) .. ':' .. ARGV[math.min(round + 1, #ARGV)]
         """.trimIndent(),
         String::class.java,
     )
@@ -127,11 +132,14 @@ object DispatchScripts {
     val ACCEPT = DefaultRedisScript<Long>(
         """
         if redis.call('HGET', KEYS[1], 'status') ~= 'SEARCHING'
-           or redis.call('HGET', KEYS[1], 'currentDriver') ~= ARGV[1] then
+           or redis.call('HGET', KEYS[1], 'currentDriver') ~= ARGV[1]
+           or redis.call('HGET', KEYS[1], 'currentOfferId') ~= ARGV[4]
+           or redis.call('GET', 'ride:' .. ARGV[2] .. ':current_offer') ~= ARGV[1] .. ':' .. ARGV[4]
+           or redis.call('GET', 'driver:' .. ARGV[1] .. ':lock') ~= ARGV[2] then
             return 0
         end
 
-        local deadline = redis.call('ZSCORE', KEYS[2], ARGV[2] .. ':' .. ARGV[1])
+        local deadline = redis.call('ZSCORE', KEYS[2], ARGV[2] .. ':' .. ARGV[1] .. ':' .. ARGV[4])
         if not deadline or tonumber(deadline) <= tonumber(ARGV[3]) then
             return 0
         end
@@ -139,11 +147,13 @@ object DispatchScripts {
         redis.call('HSET', KEYS[1], 'status', 'DRIVER_ASSIGNED', 'driverId', ARGV[1], 'acceptedAt', ARGV[3])
         redis.call('HDEL', KEYS[1], 'currentDriver')
 
-        redis.call('SET', 'driver:' .. ARGV[1] .. ':status', 'ON_TRIP')
+        redis.call('SET', 'driver:' .. ARGV[1] .. ':status', 'BUSY')
+        redis.call('ZREM', 'available_drivers', ARGV[1])
+        redis.call('DEL', 'ride:' .. ARGV[2] .. ':current_offer')
         redis.call('SET', 'driver:' .. ARGV[1] .. ':current_ride', ARGV[2])
-        redis.call('DEL', 'driver:' .. ARGV[1] .. ':lock')
+        if redis.call('GET', 'driver:' .. ARGV[1] .. ':lock') == ARGV[2] then redis.call('DEL', 'driver:' .. ARGV[1] .. ':lock') end
 
-        redis.call('ZREM', KEYS[2], ARGV[2] .. ':' .. ARGV[1])
+        redis.call('ZREM', KEYS[2], ARGV[2] .. ':' .. ARGV[1] .. ':' .. ARGV[4])
         redis.call('HINCRBY', 'driver:' .. ARGV[1] .. ':stats', 'accepted', 1)
 
         redis.call('XADD', 'ride:' .. ARGV[2] .. ':events', '*',
@@ -168,8 +178,10 @@ object DispatchScripts {
             redis.call('HSET', KEYS[1], 'status', ARGV[3])
             redis.call('HDEL', KEYS[1], 'driverId', 'acceptedAt')
         end
-        redis.call('ZREM', KEYS[2], ARGV[2] .. ':' .. ARGV[1])
-        redis.call('DEL', 'driver:' .. ARGV[1] .. ':lock')
+        local token = redis.call('HGET', KEYS[1], 'currentOfferId')
+        if token then redis.call('ZREM', KEYS[2], ARGV[2] .. ':' .. ARGV[1] .. ':' .. token) end
+        redis.call('DEL', 'ride:' .. ARGV[2] .. ':current_offer')
+        if redis.call('GET', 'driver:' .. ARGV[1] .. ':lock') == ARGV[2] then redis.call('DEL', 'driver:' .. ARGV[1] .. ':lock') end
         redis.call('HINCRBY', 'driver:' .. ARGV[1] .. ':stats', 'accepted', -1)
         if redis.call('GET', 'driver:' .. ARGV[1] .. ':current_ride') == ARGV[2] then
             redis.call('DEL', 'driver:' .. ARGV[1] .. ':current_ride')
@@ -183,7 +195,8 @@ object DispatchScripts {
             redis.call('DEL', KEYS[4])
         end
 
-        if redis.call('EXISTS', 'driver:' .. ARGV[1] .. ':alive') == 1 then
+        if redis.call('EXISTS', 'driver:' .. ARGV[1] .. ':current_ride') == 1 or redis.call('EXISTS', 'driver:' .. ARGV[1] .. ':lock') == 1 then return 1 end
+        if redis.call('EXISTS', 'driver:alive:' .. ARGV[1]) == 1 and redis.call('EXISTS', 'driver:' .. ARGV[1] .. ':current_ride') == 0 and redis.call('EXISTS', 'driver:' .. ARGV[1] .. ':lock') == 0 then
             redis.call('SET', 'driver:' .. ARGV[1] .. ':status', 'ONLINE')
             local lat = redis.call('HGET', 'driver:' .. ARGV[1] .. ':location', 'lat')
             local lng = redis.call('HGET', 'driver:' .. ARGV[1] .. ':location', 'lng')
@@ -214,20 +227,22 @@ object DispatchScripts {
      */
     val RELEASE = DefaultRedisScript<Long>(
         """
-        redis.call('ZREM', KEYS[2], ARGV[2] .. ':' .. ARGV[1])
-
         if redis.call('HGET', KEYS[1], 'status') ~= 'SEARCHING'
-           or redis.call('HGET', KEYS[1], 'currentDriver') ~= ARGV[1] then
+           or redis.call('HGET', KEYS[1], 'currentDriver') ~= ARGV[1]
+           or redis.call('HGET', KEYS[1], 'currentOfferId') ~= ARGV[5] then
             return 0
         end
 
-        redis.call('HDEL', KEYS[1], 'currentDriver')
+        redis.call('ZREM', KEYS[2], ARGV[2] .. ':' .. ARGV[1] .. ':' .. ARGV[5])
+        redis.call('DEL', 'ride:' .. ARGV[2] .. ':current_offer')
+        redis.call('HDEL', KEYS[1], 'currentDriver', 'currentOfferId', 'offerExpiresAt')
         redis.call('SADD', KEYS[3], ARGV[1])
         redis.call('EXPIRE', KEYS[3], ARGV[4])
-        redis.call('DEL', 'driver:' .. ARGV[1] .. ':lock')
+        if redis.call('GET', 'driver:' .. ARGV[1] .. ':lock') == ARGV[2] then redis.call('DEL', 'driver:' .. ARGV[1] .. ':lock') end
         redis.call('HINCRBY', 'driver:' .. ARGV[1] .. ':stats', ARGV[3], 1)
 
-        if redis.call('EXISTS', 'driver:' .. ARGV[1] .. ':alive') == 1 then
+        if redis.call('EXISTS', 'driver:' .. ARGV[1] .. ':current_ride') == 1 or redis.call('EXISTS', 'driver:' .. ARGV[1] .. ':lock') == 1 then return 1 end
+        if redis.call('EXISTS', 'driver:alive:' .. ARGV[1]) == 1 and redis.call('EXISTS', 'driver:' .. ARGV[1] .. ':current_ride') == 0 and redis.call('EXISTS', 'driver:' .. ARGV[1] .. ':lock') == 0 then
             redis.call('SET', 'driver:' .. ARGV[1] .. ':status', 'ONLINE')
             local lat = redis.call('HGET', 'driver:' .. ARGV[1] .. ':location', 'lat')
             local lng = redis.call('HGET', 'driver:' .. ARGV[1] .. ':location', 'lng')
@@ -270,11 +285,14 @@ object DispatchScripts {
             return ''
         end
 
-        redis.call('HDEL', KEYS[1], 'currentDriver')
-        redis.call('ZREM', KEYS[2], ARGV[1] .. ':' .. d)
-        redis.call('DEL', 'driver:' .. d .. ':lock')
+        local token = redis.call('HGET', KEYS[1], 'currentOfferId')
+        redis.call('HDEL', KEYS[1], 'currentDriver', 'currentOfferId', 'offerExpiresAt')
+        redis.call('DEL', 'ride:' .. ARGV[1] .. ':current_offer')
+        if token then redis.call('ZREM', KEYS[2], ARGV[1] .. ':' .. d .. ':' .. token) end
+        if redis.call('GET', 'driver:' .. d .. ':lock') == ARGV[1] then redis.call('DEL', 'driver:' .. d .. ':lock') end
 
-        if redis.call('EXISTS', 'driver:' .. d .. ':alive') == 1 then
+        if redis.call('EXISTS', 'driver:' .. d .. ':current_ride') == 1 or redis.call('EXISTS', 'driver:' .. d .. ':lock') == 1 then return d end
+        if redis.call('EXISTS', 'driver:alive:' .. d) == 1 and redis.call('EXISTS', 'driver:' .. d .. ':current_ride') == 0 and redis.call('EXISTS', 'driver:' .. d .. ':lock') == 0 then
             redis.call('SET', 'driver:' .. d .. ':status', 'ONLINE')
             local lat = redis.call('HGET', 'driver:' .. d .. ':location', 'lat')
             local lng = redis.call('HGET', 'driver:' .. d .. ':location', 'lng')
@@ -289,4 +307,44 @@ object DispatchScripts {
         """.trimIndent(),
         String::class.java
     )
+    val UNLOCK_TICK = DefaultRedisScript<Long>(
+        "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0",
+        Long::class.java,
+    )
+
+    val RECONCILE_IDLE = DefaultRedisScript<Long>(
+        """
+        local d = ARGV[1]
+        if redis.call('EXISTS', 'driver:' .. d .. ':lock') == 1 then return 0 end
+        local current = redis.call('GET', 'driver:' .. d .. ':current_ride') or ''
+        if current ~= ARGV[2] then return 0 end
+        redis.call('DEL', 'driver:' .. d .. ':current_ride')
+        if redis.call('EXISTS', 'driver:alive:' .. d) == 1 then
+            redis.call('SET', 'driver:' .. d .. ':status', 'ONLINE')
+            local lat = redis.call('HGET', 'driver:' .. d .. ':location', 'lat')
+            local lng = redis.call('HGET', 'driver:' .. d .. ':location', 'lng')
+            if lat and lng then redis.call('GEOADD', KEYS[1], lng, lat, d) end
+        else
+            redis.call('SET', 'driver:' .. d .. ':status', 'OFFLINE')
+            redis.call('ZREM', KEYS[1], d)
+        end
+        return 1
+        """.trimIndent(), Long::class.java,
+    )
+
+    val ADD_AVAILABLE = DefaultRedisScript<Long>(
+        """
+        local d = ARGV[1]
+        if redis.call('GET', 'driver:' .. d .. ':status') ~= 'ONLINE'
+           or redis.call('EXISTS', 'driver:' .. d .. ':lock') == 1
+           or redis.call('EXISTS', 'driver:' .. d .. ':current_ride') == 1
+           or redis.call('EXISTS', 'driver:alive:' .. d) == 0 then
+            redis.call('ZREM', KEYS[1], d)
+            return 0
+        end
+        redis.call('GEOADD', KEYS[1], ARGV[2], ARGV[3], d)
+        return 1
+        """.trimIndent(), Long::class.java,
+    )
+
 }

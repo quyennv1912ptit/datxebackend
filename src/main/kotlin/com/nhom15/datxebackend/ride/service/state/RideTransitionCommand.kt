@@ -6,4 +6,5 @@ data class RideTransitionCommand(
     val actor: RideActor,
     val note: String? = null,
     val cancelReason: String? = null,
+    val expectedSearchGeneration: Int? = null,
 )

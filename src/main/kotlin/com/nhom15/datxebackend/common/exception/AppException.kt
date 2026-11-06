@@ -7,5 +7,6 @@ open class AppException(
     val errorCode: ErrorCode,
     message: String = errorCode.defaultMessage,
     val httpStatus: HttpStatus = errorCode.httpStatus,
-    cause: Throwable? = null
+    cause: Throwable? = null,
+    val details: Map<String, String>? = null
 ) : RuntimeException(message, cause)

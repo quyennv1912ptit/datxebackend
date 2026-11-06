@@ -118,6 +118,21 @@ class Ride(
     @Column(name = "cancelled_by")
     var cancelledBy: Long? = null,
 
+    @Column(name = "search_expires_at")
+    var searchExpiresAt: Instant? = null,
+
+    @Column(name = "redispatch_count", nullable = false)
+    var redispatchCount: Int = 0,
+
+    @Column(name = "last_redispatch_reason", length = 255)
+    var lastRedispatchReason: String? = null,
+
+    @Column(name = "last_redispatch_at")
+    var lastRedispatchAt: Instant? = null,
+
+    @Column(name = "last_redispatch_driver_id")
+    var lastRedispatchDriverId: Long? = null,
+
     @Column(name = "cancelled_by_role", length = 20)
     var cancelledByRole: String? = null
 

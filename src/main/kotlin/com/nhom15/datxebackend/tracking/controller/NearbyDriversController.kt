@@ -61,7 +61,7 @@ class NearbyDriversController(
     }
 
     private companion object {
-        const val CUSTOMER_RADIUS_KM = 3.0
+        const val CUSTOMER_RADIUS_KM = 5.0
         const val CUSTOMER_MAX_RESULTS = 30L
         const val COORDINATE_PRECISION = 1_000.0
     }

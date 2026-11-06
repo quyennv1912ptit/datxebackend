@@ -2,22 +2,18 @@ package com.nhom15.datxebackend.tracking.websocket
 
 import com.nhom15.datxebackend.notification.api.Recipient
 import com.nhom15.datxebackend.notification.ws.StompPrincipal
-import com.nhom15.datxebackend.common.port.ActiveRideQueryPort
 import com.nhom15.datxebackend.tracking.dto.DriverLocation
-import com.nhom15.datxebackend.tracking.service.LocationService
+import com.nhom15.datxebackend.tracking.service.DriverLocationIngestService
 import org.springframework.messaging.MessagingException
 import org.springframework.messaging.handler.annotation.MessageMapping
 import org.springframework.messaging.handler.annotation.Payload
-import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.stereotype.Controller
 import java.security.Principal
 
 /** Handles authenticated driver location updates over STOMP. */
 @Controller
 class CoordinateController(
-    private val messagingTemplate: SimpMessagingTemplate,
-    private val locationService: LocationService,
-    private val activeRideQueryPort: ActiveRideQueryPort,
+    private val ingestService: DriverLocationIngestService,
 ) {
 
     @MessageMapping("/location")
@@ -28,16 +24,6 @@ class CoordinateController(
         val driver = (principal as? StompPrincipal)?.recipient as? Recipient.Driver
             ?: throw MessagingException("Chỉ tài xế đã xác thực mới được gửi vị trí")
 
-        val now = java.time.Instant.now()
-        if (!com.nhom15.datxebackend.tracking.dto.DriverLocationPolicy.valid(currentLocation, now)) return
-        locationService.saveDriverLocation(driver.id, currentLocation.location, currentLocation.timestamp)
-
-        val activeRide = activeRideQueryPort.findActiveRideForDriver(driver.id) ?: return
-
-        messagingTemplate.convertAndSendToUser(
-            Recipient.Customer(activeRide.customerId).key,
-            "/queue/rides/${activeRide.rideId}/location",
-            currentLocation.copy(receivedAt = now),
-        )
+        ingestService.ingest(driver.id, currentLocation)
     }
 }

@@ -50,7 +50,10 @@ data class RideOfferPayload(
     val vehicle: VehicleInfo,
     val customer: CustomerBrief,
     val note: String?,
-    val pickupNote: String? = null
+    val pickupNote: String? = null,
+    val offerId: String = "",
+    val serverTime: Long = System.currentTimeMillis(),
+    val clientExpiresAt: Long = expiresAt
 ) : NotificationPayload {
     override val type: PayloadType get() = PayloadType.RIDE_OFFER
 }
@@ -68,7 +71,7 @@ data class OfferClosedPayload(
     }
 
     companion object {
-        /** Hết 15 giây mà tài xế không phản hồi. */
+        /** Hết hạn offer theo cấu hình server. */
         fun expired(rideId: Long) = OfferClosedPayload(rideId, PayloadType.OFFER_EXPIRED)
 
         /** Khách huỷ khi lời mời đang treo. */

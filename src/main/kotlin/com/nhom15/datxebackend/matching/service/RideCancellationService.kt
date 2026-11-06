@@ -1,5 +1,6 @@
 package com.nhom15.datxebackend.matching.service
 
+import com.nhom15.datxebackend.ride.repository.DispatchOfferRepository
 import com.nhom15.datxebackend.common.enums.RideStatus
 import com.nhom15.datxebackend.common.redis.RedisKeys
 import com.nhom15.datxebackend.notification.api.NotificationPort
@@ -14,11 +15,12 @@ import org.springframework.transaction.event.TransactionalEventListener
 @Service
 class RideCancellationService(
     private val redisTemplate: StringRedisTemplate,
-    private val notificationPort: NotificationPort
+    private val notificationPort: NotificationPort,
+    private val offers: DispatchOfferRepository,
 ) {
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     fun onStatusChanged(e: RideStatusChanged) {
-        if (e.to != RideStatus.CANCELLED || e.driverId != null) return   // đã có tài xế thì DriverReleaseService lo
+        if (!e.to.terminal || e.driverId != null) return   // đã có tài xế thì DriverReleaseService lo
 
         val id = e.rideId.toString()
         val offeredDriver = redisTemplate.execute(
@@ -26,6 +28,8 @@ class RideCancellationService(
             listOf(RedisKeys.rideState(id), RedisKeys.DISPATCH_TIMEOUTS, RedisKeys.rideCandidates(id), RedisKeys.GEO_KEY),
             id
         )
+        offers.closeRide(e.rideId)
+        redisTemplate.delete(listOf(RedisKeys.rideRejected(id), RedisKeys.rideCandidates(id), RedisKeys.rideCurrentOffer(id)))
         if (!offeredDriver.isNullOrEmpty()) {
             notificationPort.send(Recipient.Driver(offeredDriver.toLong()), OfferClosedPayload.cancelled(e.rideId))
         }

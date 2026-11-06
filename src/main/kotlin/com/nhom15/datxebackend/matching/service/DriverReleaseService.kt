@@ -4,7 +4,6 @@ import com.nhom15.datxebackend.common.enums.RideStatus
 import com.nhom15.datxebackend.common.redis.RedisKeys
 import com.nhom15.datxebackend.common.redis.RedisTtl
 import com.nhom15.datxebackend.ride.event.RideStatusChanged
-import org.springframework.data.geo.Point
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.event.TransactionPhase
@@ -17,7 +16,8 @@ class DriverReleaseService(private val redisTemplate: StringRedisTemplate) {
     fun onStatusChanged(e: RideStatusChanged) {
         when (e.to) {
             RideStatus.COMPLETED -> releaseAfterRide(e.rideId, "COMPLETED", e.driverId)
-            RideStatus.CANCELLED -> releaseAfterRide(e.rideId, "CANCELLED", e.driverId)
+            RideStatus.CANCELLED, RideStatus.NO_DRIVER_FOUND -> releaseAfterRide(e.rideId, e.to.name, e.driverId)
+            RideStatus.SEARCHING -> if (e.driverId != null) releaseAfterRide(e.rideId, "SEARCHING", e.driverId)
             else -> Unit
         }
     }
@@ -27,28 +27,23 @@ class DriverReleaseService(private val redisTemplate: StringRedisTemplate) {
         val stateKey = RedisKeys.rideState(id)
         val hash = redisTemplate.opsForHash<String, String>()
 
-        val driverId = hash.get(stateKey, "driverId") ?: eventDriverId?.toString() ?: return
+        val driverId = eventDriverId?.toString() ?: hash.get(stateKey, "driverId") ?: return
+        val currentOwner = hash.get(stateKey, "driverId")
+        if (currentOwner != null && currentOwner != driverId) return
 
+        if (finalStatus != RideStatus.SEARCHING.name) {
+            redisTemplate.delete(listOf(RedisKeys.rideRejected(id), RedisKeys.rideCandidates(id), RedisKeys.rideCurrentOffer(id)))
+        }
         hash.put(stateKey, "status", finalStatus)
         redisTemplate.expire(stateKey, RedisTtl.RIDE_AFTER_END)
         redisTemplate.expire(RedisKeys.rideEvents(id), RedisTtl.RIDE_AFTER_END)
 
         val currentKey = RedisKeys.driverCurrentRide(driverId)
         if (redisTemplate.opsForValue().get(currentKey) != id) return
-        redisTemplate.delete(currentKey)
-        returnToPool(driverId)
+        reconcileIdle(driverId.toLong(), id)
     }
 
-    private fun returnToPool(driverId: String) {
-        if (redisTemplate.hasKey(RedisKeys.driverAlive(driverId)) != true) {
-            redisTemplate.opsForValue().set(RedisKeys.driverStatus(driverId), "OFFLINE")
-            return
-        }
-
-        redisTemplate.opsForValue().set(RedisKeys.driverStatus(driverId), "ONLINE")
-        val loc = redisTemplate.opsForHash<String, String>().entries(RedisKeys.driverLocation(driverId))
-        val lat = loc["lat"]?.toDoubleOrNull() ?: return
-        val lng = loc["lng"]?.toDoubleOrNull() ?: return
-        redisTemplate.opsForGeo().add(RedisKeys.GEO_KEY, Point(lng, lat), driverId)
+    fun reconcileIdle(driverId: Long, expectedRide: String) {
+        redisTemplate.execute(DispatchScripts.RECONCILE_IDLE, listOf(RedisKeys.GEO_KEY), driverId.toString(), expectedRide)
     }
 }

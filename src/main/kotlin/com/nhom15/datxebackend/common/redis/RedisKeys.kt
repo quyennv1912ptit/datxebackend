@@ -12,6 +12,9 @@ object RedisKeys {
     fun driverCurrentRide(id: String) = "driver:$id:current_ride"
     fun driverStats(id: String) = "driver:$id:stats"
 
+    fun rideTick(id: String) = "ride:$id:tick"
+    fun rideCurrentOffer(id: String) = "ride:$id:current_offer"
+    const val DRIVERS_LASTSEEN = "drivers:lastseen"
     fun rideState(id: String) = "ride:$id:state"
     fun rideCandidates(id: String) = "ride:$id:candidates"
     fun rideRejected(id: String) = "ride:$id:rejected"
