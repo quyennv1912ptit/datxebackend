@@ -13,7 +13,7 @@ Tài liệu này mô tả các HTTP route, kênh STOMP/WebSocket, FCM và upload
 ## Chạy local lần đầu
 
 1. Tạo cấu hình local từ mẫu: `cp .env.example .env`.
-2. Thay password, Mapbox token và Cloudinary URL trong `.env`; đặt Firebase service account tại `secrets/firebase-service-account.json`.
+2. Thay password, Goong REST key và Cloudinary URL trong `.env`; đặt Firebase service account tại `secrets/firebase-service-account.json`.
 3. Tạo Firebase user sẽ làm admin, rồi điền UID, email và tên vào `BOOTSTRAP_ADMIN_FIREBASE_UID`, `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_FULL_NAME`.
 4. Điền giá thật bằng VND vào các biến `BOOTSTRAP_PRICING_*`, sau đó đặt `BOOTSTRAP_PRICING_ENABLED=true`. Không có giá mặc định vì giá mẫu có thể gây thu sai tiền.
 5. Chạy `docker compose up --build`.
@@ -28,10 +28,10 @@ Phân trang thường bắt đầu từ `page=0`. `PageResponse` có các trư�
 
 - Giá trị tiền trong API là số nguyên VND, kiểu `Long`; không gửi số thực cho số tiền.
 - Các trường kiểu `Instant` dùng ISO-8601 UTC (ví dụ `2026-10-23T10:15:30Z`). Trường ngày như ngày sinh dùng `YYYY-MM-DD`.
-- Tọa độ object dùng `lat` và `lng`; query Mapbox Directions nhận mỗi điểm theo thứ tự `lng,lat`.
+- Tọa độ object dùng `lat` và `lng`; API nội bộ `/location/directions` nhận chuỗi `lng,lat`; backend chuyển sang `lat,lng` khi gọi Goong.
 - Enum được trả bằng tên chữ hoa, ví dụ `CAR`/`MOTORCYCLE`, `MANUAL`/`AUTO`.
 - `POST /api/customer/rides` hỗ trợ `Idempotency-Key` tùy chọn (1–128 ký tự). Gửi lại cùng key và cùng body trả lại chuyến đã tạo; dùng lại key với body khác trả 409. Chat chống gửi lặp bằng `clientMessageId`.
-- Rate limit dùng Redis: 60 lần/phút/IP cho login, 60 lần/phút/người dùng cho mỗi route Mapbox, 30 lần/phút/người dùng gộp cho estimate và tạo chuyến, 20 tin/phút/người dùng cho chat. Bộ đếm và TTL được cập nhật nguyên tử. Khi vượt giới hạn, API trả HTTP 429 với mã `RATE_LIMITED`. Các route khác chưa có rate limit dùng chung.
+- Rate limit dùng Redis: 60 lần/phút/IP cho login, 60 lần/phút/người dùng cho mỗi endpoint địa điểm/chỉ đường, 30 lần/phút/người dùng gộp cho estimate và tạo chuyến, 20 tin/phút/người dùng cho chat. Bộ đếm và TTL được cập nhật nguyên tử. Khi vượt giới hạn, API trả HTTP 429 với mã `RATE_LIMITED`. Các route khác chưa có rate limit dùng chung.
 - Login giới hạn theo `remoteAddr` mà server nhìn thấy; nếu triển khai sau reverse proxy, cần cấu hình trusted client-IP forwarding để tránh dùng chung quota theo IP proxy.
 
 ## HTTP API
@@ -299,7 +299,7 @@ Lỗi nghiệp vụ trả cùng cấu trúc `ApiResponse`; HTTP status do `Error
 | `INVALID_RIDE_STATE`, `RIDE_ALREADY_ASSIGNED`, `RIDE_ALREADY_ACTIVE`, `RIDE_CANNOT_CANCEL` | 409 | Trạng thái chuyến không cho phép thao tác. |
 | `HANDOVER_REPORT_REQUIRED` | 400 | Thiếu biên bản bàn giao bắt buộc. |
 | `PRICING_RULE_NOT_FOUND` | 404 | Chưa có bảng giá áp dụng. |
-| `ROUTE_UNAVAILABLE` | 503 | Không lấy được tuyến đường từ Mapbox. |
+| `ROUTE_UNAVAILABLE` | 503 | Không lấy được tuyến đường từ Goong. |
 | `OFFER_NOT_FOUND` | 404 | Không tìm thấy offer. |
 | `OFFER_EXPIRED`, `DRIVER_NOT_AVAILABLE` | 409 | Offer hết hạn hoặc tài xế không sẵn sàng. |
 | `LOCATION_UNAVAILABLE` | 404 | Chưa có vị trí tài xế. |
@@ -312,17 +312,17 @@ Lỗi nghiệp vụ trả cùng cấu trúc `ApiResponse`; HTTP status do `Error
 
 ## Tìm địa chỉ/địa danh Việt Nam
 
-Backend đọc `GOONG_API_KEY` (REST API key, không phải Map key) từ `.env`. Để trống key thì dùng Mapbox, không chặn khởi động; `PLACES_PROVIDER=auto` là mặc định. Có key thì tự chuyển sang Goong V2. `PLACES_PROVIDER=mapbox` buộc dùng Mapbox. Key chỉ nằm trên server, không đưa vào Expo hoặc commit `.env`.
+Backend đọc `GOONG_API_KEY` từ `.env` và dùng Goong cho gợi ý, chi tiết, geocode và định tuyến. Đây là khóa REST chỉ dùng trên server. Hai app cấu hình Map Key riêng qua `EXPO_PUBLIC_GOONG_MAP_KEY`.
 
 - `GET /api/location/places/search?query=...&proximityLat=...&proximityLng=...`: gợi ý có tên đầy đủ, địa chỉ và provider; Goong chưa có tọa độ cho tới khi lấy chi tiết.
 - `GET /api/location/places/detail?id=...`: lấy đúng tọa độ bằng Goong place ID sau khi người dùng chọn; không đoán tọa độ từ tên gần giống.
 - `GET /api/location/places/reverse?lat=...&lng=...`: địa chỉ tại ghim, giữ nguyên tọa độ ghim thay vì điểm do nhà cung cấp làm tròn.
 
-Cả ba endpoint yêu cầu Firebase token và vai trò CUSTOMER/DRIVER, có rate limit. Goong dùng tọa độ `lat,lng`; Mapbox dùng `lng,lat`. Goong V2 trả địa chỉ hành chính hiện hành; `secondaryAddress` giữ địa chỉ trước đây nếu có để dễ nhận biết ngõ/ngách. Lỗi nhà cung cấp trả `LOCATION_SEARCH_UNAVAILABLE`, không lộ API key hoặc response thô.
+Cả ba endpoint yêu cầu Firebase token và vai trò CUSTOMER/DRIVER, có rate limit. Goong dùng tọa độ `lat,lng`. Goong V2 trả địa chỉ hành chính hiện hành; `secondaryAddress` giữ địa chỉ trước đây nếu có để dễ nhận biết ngõ/ngách. Lỗi nhà cung cấp trả `LOCATION_SEARCH_UNAVAILABLE`, không lộ API key hoặc response thô.
 
-Mapbox fallback tắt fuzzy matching, tối đa 10 kết quả, kiểm tra các từ/số nhà và bỏ kết quả relevance dưới 0.75. Cache geocode có version mới để không dùng lại kết quả gần đúng cũ. Vì Mapbox Geocoding v5 không còn dữ liệu POI, khi thiếu key Goong, địa danh ngoài dữ liệu sẽ trả danh sách trống thay vì các phố không khớp.
+Goong Direction V2 được dùng cho ô tô và Direction V1 với profile `bike` được dùng cho xe máy. Cache và báo giá mới có namespace Goong. Tuyến đã lưu của các chuyến cũ vẫn có thể mở từ lịch sử.
 
-Test hồi quy: `gradlew test --tests '*PlaceSearchTests'`. Test nhà cung cấp thật chỉ chạy khi `RUN_MAPBOX_LIVE_TEST=true` và `MAPBOX_LIVE_TEST_TOKEN` được cung cấp qua môi trường; mặc định không gọi dịch vụ bên ngoài.
+Test hồi quy: `gradlew test --tests '*PlaceSearchTests'`. Test nhà cung cấp thật chỉ chạy khi `RUN_GOONG_LIVE_TEST=true` và `GOONG_API_KEY` được cung cấp qua môi trường; mặc định không gọi dịch vụ bên ngoài.
 
 Tài liệu nhà cung cấp: https://help.goong.io/kb/rest-api-v2/autocomplete-rest-api-v2/autocomplete-v2/ và https://help.goong.io/kb/rest-api-v2/place-detail-rest-api-v2/place-detail-place-detail-v2/.
 

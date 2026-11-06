@@ -83,6 +83,22 @@ class SequentialDispatchTests {
         assertSame(payload, service.pendingOffer(7))
     }
 
+    @Test fun `an offer still renders when pickup GPS is unavailable`() {
+        val rides = mock(RideRepository::class.java)
+        val redis = mock(StringRedisTemplate::class.java, RETURNS_DEEP_STUBS)
+        val customers = mock(com.nhom15.datxebackend.customer.repository.CustomerRepository::class.java)
+        `when`(rides.findById(42)).thenReturn(Optional.of(ride()))
+        `when`(redis.opsForHash<String, String>().entries(RedisKeys.driverLocation("7"))).thenReturn(emptyMap())
+        `when`(redis.opsForGeo().position(RedisKeys.GEO_KEY, "7")).thenReturn(listOf(null))
+        val offer = RideOfferBuilder(rides, redis, customers, MatchingProperties())
+            .build(42, 7, Instant.now().plusSeconds(25).toEpochMilli(), "offer-1")
+        assertEquals("offer-1", offer.offerId)
+        assertNull(offer.distanceToPickupKm)
+        assertNull(offer.etaToPickupMin)
+        assertEquals("Đón", offer.pickup.address)
+        assertTrue(offer.driverEarning > 0)
+    }
+
     @Test fun `outstanding offer wakes the tick at expiry plus grace`() {
         val rides=mock(RideRepository::class.java)
         val redis=mock(StringRedisTemplate::class.java, RETURNS_DEEP_STUBS)

@@ -19,7 +19,7 @@ import java.util.UUID
 class RideRouteService(private val routes: DrivingRouteProvider, private val repository: RideRouteRepository) {
     @Transactional
     fun resolve(customerId: Long, vehicleId: Long, vehicleType: VehicleType, pickup: GeoPoint, dropoff: GeoPoint, requestedId: String? = null): SavedRideRoute {
-        val key = MessageDigest.getInstance("SHA-256").digest("$customerId|$vehicleId|$vehicleType|${pickup.lat},${pickup.lng}|${dropoff.lat},${dropoff.lng}".toByteArray()).joinToString("") { "%02x".format(it) }
+        val key = MessageDigest.getInstance("SHA-256").digest("goong-v1|$customerId|$vehicleId|$vehicleType|${pickup.lat},${pickup.lng}|${dropoff.lat},${dropoff.lng}".toByteArray()).joinToString("") { "%02x".format(it) }
         repository.lock(key)
         val saved = repository.find(key)
         val now = Instant.now()

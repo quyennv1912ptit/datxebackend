@@ -7,10 +7,10 @@ import org.springframework.stereotype.Service
 import java.time.Duration
 
 @Service
-class MapboxRateLimiter(private val rateLimiter: RedisRateLimiter) {
+class LocationRateLimiter(private val rateLimiter: RedisRateLimiter) {
     fun check(actor: AuthUser, purpose: String) {
         rateLimiter.check(
-            RedisKeys.mapboxRate(purpose, actor.role, actor.id),
+            RedisKeys.locationRate(purpose, actor.role, actor.id),
             LIMIT_PER_MINUTE,
             WINDOW,
         )

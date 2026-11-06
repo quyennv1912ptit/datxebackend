@@ -7,4 +7,7 @@ data class Route(
     val duration: Double,
     val detailedJson: String,
     val coordinates: List<GeoPoint> = emptyList(),
+    val steps: List<RouteStep> = emptyList(),
 )
+
+data class RouteStep(val instruction: String, val distanceMeters: Double)

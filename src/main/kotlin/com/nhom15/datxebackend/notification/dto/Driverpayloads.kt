@@ -36,8 +36,8 @@ data class RideOfferPayload(
     val pickup: LocationDto,
     val dropoff: LocationDto,
 
-    val distanceToPickupKm: Double,
-    val etaToPickupMin: Int,
+    val distanceToPickupKm: Double?,
+    val etaToPickupMin: Int?,
 
     val tripDistanceKm: Double,
     val estDurationMin: Int,

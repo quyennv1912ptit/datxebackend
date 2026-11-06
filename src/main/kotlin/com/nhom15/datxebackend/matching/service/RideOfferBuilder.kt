@@ -36,17 +36,14 @@ class RideOfferBuilder(
             .entries(RedisKeys.driverLocation(driverId.toString()))
         val storedLat = location["lat"]?.toDoubleOrNull()
         val storedLng = location["lng"]?.toDoubleOrNull()
-        val driverPoint = redisTemplate.opsForGeo()
-            .position(RedisKeys.GEO_KEY, driverId.toString())
-            ?.firstOrNull()
         val driverLocation = if (storedLat != null && storedLng != null) {
             GeoPoint(storedLat, storedLng)
         } else {
-            driverPoint?.let { GeoPoint(it.y, it.x) }
-                ?: throw NotFoundException(message = "Không có vị trí của tài xế $driverId")
+            redisTemplate.opsForGeo().position(RedisKeys.GEO_KEY, driverId.toString())
+                ?.firstOrNull()?.let { GeoPoint(it.y, it.x) }
         }
-
-        val toPickupKm = distanceKm(driverLocation, ride.pickup.geoPoint)
+        // Losing a GPS fix after reservation must not make a valid offer impossible to read.
+        val toPickupKm = driverLocation?.let { distanceKm(it, ride.pickup.geoPoint) }
         val straightKm = distanceKm(ride.pickup.geoPoint, ride.dropoff.geoPoint)
 
         val routeKm = (ride.routeDistanceMeters ?: 0.0) / 1000.0
@@ -63,8 +60,8 @@ class RideOfferBuilder(
             clientExpiresAt = expiresAt - properties.clientOfferGrace.toMillis(),
             pickup = ride.pickup.toDto(),
             dropoff = ride.dropoff.toDto(),
-            distanceToPickupKm = round1(toPickupKm),
-            etaToPickupMin = minutesFor(toPickupKm),
+            distanceToPickupKm = toPickupKm?.let(::round1),
+            etaToPickupMin = toPickupKm?.let(::minutesFor),
             tripDistanceKm = round1(tripKm),
             estDurationMin = tripMin,
             fareEstimate = ride.fareEstimate,

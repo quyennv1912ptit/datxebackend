@@ -342,6 +342,8 @@ object DispatchScripts {
             redis.call('ZREM', KEYS[1], d)
             return 0
         end
+        if ARGV[4] and ARGV[4] ~= '' and
+           redis.call('HGET', 'driver:' .. d .. ':location', 'sampledAtMs') ~= ARGV[4] then return 0 end
         redis.call('GEOADD', KEYS[1], ARGV[2], ARGV[3], d)
         return 1
         """.trimIndent(), Long::class.java,

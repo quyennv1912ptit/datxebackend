@@ -29,10 +29,9 @@ object RedisKeys {
     fun idempotency(key: String) = "idem:$key"
     fun rideLock(id: String) = "lock:ride:$id"
     fun chatRate(role: com.nhom15.datxebackend.common.enums.Role, id: Long) = "chat:rate:${role.name}:$id"
-    fun mapboxRate(purpose: String, role: com.nhom15.datxebackend.common.enums.Role, id: Long) =
-        "mapbox:rate:$purpose:${role.name}:$id"
+    fun locationRate(purpose: String, role: com.nhom15.datxebackend.common.enums.Role, id: Long) =
+        "location:rate:$purpose:${role.name}:$id"
     fun authLoginRate(ip: String) = "auth:login:rate:$ip"
-    fun mapboxGeocodeCache(hash: String) = "mapbox:cache:geocode:$hash"
-    fun mapboxDirectionsCache(hash: String) = "mapbox:cache:directions:$hash"
+    fun goongDirectionsCache(hash: String) = "goong:cache:directions:$hash"
 }
 

@@ -38,6 +38,19 @@ class LocationService(
     companion object {
         private const val MAX_LAT = 85.05112878
 
+        private val SAVE_SAMPLE = DefaultRedisScript<Long>(
+            """
+            local incoming = tonumber(ARGV[5])
+            local saved = tonumber(redis.call('HGET', KEYS[1], 'sampledAtMs'))
+            if saved and incoming <= saved then return 0 end
+            redis.call('HSET', KEYS[1], 'lat', ARGV[2], 'lng', ARGV[3], 'sampledAt', ARGV[4], 'sampledAtMs', ARGV[5])
+            redis.call('PSETEX', KEYS[2], ARGV[6], '1')
+            redis.call('ZADD', KEYS[3], incoming, ARGV[1])
+            return 1
+            """.trimIndent(),
+            Long::class.java,
+        )
+
         private val REMOVE_IF_STALE = DefaultRedisScript<Long>(
             """
             local removed = 0
@@ -58,14 +71,16 @@ class LocationService(
         val id = driverId.toString()
         // An old GPS sample must not renew dispatch eligibility merely because it was resent.
         val remainingFreshness = Duration.between(Instant.now(), sampledAt.plus(matchingProperties.driverAliveTtl))
-        if (remainingFreshness.isNegative || remainingFreshness.isZero) return false
-        redisTemplate.opsForHash<String, String>().putAll(
-            RedisKeys.driverLocation(id),
-            mapOf("lat" to location.lat.toString(), "lng" to location.lng.toString(), "sampledAt" to sampledAt.toString()),
-        )
-        redisTemplate.opsForValue().set(RedisKeys.driverAlive(id), "1", minOf(matchingProperties.driverAliveTtl, remainingFreshness))
+        val ttlMillis = minOf(matchingProperties.driverAliveTtl, remainingFreshness).toMillis()
+        if (ttlMillis <= 0) return false
+        val sampledAtMillis = sampledAt.toEpochMilli().toString()
+        // REST and STOMP may arrive out of order. The stored fix and its expiry advance together.
+        if (redisTemplate.execute(
+                SAVE_SAMPLE,
+                listOf(RedisKeys.driverLocation(id), RedisKeys.driverAlive(id), RedisKeys.DRIVERS_LASTSEEN),
+                id, location.lat.toString(), location.lng.toString(), sampledAt.toString(), sampledAtMillis, ttlMillis.toString(),
+            ) != 1L) return false
 
-        redisTemplate.opsForZSet().add(RedisKeys.DRIVERS_LASTSEEN, id, sampledAt.toEpochMilli().toDouble())
         // PostgreSQL prevents a Redis restart from making an assigned driver available again.
         val activeRide = rides.findFirstByDriverIdAndStatusInOrderByCreatedAtDesc(driverId,
             ACTIVE_RIDE_STATUSES)
@@ -103,7 +118,7 @@ class LocationService(
         }
 
         redisTemplate.execute(DispatchScripts.ADD_AVAILABLE,
-            listOf(RedisKeys.GEO_KEY), id, location.lng.toString(), location.lat.toString())
+            listOf(RedisKeys.GEO_KEY), id, location.lng.toString(), location.lat.toString(), sampledAtMillis)
         return true
     }
 
@@ -123,7 +138,7 @@ class LocationService(
         val lat = location["lat"]?.toDoubleOrNull() ?: return
         val lng = location["lng"]?.toDoubleOrNull() ?: return
         redisTemplate.execute(DispatchScripts.ADD_AVAILABLE,
-            listOf(RedisKeys.GEO_KEY), id, lng.toString(), lat.toString())
+            listOf(RedisKeys.GEO_KEY), id, lng.toString(), lat.toString(), location["sampledAtMs"].orEmpty())
     }
 
     /** Xóa driver khỏi tập khả dụng (tắt app, nhận chuyến, đang trong chuyến...). */

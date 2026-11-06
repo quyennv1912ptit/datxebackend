@@ -7,13 +7,13 @@ import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.common.security.CurrentUser
 import com.nhom15.datxebackend.routing.model.PlaceSearchResult
 import com.nhom15.datxebackend.routing.model.PlaceSuggestion
-import com.nhom15.datxebackend.routing.service.MapboxRateLimiter
+import com.nhom15.datxebackend.routing.service.LocationRateLimiter
 import com.nhom15.datxebackend.routing.service.PlaceSearchService
 import org.springframework.web.bind.annotation.*
 
 @RestController
 @RequestMapping("/api/location/places")
-class PlaceSearchController(private val service: PlaceSearchService, private val limiter: MapboxRateLimiter) {
+class PlaceSearchController(private val service: PlaceSearchService, private val limiter: LocationRateLimiter) {
     @GetMapping("/search")
     fun search(@CurrentUser actor: AuthUser, @RequestParam query: String,
         @RequestParam(required = false) proximityLat: Double?, @RequestParam(required = false) proximityLng: Double?): ApiResponse<PlaceSearchResult> {

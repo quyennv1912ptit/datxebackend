@@ -8,7 +8,9 @@ from pathlib import Path
 import re
 import unittest
 
-SOURCE = (Path(__file__).resolve().parents[2] / 'main/kotlin/com/nhom15/datxebackend/matching/service/DispatchScripts.kt').read_text()
+KOTLIN = Path(__file__).resolve().parents[2] / 'main/kotlin/com/nhom15/datxebackend'
+SOURCE = (KOTLIN / 'matching/service/DispatchScripts.kt').read_text()
+SOURCE += (KOTLIN / 'tracking/service/LocationService.kt').read_text()
 LUA = ctypes.CDLL(ctypes.util.find_library('lua5.4'))
 LUA.luaL_newstate.restype = ctypes.c_void_p
 for name in ['luaL_openlibs', 'lua_close']:
@@ -39,6 +41,7 @@ redis = {call=function(cmd, key, ...)
         end
         return 'OK'
     end
+    if cmd=='PSETEX' then db[key]=a[2];expiry[key]=NOW+tonumber(a[1]);return 'OK' end
     if cmd=='EXPIRE' then if v then expiry[key]=NOW+tonumber(a[1])*1000 end;return 1 end
     if cmd=='HGET' then return v and v[a[1]] or false end
     if cmd=='HEXISTS' then return v and v[a[1]] and 1 or 0 end
@@ -164,6 +167,20 @@ class DispatchPresenceTests(unittest.TestCase):
             assert(redis.call('GET','driver:7:status')=='BUSY')
             assert(run('RECONCILE_IDLE',{'available_drivers'},{'7','42'})==1)
             assert(redis.call('GET','driver:7:status')=='ONLINE')""")
+
+    def test_delayed_gps_cannot_replace_a_newer_fix_or_extend_its_ttl(self):
+        execute("""
+            local location='driver:7:location'
+            local alive='driver:alive:7'
+            local keys={location,alive,'lastseen'}
+            assert(run('SAVE_SAMPLE',keys,{'7','21.04','105.85','new','1100','1000'})==1)
+            NOW=1500
+            assert(run('SAVE_SAMPLE',keys,{'7','21.03','105.84','old','1000','1000'})==0)
+            assert(redis.call('HGET',location,'sampledAt')=='new')
+            assert(redis.call('GET',alive)=='1')
+            NOW=2000
+            assert(redis.call('GET',alive)==false)
+        """)
 
     def test_fresh_gps_cannot_put_an_offered_or_busy_driver_back_in_geo(self):
         execute("""seed();assert(run('ADD_AVAILABLE',{'available_drivers'},{'7','105.84','21.03'})==1)

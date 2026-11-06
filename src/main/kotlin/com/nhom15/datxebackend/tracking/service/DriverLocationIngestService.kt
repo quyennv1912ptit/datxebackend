@@ -4,6 +4,7 @@ import com.nhom15.datxebackend.common.port.ActiveRideQueryPort
 import com.nhom15.datxebackend.notification.api.Recipient
 import com.nhom15.datxebackend.tracking.dto.DriverLocation
 import com.nhom15.datxebackend.tracking.dto.DriverLocationPolicy
+import org.slf4j.LoggerFactory
 import org.springframework.messaging.simp.SimpMessagingTemplate
 import org.springframework.stereotype.Service
 import java.time.Instant
@@ -17,18 +18,22 @@ class DriverLocationIngestService(
     private val activeRideQueryPort: ActiveRideQueryPort,
     private val messagingTemplate: SimpMessagingTemplate,
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
+
     /** False when the sample is malformed or too old; callers may drop it silently. */
     fun ingest(driverId: Long, update: DriverLocation): Boolean {
         val now = Instant.now()
         if (!DriverLocationPolicy.valid(update, now)) return false
         if (!locationService.saveDriverLocation(driverId, update.location, update.timestamp)) return false
-        activeRideQueryPort.findActiveRideForDriver(driverId)?.let { ride ->
-            messagingTemplate.convertAndSendToUser(
-                Recipient.Customer(ride.customerId).key,
-                "/queue/rides/${ride.rideId}/location",
-                update.copy(receivedAt = now),
-            )
-        }
+        runCatching {
+            activeRideQueryPort.findActiveRideForDriver(driverId)?.let { ride ->
+                messagingTemplate.convertAndSendToUser(
+                    Recipient.Customer(ride.customerId).key,
+                    "/queue/rides/${ride.rideId}/location",
+                    update.copy(receivedAt = now),
+                )
+            }
+        }.onFailure { log.warn("Could not publish GPS update for driver {}", driverId, it) }
         return true
     }
 }
