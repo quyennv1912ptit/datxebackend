@@ -134,10 +134,10 @@ class RideService(
         if (rideId <= 0) {
             throw BadRequestException(message = "rideId phải lớn hơn 0")
         }
-        if (request.reason.isBlank() || request.reason.length > 255) {
+        if (request.reason != null && (request.reason.isBlank() || request.reason.length > 255)) {
             throw BadRequestException(message = "Lý do hủy chuyến phải có nội dung và không vượt quá 255 ký tự")
         }
-        val reason = request.reason.trim()
+        val reason = request.reason?.trim()
         val currentRide = rideRepository.findById(rideId).orElseThrow {
             NotFoundException(ErrorCode.RIDE_NOT_FOUND)
         }

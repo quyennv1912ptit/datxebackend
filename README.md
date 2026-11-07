@@ -65,7 +65,7 @@ Các route trong nhóm này yêu cầu vai trò `CUSTOMER`.
 | GET | `/api/customer/rides` | Lịch sử chuyến; query theo `RideListFilter` (hiện có `status`, `page`, `size`). |
 | GET | `/api/customer/rides/active` | Chuyến đang hoạt động, gồm số tin chat chưa đọc. |
 | GET | `/api/customer/rides/{id}` | Chi tiết chuyến. |
-| POST | `/api/customer/rides/{id}/cancel` | Hủy chuyến. |
+| POST | `/api/customer/rides/{id}/cancel` | Gửi JSON `{}` để hủy khi chuyến đang `SEARCHING`. Các trạng thái hủy khác yêu cầu `reason` (tối đa 255 ký tự). Nếu tài xế nhận chuyến trước lệnh hủy không lý do, API trả `409`. |
 | POST | `/api/customer/rides/{id}/rating` | Đánh giá tài xế/chuyến đi. |
 | POST | `/api/customer/rides/{id}/handover/pickup/confirm` | Xác nhận biên bản bàn giao tại điểm đón. |
 | POST | `/api/customer/rides/{id}/handover/dropoff/confirm` | Xác nhận nhận lại xe tại điểm trả. |

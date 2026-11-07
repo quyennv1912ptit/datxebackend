@@ -88,6 +88,18 @@ class RideStateMachine(
             if (ride.redispatchCount < matching.maxRedispatch) RideStatus.SEARCHING else RideStatus.NO_DRIVER_FOUND
         } else RideTransitionRules.resolve(previousStatus, command.event)
 
+        val cancellationReason = command.cancelReason?.trim()
+        if (command.event == RideTransitionEvent.CANCEL) {
+            val customerSearching = command.actor.role == Role.CUSTOMER && previousStatus == RideStatus.SEARCHING
+            if (cancellationReason == null && command.actor.role == Role.CUSTOMER && !customerSearching) {
+                throw ConflictException(ErrorCode.INVALID_RIDE_STATE, "Chuyến đã đổi trạng thái. Vui lòng cập nhật rồi thử lại.")
+            }
+            if ((cancellationReason == null && !customerSearching) ||
+                (cancellationReason != null && (cancellationReason.isEmpty() || cancellationReason.length > 255))) {
+                throw BadRequestException(message = "Lý do hủy chuyến phải có nội dung và không vượt quá 255 ký tự")
+            }
+        }
+
         validateHandover(ride.id, command.event)
         if (rideRepository.compareAndSetStatus(ride.id, previousStatus.name, nextStatus.name, ride.version) != 1) {
             throw ConflictException(ErrorCode.INVALID_RIDE_STATE)
@@ -106,11 +118,7 @@ class RideStateMachine(
         }
 
         if (command.event == RideTransitionEvent.CANCEL && !retryDispatch) {
-            val reason = command.cancelReason?.trim()
-            if (reason.isNullOrEmpty() || reason.length > 255) {
-                throw BadRequestException(message = "Lý do hủy chuyến phải có nội dung và không vượt quá 255 ký tự")
-            }
-            ride.cancelReason = reason
+            ride.cancelReason = cancellationReason
             ride.cancelledBy = command.actor.userId
             ride.cancelledByRole = command.actor.persistedRole?.name
             ride.cancelledAt = Instant.now()

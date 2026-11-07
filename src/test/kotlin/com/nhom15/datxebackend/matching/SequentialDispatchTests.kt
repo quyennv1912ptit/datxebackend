@@ -130,6 +130,34 @@ class SequentialDispatchTests {
         verifyNoInteractions(history,events,outbox)
     }
 
+    @Test fun `customer can cancel a search without a reason`() {
+        val rides = mock(RideRepository::class.java)
+        val current = ride()
+        `when`(rides.findById(42)).thenReturn(Optional.of(current))
+        `when`(rides.compareAndSetStatus(42L, "SEARCHING", "CANCELLED", current.version)).thenReturn(1)
+        val service = machine(rides, mock(RideStatusHistoryRepository::class.java), mock(EventPublisher::class.java), mock(RideDispatchOutboxRepository::class.java))
+
+        val cancelled = service.transition(RideTransitionCommand(42, RideTransitionEvent.CANCEL, customerRideActor(1)))
+
+        assertEquals(RideStatus.CANCELLED, cancelled.status)
+        assertNull(cancelled.cancelReason)
+        assertEquals(1L, cancelled.cancelledBy)
+    }
+
+    @Test fun `customer cancellation without a reason loses when a driver has already been assigned`() {
+        val rides = mock(RideRepository::class.java)
+        val current = ride(RideStatus.DRIVER_ASSIGNED).apply { driverId = 7 }
+        `when`(rides.findById(42)).thenReturn(Optional.of(current))
+        val service = machine(rides, mock(RideStatusHistoryRepository::class.java), mock(EventPublisher::class.java), mock(RideDispatchOutboxRepository::class.java))
+
+        assertThrows(ConflictException::class.java) {
+            service.transition(RideTransitionCommand(42, RideTransitionEvent.CANCEL, customerRideActor(1)))
+        }
+
+        verify(rides, never()).compareAndSetStatus(anyLong(), anyString(), anyString(), anyLong())
+        assertEquals(RideStatus.DRIVER_ASSIGNED, current.status)
+    }
+
     @Test fun `driver cancellation redispatches twice then ends without a third search`() {
         val rides=mock(RideRepository::class.java)
         val history=mock(RideStatusHistoryRepository::class.java)
