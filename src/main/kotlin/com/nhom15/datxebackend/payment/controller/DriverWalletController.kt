@@ -19,7 +19,7 @@ class DriverWalletController(private val paymentService: PaymentService,
     private val environment: org.springframework.core.env.Environment) {
     @GetMapping("/credit-status")
     fun creditStatus(@CurrentUser actor: AuthUser): ApiResponse<com.nhom15.datxebackend.payment.dto.DriverCreditStatus> {
-        val mock = environment.activeProfiles.any { it == "dev" || it == "test" } &&
+        val mock = environment.activeProfiles.any { it == "dev" || it == "test" || it == "demo" } &&
             environment.getProperty("wallet.mock-topup-enabled", Boolean::class.java, false)
         return ApiResponse.ok(wallets.creditStatus(actor.id).copy(mockTopUpEnabled = mock))
     }

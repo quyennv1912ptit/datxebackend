@@ -31,6 +31,8 @@ class CustomerWalletEndpointsTests {
         assertFalse(controller.overview(actor).data!!.mockTopUpEnabled)
         environment.setActiveProfiles("dev")
         assertTrue(controller.overview(actor).data!!.mockTopUpEnabled)
+        environment.setActiveProfiles("demo")
+        assertTrue(controller.overview(actor).data!!.mockTopUpEnabled)
         assertEquals(100_000, controller.overview(actor).data!!.balances.single().balance)
     }
 

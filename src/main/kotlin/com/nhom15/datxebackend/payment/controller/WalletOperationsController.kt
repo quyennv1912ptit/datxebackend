@@ -57,7 +57,7 @@ class AdminWithdrawalController(private val service: WithdrawalService) {
 }
 
 @RestController
-@Profile("dev", "test")
+@Profile("dev", "test", "demo")
 @ConditionalOnProperty(name = ["wallet.mock-topup-enabled"], havingValue = "true")
 @RequestMapping("/api/mock/wallet")
 @PreAuthorize("hasRole('ADMIN')")
@@ -74,7 +74,7 @@ class WalletQueryController(private val service: WalletService, private val envi
     private fun owner(actor: AuthUser) = if (actor.role == com.nhom15.datxebackend.common.enums.Role.DRIVER) WalletOwner.DRIVER else WalletOwner.CUSTOMER
     @GetMapping("/overview")
     fun overview(@CurrentUser actor: AuthUser) = ApiResponse.ok(WalletOverview(service.balances(actor.id, owner(actor)),
-        environment.activeProfiles.any { it == "dev" || it == "test" } && environment.getProperty("wallet.mock-topup-enabled", Boolean::class.java, false)))
+        environment.activeProfiles.any { it == "dev" || it == "test" || it == "demo" } && environment.getProperty("wallet.mock-topup-enabled", Boolean::class.java, false)))
     @GetMapping
     fun balances(@CurrentUser actor: AuthUser) = ApiResponse.ok(service.balances(actor.id, owner(actor)))
     @GetMapping("/transactions")
@@ -84,7 +84,7 @@ class WalletQueryController(private val service: WalletService, private val envi
 }
 
 @RestController
-@Profile("dev", "test")
+@Profile("dev", "test", "demo")
 @ConditionalOnProperty(name = ["wallet.mock-topup-enabled"], havingValue = "true")
 @RequestMapping("/api/driver/wallet")
 @PreAuthorize("hasRole('DRIVER')")
@@ -98,7 +98,7 @@ class DriverMockTopUpController(private val service: DriverMockTopUpService) {
 }
 
 @RestController
-@Profile("dev", "test")
+@Profile("dev", "test", "demo")
 @ConditionalOnProperty(name = ["wallet.mock-topup-enabled"], havingValue = "true")
 @RequestMapping("/api/customer/wallet")
 @PreAuthorize("hasRole('CUSTOMER')")
