@@ -15,5 +15,5 @@ data class TicketReplyPayload(
 ) : NotificationPayload {
     override val type: PayloadType = PayloadType.TICKET_REPLY
     override val title: String = "Hỗ trợ khách hàng: Có phản hồi mới"
-    override val body: String = message.take(50)
+    override val body: String = message.ifBlank { "Đã gửi một hình ảnh" }.take(50)
 }

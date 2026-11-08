@@ -60,9 +60,9 @@ class TicketService(
     @Transactional
     fun sendUserMessage(actor: AuthUser, id: Long, request: SendTicketMessageRequest): TicketMessageDto {
         support.detail(actor, id)
-        val body = validateBody(request.body)
+        val (body, imageUrl) = validateMessage(actor, request.body, request.imageUrl)
         val senderRole = if (actor.role == Role.DRIVER) TicketSenderRole.DRIVER else TicketSenderRole.CUSTOMER
-        val message = messages.save(TicketMessageEntity(id, actor.id, senderRole, body))
+        val message = messages.save(TicketMessageEntity(id, actor.id, senderRole, body, imageUrl))
         jdbc.update(
             """UPDATE support_tickets
                SET status = 'OPEN', handled_by = NULL,
@@ -103,9 +103,9 @@ class TicketService(
         }
         val status = request.status ?: TicketStatus.WAITING_FOR_USER
         if (status !in ADMIN_STATUSES) throw BadRequestException(message = "Trạng thái ticket không hợp lệ")
-        val body = validateBody(request.body)
+        val (body, imageUrl) = validateMessage(admin, request.body, request.imageUrl)
 
-        val message = messages.save(TicketMessageEntity(id, admin.id, TicketSenderRole.ADMIN, body))
+        val message = messages.save(TicketMessageEntity(id, admin.id, TicketSenderRole.ADMIN, body, imageUrl))
         ticket.status = status
         ticket.handledBy = admin.id
         ticket.response = body // giữ cột response cũ cho màn admin/app cũ
@@ -168,12 +168,26 @@ class TicketService(
     private fun messageDtos(ticketId: Long): List<TicketMessageDto> =
         messages.findByTicketIdOrderByCreatedAtAscIdAsc(ticketId).map { it.toDto() }
 
-    private fun validateBody(body: String): String {
-        val trimmed = body.trim()
-        if (trimmed.isEmpty() || trimmed.length > 4_000) {
-            throw BadRequestException(message = "Nội dung tin nhắn phải từ 1 đến 4000 ký tự")
+    /** Một tin nhắn hợp lệ phải có text hoặc ảnh; nếu có ảnh, ảnh phải thuộc thư mục Cloudinary của chính người gửi. */
+    private fun validateMessage(actor: AuthUser, body: String, imageUrl: String?): Pair<String, String?> {
+        val text = body.trim()
+        val image = imageUrl?.trim()?.takeIf { it.isNotEmpty() }
+        if (text.isEmpty() && image == null) {
+            throw BadRequestException(message = "Tin nhắn phải có nội dung hoặc ảnh")
         }
-        return trimmed
+        if (text.length > 4_000) throw BadRequestException(message = "Nội dung tin nhắn tối đa 4000 ký tự")
+        if (image != null) {
+            if (image.length > 2_048) throw BadRequestException(message = "Đường dẫn ảnh quá dài")
+            val uri = runCatching { java.net.URI(image) }.getOrNull()
+            if (uri?.scheme != "https" || uri.host != "res.cloudinary.com") {
+                throw BadRequestException(message = "Ảnh phải được tải lên Cloudinary bằng API upload của hệ thống")
+            }
+            val folder = "/app_dat_xe/${actor.role.name.lowercase()}/${actor.id}/"
+            if (uri.path?.contains(folder) != true) {
+                throw BadRequestException(message = "Ảnh không thuộc tài khoản đang đăng nhập")
+            }
+        }
+        return text to image
     }
 
     private fun SupportTicket.toSummary() = TicketSummary(
@@ -195,6 +209,7 @@ class TicketService(
         senderId = senderId,
         senderRole = senderRole,
         body = body,
+        imageUrl = imageUrl,
         createdAt = createdAt,
     )
 

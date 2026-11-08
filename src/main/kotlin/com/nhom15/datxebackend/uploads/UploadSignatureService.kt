@@ -18,7 +18,7 @@ class UploadSignatureService(
         var allowedFormats: List<String>? = null
         val folder = when (purpose?.uppercase()) {
             "SUPPORT" -> {
-                if (actor.role !in setOf(Role.CUSTOMER, Role.DRIVER)) throw BadRequestException(message = "Không được tải ảnh hỗ trợ")
+                // Khách, tài xế và admin đều gửi ảnh trong ticket hỗ trợ.
                 allowedFormats = CHAT_IMAGE_FORMATS
                 CloudinaryFolders.forActor(actor)
             }

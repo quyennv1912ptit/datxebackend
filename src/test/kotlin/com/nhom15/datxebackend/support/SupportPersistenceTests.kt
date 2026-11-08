@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
 import org.mockito.Mockito
+import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.datasource.SingleConnectionDataSource
 import java.nio.file.Files
@@ -149,5 +150,23 @@ class SupportPersistenceTests {
         assertEquals("PAID", freshService.getRidePayment(12)?.status)
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM payments WHERE ride_id=12", Int::class.java))
         assertThrows(ForbiddenException::class.java) { payments.confirmCashReceived(customer, 12) }
+    }
+
+    @Test fun `image-only message is allowed and empty text is rejected by the database`() {
+        val ticket = service.create(customer, CreateSupportTicket(UUID.randomUUID(), category = "OTHER", description = "Cần gửi ảnh minh chứng"))
+        jdbc.update(
+            "INSERT INTO support_ticket_messages(ticket_id,sender_id,sender_role,body,image_url) VALUES (?,?,?,?,?)",
+            ticket.id, customer.id, "CUSTOMER", "", "https://res.cloudinary.com/demo/image/upload/v1/app_dat_xe/customer/11/photo.jpg",
+        )
+        assertEquals(1, jdbc.queryForObject(
+            "SELECT count(*) FROM support_ticket_messages WHERE ticket_id=? AND image_url IS NOT NULL",
+            Int::class.java, ticket.id,
+        ))
+        assertThrows(DataIntegrityViolationException::class.java) {
+            jdbc.update(
+                "INSERT INTO support_ticket_messages(ticket_id,sender_id,sender_role,body) VALUES (?,?,?,?)",
+                ticket.id, customer.id, "CUSTOMER", "",
+            )
+        }
     }
 }

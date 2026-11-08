@@ -41,6 +41,7 @@ data class TicketMessageDto(
     val senderId: Long,
     val senderRole: TicketSenderRole,
     val body: String,
+    val imageUrl: String?,
     val createdAt: Instant,
 )
 
@@ -50,12 +51,15 @@ data class TicketDetail(
 )
 
 data class SendTicketMessageRequest(
-    @field:NotBlank
+    /** Có thể rỗng nếu chỉ gửi ảnh; service kiểm tra "text hoặc ảnh". */
     @field:Size(max = 4_000)
-    val body: String,
+    val body: String = "",
 
     /** ADMIN dùng để đổi trạng thái ticket khi gửi; app khách/tài xế bỏ qua. */
     val status: TicketStatus? = null,
+
+    @field:Size(max = 2_048)
+    val imageUrl: String? = null,
 )
 
 data class AdminTicketSummary(

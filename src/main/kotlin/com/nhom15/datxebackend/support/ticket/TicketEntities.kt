@@ -77,6 +77,9 @@ class TicketMessageEntity(
     @Column(nullable = false, columnDefinition = "text")
     val body: String,
 
+    @Column(name = "image_url", length = 2048)
+    val imageUrl: String? = null,
+
     @Column(name = "created_at", nullable = false)
     val createdAt: Instant = Instant.now(),
 

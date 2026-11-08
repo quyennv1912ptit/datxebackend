@@ -82,6 +82,30 @@ class TicketServiceTests {
         verify(messages, never()).save(any(TicketMessageEntity::class.java))
     }
 
+    @Test fun `image-only message is accepted and stores the image url`() {
+        `when`(support.detail(customer, 42)).thenReturn(legacyTicket())
+        `when`(messages.save(any(TicketMessageEntity::class.java))).thenAnswer {
+            (it.arguments[0] as TicketMessageEntity).apply { id = 3 }
+        }
+        val url = "https://res.cloudinary.com/demo/image/upload/v1/app_dat_xe/customer/11/photo.jpg"
+
+        val message = service.sendUserMessage(customer, 42, SendTicketMessageRequest("", imageUrl = url))
+
+        assertEquals("", message.body)
+        assertEquals(url, message.imageUrl)
+        verify(messages).save(any(TicketMessageEntity::class.java))
+    }
+
+    @Test fun `image from another account is rejected`() {
+        `when`(support.detail(customer, 42)).thenReturn(legacyTicket())
+        val foreign = "https://res.cloudinary.com/demo/image/upload/v1/app_dat_xe/customer/99/photo.jpg"
+
+        assertThrows(BadRequestException::class.java) {
+            service.sendUserMessage(customer, 42, SendTicketMessageRequest("", imageUrl = foreign))
+        }
+        verify(messages, never()).save(any(TicketMessageEntity::class.java))
+    }
+
     @Test fun `empty message is rejected before writing`() {
         `when`(support.detail(customer, 42)).thenReturn(legacyTicket())
 
