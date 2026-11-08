@@ -90,16 +90,16 @@ class SupportPersistenceTests {
         val ride = com.nhom15.datxebackend.ride.entity.Ride(customerId = 11, driverId = 11, vehicleId = 2,
             type = com.nhom15.datxebackend.ride.entity.RideType.INSTANT, pickup = com.nhom15.datxebackend.common.domain.Location(), dropoff = com.nhom15.datxebackend.common.domain.Location(),
             vehicleType = com.nhom15.datxebackend.common.enums.VehicleType.CAR, transmission = com.nhom15.datxebackend.common.enums.Transmission.AUTO, fareEstimate = 30000, paymentMethod = com.nhom15.datxebackend.common.enums.PaymentMethod.CASH).apply { id = 12; status = com.nhom15.datxebackend.common.enums.RideStatus.COMPLETED }
-        Mockito.`when`(rides.findByIdAndDriverId(12, driver.id)).thenReturn(ride)
+        Mockito.`when`(rides.findByIdForUpdate(12)).thenReturn(java.util.Optional.of(ride))
         val drivers = Mockito.mock(com.nhom15.datxebackend.driver.repository.DriverRepository::class.java)
-        val payments = com.nhom15.datxebackend.payment.service.PaymentService(jdbc, drivers, rides)
+        val payments = com.nhom15.datxebackend.payment.service.PaymentService(jdbc, drivers, rides, Mockito.mock(com.nhom15.datxebackend.payment.service.WalletService::class.java), Mockito.mock(org.springframework.context.ApplicationEventPublisher::class.java))
         val paid = payments.confirmCashReceived(driver, 12)
         assertEquals("PAID", paid.status)
         assertNotNull(paid.paidAt)
         jdbc.update("UPDATE payments SET paid_at='2026-11-01T01:02:03Z' WHERE ride_id=12")
         val retried = payments.confirmCashReceived(driver, 12)
         assertEquals(java.time.Instant.parse("2026-11-01T01:02:03Z"), retried.paidAt)
-        val freshService = com.nhom15.datxebackend.payment.service.PaymentService(jdbc, drivers, rides)
+        val freshService = com.nhom15.datxebackend.payment.service.PaymentService(jdbc, drivers, rides, Mockito.mock(com.nhom15.datxebackend.payment.service.WalletService::class.java), Mockito.mock(org.springframework.context.ApplicationEventPublisher::class.java))
         assertEquals("PAID", freshService.getRidePayment(12)?.status)
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM payments WHERE ride_id=12", Int::class.java))
         assertThrows(ForbiddenException::class.java) { payments.confirmCashReceived(customer, 12) }

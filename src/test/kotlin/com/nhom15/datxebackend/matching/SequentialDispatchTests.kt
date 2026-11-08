@@ -123,7 +123,7 @@ class SequentialDispatchTests {
         val events=mock(EventPublisher::class.java)
         val outbox=mock(RideDispatchOutboxRepository::class.java)
         val current=ride().apply { searchExpiresAt=Instant.now().minusSeconds(1) }
-        `when`(rides.findById(42)).thenReturn(Optional.of(current))
+        `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(current))
         val service=machine(rides,history,events,outbox)
         assertThrows(ConflictException::class.java) { service.transition(RideTransitionCommand(42,RideTransitionEvent.NO_DRIVER_FOUND,SYSTEM_RIDE_ACTOR)) }
         assertEquals(RideStatus.SEARCHING,current.status)
@@ -133,7 +133,7 @@ class SequentialDispatchTests {
     @Test fun `customer can cancel a search without a reason`() {
         val rides = mock(RideRepository::class.java)
         val current = ride()
-        `when`(rides.findById(42)).thenReturn(Optional.of(current))
+        `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(current))
         `when`(rides.compareAndSetStatus(42L, "SEARCHING", "CANCELLED", current.version)).thenReturn(1)
         val service = machine(rides, mock(RideStatusHistoryRepository::class.java), mock(EventPublisher::class.java), mock(RideDispatchOutboxRepository::class.java))
 
@@ -147,7 +147,7 @@ class SequentialDispatchTests {
     @Test fun `customer cancellation without a reason loses when a driver has already been assigned`() {
         val rides = mock(RideRepository::class.java)
         val current = ride(RideStatus.DRIVER_ASSIGNED).apply { driverId = 7 }
-        `when`(rides.findById(42)).thenReturn(Optional.of(current))
+        `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(current))
         val service = machine(rides, mock(RideStatusHistoryRepository::class.java), mock(EventPublisher::class.java), mock(RideDispatchOutboxRepository::class.java))
 
         assertThrows(ConflictException::class.java) {
@@ -164,7 +164,7 @@ class SequentialDispatchTests {
         val events=mock(EventPublisher::class.java)
         val outbox=mock(RideDispatchOutboxRepository::class.java)
         val current=ride(RideStatus.DRIVER_ASSIGNED).apply { driverId=7 }
-        `when`(rides.findById(42)).thenReturn(Optional.of(current))
+        `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(current))
         `when`(rides.compareAndSetStatus(eq(42L),anyString(),anyString(),anyLong())).thenReturn(1)
         val service=machine(rides,history,events,outbox)
         for (i in 0..2) {
@@ -186,15 +186,57 @@ class SequentialDispatchTests {
     @Test fun `old search timeout and old generation cannot end a new redispatch`() {
         val rides = mock(RideRepository::class.java)
         val current = ride().apply { redispatchCount = 1 }
-        `when`(rides.findById(42)).thenReturn(Optional.of(current))
+        `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(current))
         val service = machine(rides, mock(RideStatusHistoryRepository::class.java), mock(EventPublisher::class.java), mock(RideDispatchOutboxRepository::class.java))
         assertThrows(ConflictException::class.java) { service.transition(RideTransitionCommand(42, RideTransitionEvent.NO_DRIVER_FOUND, SYSTEM_RIDE_ACTOR)) }
         assertThrows(ConflictException::class.java) { service.transition(RideTransitionCommand(42, RideTransitionEvent.SYSTEM_FAILURE, SYSTEM_RIDE_ACTOR, expectedSearchGeneration = 0)) }
         assertEquals(RideStatus.SEARCHING, current.status)
     }
 
-    private fun machine(rides: RideRepository,history: RideStatusHistoryRepository,events: EventPublisher,outbox: RideDispatchOutboxRepository) =
+    @Test fun `completion rejects cancelled completed and pre-handover rides without publishing payment`() {
+        for (status in listOf(RideStatus.CANCELLED, RideStatus.COMPLETED, RideStatus.IN_PROGRESS)) {
+            val rides = mock(RideRepository::class.java)
+            val current = ride(status).apply { driverId = 7 }
+            `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(current))
+            val events = mock(EventPublisher::class.java)
+            val service = machine(rides, mock(RideStatusHistoryRepository::class.java), events, mock(RideDispatchOutboxRepository::class.java))
+            assertThrows(com.nhom15.datxebackend.payment.exception.InvalidTripStateException::class.java) {
+                service.transition(RideTransitionCommand(42, RideTransitionEvent.COMPLETE, driverRideActor(7)))
+            }
+            verifyNoInteractions(events)
+        }
+    }
+
+    @Test fun `cancelled ride releases its voucher for reuse`() {
+        val rides = mock(RideRepository::class.java)
+        val current = ride()
+        `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(current))
+        `when`(rides.compareAndSetStatus(42L, "SEARCHING", "CANCELLED", current.version)).thenReturn(1)
+        val vouchers = mock(com.nhom15.datxebackend.voucher.service.VoucherService::class.java)
+        val service = machine(rides, mock(RideStatusHistoryRepository::class.java), mock(EventPublisher::class.java), mock(RideDispatchOutboxRepository::class.java), vouchers)
+
+        service.transition(RideTransitionCommand(42, RideTransitionEvent.CANCEL, customerRideActor(1)))
+
+        verify(vouchers).releaseForRide(42)
+    }
+
+    @Test fun `driver redispatch keeps the voucher while the ride searches again`() {
+        val rides = mock(RideRepository::class.java)
+        val current = ride(RideStatus.DRIVER_ASSIGNED).apply { driverId = 7 }
+        `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(current))
+        `when`(rides.compareAndSetStatus(eq(42L), anyString(), anyString(), anyLong())).thenReturn(1)
+        val vouchers = mock(com.nhom15.datxebackend.voucher.service.VoucherService::class.java)
+        val service = machine(rides, mock(RideStatusHistoryRepository::class.java), mock(EventPublisher::class.java), mock(RideDispatchOutboxRepository::class.java), vouchers)
+
+        service.transition(RideTransitionCommand(42, RideTransitionEvent.CANCEL, driverRideActor(7), cancelReason = "Không thể đón"))
+
+        verify(vouchers, never()).releaseForRide(anyLong())
+    }
+
+    private fun machine(rides: RideRepository,history: RideStatusHistoryRepository,events: EventPublisher,outbox: RideDispatchOutboxRepository,
+                        vouchers: com.nhom15.datxebackend.voucher.service.VoucherService = mock(com.nhom15.datxebackend.voucher.service.VoucherService::class.java)) =
         RideStateMachine(rides,history,events,mock(VehicleHandoverReportRepository::class.java),
             mock(com.nhom15.datxebackend.chat.service.ConversationService::class.java),MatchingProperties(),outbox,
-            mock(DispatchOfferRepository::class.java),mock(DriverRepository::class.java))
+            mock(DispatchOfferRepository::class.java),mock(DriverRepository::class.java),
+            mock(com.nhom15.datxebackend.payment.service.WalletService::class.java), vouchers)
 }

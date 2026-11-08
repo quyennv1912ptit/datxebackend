@@ -69,4 +69,14 @@ class FcmMessageFactoryTests {
         assertEquals(DeliveryPolicy.PUSH_ALSO, PayloadType.CHAT_MESSAGE.policy)
         assertEquals(DeliveryPolicy.WS_ONLY, PayloadType.CHAT_READ.policy)
     }
+
+    @Test fun `withdrawal FCM contains the actual outcome and refund reason`() {
+        val payload = com.nhom15.datxebackend.notification.dto.WithdrawalNotificationPayload(9, 500_000,
+            com.nhom15.datxebackend.payment.entity.WithdrawalStatus.REJECTED, "Sai số tài khoản")
+        val message = FcmMessageFactory.build("token", Recipient.Driver(7), WsEnvelope(PayloadType.WITHDRAWAL_REVIEWED, payload), "{}", now)
+        val json = JsonParser.parseString(GsonFactory.getDefaultInstance().toString(message)).asJsonObject
+        assertEquals(payload.title, json["notification"].asJsonObject["title"].asString)
+        assertEquals(payload.body, json["notification"].asJsonObject["body"].asString)
+        assertEquals(DeliveryPolicy.PUSH_ALSO, PayloadType.WITHDRAWAL_REVIEWED.policy)
+    }
 }

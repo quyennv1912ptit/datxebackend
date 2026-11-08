@@ -113,7 +113,8 @@ class RideQueryService(
             chatService.unreadCount(ride, actor)
         } else 0L
         return RideResponseMapper.detail(ride, historyResponses, reportResponses, unreadChatCount, customer, driver)
-            .copy(payment = paymentService.getRidePayment(rideId))
+            .copy(payment = paymentService.getRidePayment(rideId), paymentMethod = ride.paymentMethod, driverEarnings =
+                if (actor.role == Role.DRIVER && ride.driverId == actor.id) paymentService.getDriverRideEarnings(actor.id, rideId) else null)
     }
 
     @Transactional(readOnly = true)

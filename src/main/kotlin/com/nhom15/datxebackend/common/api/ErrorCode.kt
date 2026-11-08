@@ -59,10 +59,22 @@ enum class ErrorCode(val httpStatus: HttpStatus, val defaultMessage: String) {
     CHAT_CLOSED(HttpStatus.CONFLICT, "Hội thoại của chuyến đã đóng"),
     RATE_LIMITED(HttpStatus.TOO_MANY_REQUESTS, "Bạn gửi yêu cầu quá nhanh, vui lòng thử lại sau"),
 
+    INSUFFICIENT_CUSTOMER_BALANCE(HttpStatus.CONFLICT, "Số dư ví khách hàng không đủ"),
+    CREDIT_WALLET_BELOW_MINIMUM(HttpStatus.CONFLICT, "Vui lòng nạp thêm tiền vào ví tín dụng để nhận chuyến"),
+    WALLET_NOT_FOUND(HttpStatus.NOT_FOUND, "Không tìm thấy ví của tài khoản"),
+    INSUFFICIENT_CREDIT_BALANCE(HttpStatus.CONFLICT, "Ví tín dụng không đủ trả chiết khấu"),
+    INSUFFICIENT_CASH_BALANCE(HttpStatus.CONFLICT, "Ví tiền mặt không đủ để rút"),
+    PAYMENT_METHOD_MISMATCH(HttpStatus.CONFLICT, "Phương thức thanh toán không khớp với chuyến đi"),
+    INVALID_AMOUNT(HttpStatus.BAD_REQUEST, "Số tiền phải là số nguyên đồng lớn hơn 0"),
+    INVALID_WALLET_TYPE(HttpStatus.BAD_REQUEST, "Loại ví không phù hợp với thao tác"),
+    WITHDRAWAL_REQUEST_NOT_FOUND(HttpStatus.NOT_FOUND, "Không tìm thấy yêu cầu rút tiền"),
+    INVALID_WITHDRAWAL_ACTION(HttpStatus.CONFLICT, "Chỉ được xử lý yêu cầu rút tiền đang PENDING"),
+    INVALID_TOP_UP_AMOUNT(HttpStatus.BAD_REQUEST, "Số tiền nạp phải từ 1 đến 50.000.000 đồng"),
+    WALLET_BUSY(HttpStatus.SERVICE_UNAVAILABLE, "Hệ thống đang bận, vui lòng thử lại sau"),
+
     // ---- Payment & Rating ----
     PAYMENT_NOT_FOUND(HttpStatus.NOT_FOUND, "Không tìm thấy giao dịch thanh toán"),
     PAYMENT_ALREADY_PAID(HttpStatus.CONFLICT, "Chuyến đã được thanh toán"),
-    INSUFFICIENT_BALANCE(HttpStatus.BAD_REQUEST, "Số dư ví không đủ"),
     INVALID_SIGNATURE(HttpStatus.BAD_REQUEST, "Chữ ký callback không hợp lệ"),
     VOUCHER_INVALID(HttpStatus.BAD_REQUEST, "Mã giảm giá không hợp lệ hoặc đã hết hạn"),
     RATING_ALREADY_EXISTS(HttpStatus.CONFLICT, "Bạn đã đánh giá chuyến này rồi")

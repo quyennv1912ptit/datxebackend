@@ -24,6 +24,9 @@ class Driver : BaseEntity(), RoleAwareEntity {
     @Column(name = "average_rating")
     var averageRating: Double? = null
 
+    @Column(name = "bank_name")
+    var bankName: String? = null
+
     @Column(name = "bank_account_number")
     var bankAccountNumber: String? = null
 

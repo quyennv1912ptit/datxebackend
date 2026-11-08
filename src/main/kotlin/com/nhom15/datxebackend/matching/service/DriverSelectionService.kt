@@ -18,6 +18,7 @@ class DriverSelectionService(
     private val driverRepository: DriverRepository,
     private val driverSkillRepository: DriverSkillRepository,
     private val properties: MatchingProperties,
+    @org.springframework.beans.factory.annotation.Value("\${wallet.minimum-credit:50000}") private val minimumCredit: Long = 50_000,
 ) {
     fun filterAndRankDrivers(
         nearbyDrivers: List<NearbyDriver>,
@@ -60,6 +61,7 @@ class DriverSelectionService(
 
     fun isEligible(driver: Driver, requiredVehicleType: VehicleType, requiredTransmission: Transmission): Boolean {
         if (driver.status != DriverStatus.ONLINE) return false
+        if ((driver.creditBalance ?: 0) < minimumCredit) return false
         if (driver.onlineVehicleType != requiredVehicleType) return false
         if (driver.verificationStatus != "APPROVED" || driver.isFlagged == true) return false
         if (driver.licenseExpiryDate == null || driver.licenseExpiryDate!!.isBefore(LocalDate.now())) return false

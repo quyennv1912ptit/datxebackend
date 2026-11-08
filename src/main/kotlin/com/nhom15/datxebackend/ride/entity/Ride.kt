@@ -87,7 +87,7 @@ class Ride(
 
     @Enumerated(EnumType.STRING)
     @Column(name = "payment_method", nullable = false, length = 30)
-    val paymentMethod: PaymentMethod,
+    var paymentMethod: PaymentMethod,
 
     @Column(name = "note", length = 500)
     val note: String? = null,

@@ -136,6 +136,7 @@ class DriverSelectionTests {
         vehicleType: VehicleType = VehicleType.MOTORCYCLE,
         licenseClass: String = "A",
     ) = Driver().apply {
+        creditBalance = 50_000
         this.id = id
         status = DriverStatus.ONLINE
         onlineVehicleType = vehicleType

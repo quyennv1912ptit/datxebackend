@@ -80,6 +80,31 @@ class VoucherService(private val jdbcTemplate: JdbcTemplate) {
         }
     }
 
+    /**
+     * Hoàn lượt dùng voucher khi chuyến kết thúc mà không hoàn thành (CANCELLED,
+     * NO_DRIVER_FOUND, EXPIRED, FAILED_SYSTEM). Idempotent: xóa usage trước, chỉ
+     * giảm usage_count khi xóa được đúng một dòng.
+     */
+    @Transactional
+    fun releaseForRide(rideId: Long) {
+        if (rideId <= 0) return
+        val voucherId = jdbcTemplate.query(
+            "SELECT voucher_id FROM voucher_usages WHERE ride_id = ?",
+            { row, _ -> row.getLong(1) },
+            rideId,
+        ).firstOrNull() ?: return
+        val deleted = jdbcTemplate.update(
+            "DELETE FROM voucher_usages WHERE ride_id = ? AND voucher_id = ?",
+            rideId, voucherId,
+        )
+        if (deleted == 1) {
+            jdbcTemplate.update(
+                "UPDATE vouchers SET usage_count = GREATEST(usage_count - 1, 0) WHERE id = ?",
+                voucherId,
+            )
+        }
+    }
+
     private fun load(code: String, customerId: Long): VoucherRow? = jdbcTemplate.query(
         """SELECT v.id, v.code, v.discount_type, v.value, v.max_discount,
                   v.minimum_order_amount, v.usage_count, v.usage_limit, v.valid_from, v.valid_to

@@ -37,6 +37,9 @@ class DriverProfileService(
             }
             driver.licenseImageUrl = url
         }
+        // Chỉ cập nhật khi client gửi trường; app cũ không gửi thì giữ nguyên thông tin ngân hàng.
+        request.bankName?.let { driver.bankName = it.trim().takeIf(String::isNotEmpty) }
+        request.bankAccountNumber?.let { driver.bankAccountNumber = it.trim().takeIf(String::isNotEmpty) }
         val saved = driverRepository.save(driver)
         return response(saved)
     }
@@ -49,13 +52,15 @@ class DriverProfileService(
         if (driver.deletedAt != null) throw AppException(ErrorCode.ACCOUNT_LOCKED)
         driver.fullName = request.fullName.trim()
         driver.email = request.email?.trim()?.takeIf(String::isNotEmpty)
+        request.bankName?.let { driver.bankName = it.trim().takeIf(String::isNotEmpty) }
+        request.bankAccountNumber?.let { driver.bankAccountNumber = it.trim().takeIf(String::isNotEmpty) }
         val firebaseUid = driver.firebaseUid
         TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
             override fun afterCommit() {
                 authenticatedUserCache.evict(firebaseUid)
             }
         })
-        return DriverIdentityResponse(driver.fullName, driver.email)
+        return DriverIdentityResponse(driver.fullName, driver.email, driver.bankName, driver.bankAccountNumber)
     }
 
     @Transactional
@@ -83,6 +88,8 @@ class DriverProfileService(
                 complete -> "PENDING"
                 else -> "NOT_SUBMITTED"
             },
+            bankName = driver.bankName,
+            bankAccountNumber = driver.bankAccountNumber,
         )
     }
 

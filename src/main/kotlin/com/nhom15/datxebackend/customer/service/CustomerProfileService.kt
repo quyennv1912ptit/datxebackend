@@ -34,6 +34,8 @@ class CustomerProfileService(
         customer.email = request.email?.trim()?.takeIf(String::isNotEmpty)
         customer.dateOfBirth = request.dateOfBirth
         customer.gender = request.gender?.trim()?.takeIf(String::isNotEmpty)?.uppercase()
+        if (request.defaultPaymentMethod != null && request.defaultPaymentMethod.name !in setOf("CASH", "WALLET"))
+            throw com.nhom15.datxebackend.payment.exception.PaymentMethodMismatchException("Chỉ hỗ trợ tiền mặt và ví ứng dụng")
         customer.defaultPaymentMethod = request.defaultPaymentMethod?.name
         return response(customerRepository.save(customer))
     }

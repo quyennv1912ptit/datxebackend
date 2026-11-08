@@ -64,5 +64,7 @@ data class RideDetailResponse(
     val transmission: Transmission? = null,
     val driver: RideDriverResponse? = null,
     val customer: RideCustomerResponse? = null,
+    val paymentMethod: com.nhom15.datxebackend.common.enums.PaymentMethod? = null,
+    val driverEarnings: com.nhom15.datxebackend.payment.dto.DriverRideEarnings? = null,
     val payment: com.nhom15.datxebackend.payment.dto.RidePaymentResponse? = null,
 )

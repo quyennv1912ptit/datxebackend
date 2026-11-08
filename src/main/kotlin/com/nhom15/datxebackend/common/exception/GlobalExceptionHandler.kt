@@ -26,6 +26,17 @@ class GlobalExceptionHandler {
     private val log = LoggerFactory.getLogger(javaClass)
 
     @ExceptionHandler(
+        org.springframework.dao.PessimisticLockingFailureException::class,
+        jakarta.persistence.PessimisticLockException::class,
+        jakarta.persistence.LockTimeoutException::class,
+    )
+    fun handleLockBusy(e: Exception): ResponseEntity<ApiResponse<Nothing>> {
+        log.warn("Wallet/database lock contention: {}", e.javaClass.simpleName)
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header("Retry-After", "3")
+            .body(ApiResponse.fail(ErrorCode.WALLET_BUSY, status = HttpStatus.SERVICE_UNAVAILABLE.value()))
+    }
+
+    @ExceptionHandler(
         DataAccessResourceFailureException::class,
         CannotCreateTransactionException::class,
         DataAccessException::class,
@@ -102,7 +113,7 @@ class GlobalExceptionHandler {
             else -> if (status.is4xxClientError) ErrorCode.BAD_REQUEST else ErrorCode.INTERNAL_ERROR
         }
         return ResponseEntity.status(status)
-            .body(ApiResponse.fail(code, if (status.is5xxServerError) code.defaultMessage else e.body.detail ?: code.defaultMessage))
+            .body(ApiResponse.fail(code, if (status.is5xxServerError) code.defaultMessage else e.body.detail ?: code.defaultMessage, status = status.value()))
     }
 
     private fun respond(
@@ -111,5 +122,5 @@ class GlobalExceptionHandler {
         message: String = code.defaultMessage,
         details: Map<String, String>? = null
     ): ResponseEntity<ApiResponse<Nothing>> =
-        ResponseEntity.status(status).body(ApiResponse.fail(code, message, details))
+        ResponseEntity.status(status).body(ApiResponse.fail(code, message, details, status.value()))
 }

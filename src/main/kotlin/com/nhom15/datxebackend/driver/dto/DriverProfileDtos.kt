@@ -29,6 +29,16 @@ data class UpdateDriverProfileRequest(
     @JsonAlias("licenseImageUrl")
     @field:Size(max = 2048)
     val licenseImageUrl: String? = null,
+
+    @JsonProperty("bank_name")
+    @JsonAlias("bankName")
+    @field:Size(max = 255)
+    val bankName: String? = null,
+
+    @JsonProperty("bank_account_number")
+    @JsonAlias("bankAccountNumber")
+    @field:Size(max = 255)
+    val bankAccountNumber: String? = null,
 )
 
 data class DriverProfileResponse(
@@ -39,6 +49,8 @@ data class DriverProfileResponse(
     @JsonProperty("license_image_url") val licenseImageUrl: String?,
     @JsonProperty("license_verified") val licenseVerified: Boolean,
     @JsonProperty("license_review_status") val licenseReviewStatus: String,
+    @JsonProperty("bank_name") val bankName: String? = null,
+    @JsonProperty("bank_account_number") val bankAccountNumber: String? = null,
 )
 
 
@@ -49,6 +61,12 @@ data class UpdateDriverIdentityRequest(
     @field:Email
     @field:Size(max = 255)
     val email: String? = null,
+    @JsonAlias("bank_name")
+    @field:Size(max = 255)
+    val bankName: String? = null,
+    @JsonAlias("bank_account_number")
+    @field:Size(max = 255)
+    val bankAccountNumber: String? = null,
 )
 
-data class DriverIdentityResponse(val fullName: String?, val email: String?)
+data class DriverIdentityResponse(val fullName: String?, val email: String?, val bankName: String? = null, val bankAccountNumber: String? = null)

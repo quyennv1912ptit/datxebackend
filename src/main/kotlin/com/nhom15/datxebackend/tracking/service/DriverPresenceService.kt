@@ -24,6 +24,7 @@ class DriverPresenceService(
     private val driverSkillRepository: DriverSkillRepository,
     private val locationService: LocationService,
     private val redisTemplate: StringRedisTemplate,
+    private val wallets: com.nhom15.datxebackend.payment.service.WalletService,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -33,7 +34,9 @@ class DriverPresenceService(
             NotFoundException(ErrorCode.USER_NOT_FOUND, "Không tìm thấy tài xế")
         }
 
+        if (driver.status == DriverStatus.BLOCKED) throw com.nhom15.datxebackend.payment.exception.CreditWalletBelowMinimumException()
         if (online) {
+            wallets.requireEligibleDriver(driverId)
             if (vehicleType == null) {
                 throw BadRequestException(message = "Cần chọn vehicle_type khi bật trạng thái online")
             }

@@ -52,6 +52,7 @@ class RideService(
     private val idempotencyRepository: RideCreateIdempotencyRepository,
     private val dispatchOutbox: RideDispatchOutboxRepository,
     private val rateLimiter: RedisRateLimiter,
+    private val wallets: com.nhom15.datxebackend.payment.service.WalletService,
 ) {
 
     @Transactional
@@ -62,7 +63,7 @@ class RideService(
         val key = normalizeIdempotencyKey(idempotencyKey)
         val requestHash = key?.let { hashRequest(request) }
         customerRepository.findByIdForUpdate(actor.id).orElseThrow {
-            NotFoundException(ErrorCode.USER_NOT_FOUND)
+            com.nhom15.datxebackend.payment.exception.UserNotFoundException()
         }
 
         if (key != null && requestHash != null) {
@@ -84,9 +85,9 @@ class RideService(
         }
 
         val vehicle = findOwnedVehicle(request.vehicleId, actor.id)
-        if (request.paymentMethod != PaymentMethod.CASH) {
+        if (request.paymentMethod !in setOf(PaymentMethod.CASH, PaymentMethod.WALLET)) {
             throw BadRequestException(
-                message = "Hiện chỉ hỗ trợ tiền mặt; thanh toán ví/VNPay/MoMo chưa được bật",
+                message = "Chỉ hỗ trợ thanh toán CASH hoặc WALLET",
             )
         }
         rateLimiter.check(RedisKeys.rideQuoteRate(actor.id.toString()), RIDE_QUOTE_LIMIT, RIDE_QUOTE_WINDOW)
@@ -101,6 +102,9 @@ class RideService(
         val quote = quoteProvider.quote(quoteInput.copy(route = savedRoute.drivingRoute()))
         val appliedVoucher = voucherService.calculate(actor, request.voucherCode, quote.estimatedFare)
 
+        if (request.paymentMethod == PaymentMethod.WALLET) {
+            wallets.checkBooking(actor.id, (quote.estimatedFare - (appliedVoucher?.discountAmount ?: 0)).coerceAtLeast(0))
+        }
         val pendingRide = rideRepository.saveAndFlush(
             RideFactory.create(
                 request = request,

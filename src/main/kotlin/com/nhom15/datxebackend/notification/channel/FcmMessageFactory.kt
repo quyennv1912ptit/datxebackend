@@ -20,6 +20,7 @@ object FcmMessageFactory {
         if (ttl <= 0) return null
         val channel = if (offer) "datxe-offers-v1" else "datxe-updates-v1"
         val title = when (envelope.type) {
+            PayloadType.WITHDRAWAL_REVIEWED, PayloadType.PAYMENT_UPDATED -> (envelope.payload as? com.nhom15.datxebackend.notification.dto.NotificationPayload)?.title ?: "Kết quả yêu cầu rút tiền"
             PayloadType.RIDE_OFFER -> "Có yêu cầu chuyến mới"
             PayloadType.CHAT_MESSAGE -> "Có tin nhắn mới"
             PayloadType.RIDE_ASSIGNED -> "Đã có tài xế nhận chuyến"
@@ -34,7 +35,9 @@ object FcmMessageFactory {
             PayloadType.DRIVER_FORCE_OFFLINE -> "Đã tạm ngừng nhận chuyến"
             else -> "Cập nhật chuyến đi"
         }
-        val body = if (offer) "Mở ứng dụng để xem và nhận chuyến trước khi hết hạn."
+        val body = if (envelope.type in setOf(PayloadType.WITHDRAWAL_REVIEWED, PayloadType.PAYMENT_UPDATED))
+            (envelope.payload as? com.nhom15.datxebackend.notification.dto.NotificationPayload)?.body ?: "Mở ứng dụng để xem kết quả rút tiền."
+            else if (offer) "Mở ứng dụng để xem và nhận chuyến trước khi hết hạn."
             else "Mở ứng dụng để xem thông tin mới nhất."
         val androidNotification = AndroidNotification.builder()
             .setChannelId(channel)

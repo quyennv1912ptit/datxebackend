@@ -9,4 +9,4 @@ open class AppException(
     val httpStatus: HttpStatus = errorCode.httpStatus,
     cause: Throwable? = null,
     val details: Map<String, String>? = null
-) : RuntimeException(message, cause)
+) : BaseAppException(errorCode.name, message, cause)

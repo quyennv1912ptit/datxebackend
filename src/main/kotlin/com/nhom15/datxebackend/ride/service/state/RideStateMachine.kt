@@ -43,6 +43,8 @@ class RideStateMachine(
     private val dispatchOutbox: RideDispatchOutboxRepository,
     private val dispatchOffers: DispatchOfferRepository,
     private val drivers: DriverRepository,
+    private val wallets: com.nhom15.datxebackend.payment.service.WalletService,
+    private val vouchers: com.nhom15.datxebackend.voucher.service.VoucherService,
 ) {
 
     private val assignedDriverEvents = setOf(
@@ -70,7 +72,7 @@ class RideStateMachine(
             )
         }
 
-        val ride = findRide(command.rideId)
+        val ride = rideRepository.findByIdForUpdate(command.rideId).orElseThrow { NotFoundException(ErrorCode.RIDE_NOT_FOUND) }
         authorize(ride, command.event, command.actor)
 
         if (command.expectedSearchGeneration != null && ride.redispatchCount != command.expectedSearchGeneration) {
@@ -80,6 +82,8 @@ class RideStateMachine(
             (ride.searchExpiresAt == null || ride.searchExpiresAt!!.isAfter(Instant.now()))) {
             throw ConflictException(ErrorCode.INVALID_RIDE_STATE, "Chưa hết thời gian tìm tài xế")
         }
+        if (command.event == RideTransitionEvent.COMPLETE && ride.status != RideStatus.VEHICLE_RETURNED)
+            throw com.nhom15.datxebackend.payment.exception.InvalidTripStateException()
         val previousStatus = ride.status
         val oldDriver = ride.driverId
         val retryDispatch = (command.event == RideTransitionEvent.CANCEL && command.actor.role == Role.DRIVER ||
@@ -133,6 +137,10 @@ class RideStateMachine(
 
         ride.status = nextStatus
         rideRepository.saveAndFlush(ride)
+        if (nextStatus.terminal && nextStatus != RideStatus.COMPLETED) {
+            // Chuyến không hoàn thành: trả lại lượt dùng voucher để khách dùng lại.
+            vouchers.releaseForRide(ride.id)
+        }
         if (nextStatus == RideStatus.SEARCHING) dispatchOutbox.schedule(ride.id)
         if (nextStatus.terminal || retryDispatch) {
             dispatchOffers.closeRide(ride.id)
@@ -200,6 +208,10 @@ class RideStateMachine(
         val ride = findRide(rideId)
         val driver = drivers.findByIdForUpdate(driverId).orElseThrow { NotFoundException(ErrorCode.USER_NOT_FOUND) }
         if (driver.status != DriverStatus.ONLINE) throw ConflictException(ErrorCode.DRIVER_NOT_AVAILABLE)
+        wallets.requireEligibleDriver(driverId,
+            (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).takeIf {
+                ride.paymentMethod == com.nhom15.datxebackend.common.enums.PaymentMethod.CASH
+            })
         driver.status = DriverStatus.BUSY
         drivers.save(driver)
         dispatchOffers.outstanding(rideId)?.let { dispatchOffers.close(it.offerId, "ACCEPTED") }
@@ -249,7 +261,11 @@ class RideStateMachine(
             throw ConflictException(ErrorCode.INVALID_RIDE_STATE)
         }
         drivers.findByIdForUpdate(driverId).orElseThrow { NotFoundException(ErrorCode.USER_NOT_FOUND) }.let { driver ->
-            driver.status = DriverStatus.BUSY
+            wallets.requireEligibleDriver(driverId,
+            (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).takeIf {
+                ride.paymentMethod == com.nhom15.datxebackend.common.enums.PaymentMethod.CASH
+            })
+        driver.status = DriverStatus.BUSY
             drivers.save(driver)
         }
         ride.driverId = driverId
