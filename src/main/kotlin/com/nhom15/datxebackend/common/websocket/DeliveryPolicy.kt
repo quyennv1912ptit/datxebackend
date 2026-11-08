@@ -4,4 +4,5 @@ enum class DeliveryPolicy {
     WS_ONLY,
     WS_THEN_PUSH,
     PUSH_ALSO,
+    PUSH_ONLY,
 }

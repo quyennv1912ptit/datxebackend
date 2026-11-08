@@ -16,6 +16,7 @@ import com.nhom15.datxebackend.common.exception.BadRequestException
 import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.common.exception.ForbiddenException
 import com.nhom15.datxebackend.common.exception.NotFoundException
+import com.nhom15.datxebackend.common.util.roundToNearestThousandVnd
 import com.nhom15.datxebackend.common.port.RideAssignmentResult
 import com.nhom15.datxebackend.ride.entity.HandoverPhase
 import com.nhom15.datxebackend.ride.entity.Ride
@@ -132,7 +133,8 @@ class RideStateMachine(
         if (nextStatus == RideStatus.COMPLETED) ride.completedAt = Instant.now()
 
         if (nextStatus == RideStatus.COMPLETED && ride.finalFare == null) {
-            ride.finalFare = (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0)
+            // Giá cuối cùng khách trả phải là bội số 1.000 để tài xế thối tiền mặt.
+            ride.finalFare = (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).roundToNearestThousandVnd()
         }
 
         ride.status = nextStatus

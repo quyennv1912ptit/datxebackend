@@ -90,6 +90,11 @@ class WalletServiceTests {
         assertEquals(20_000, WalletService.commission(100_003))
     }
 
+    @Test fun `commission keeps vnd precision and never rounds to thousand`() {
+        assertEquals(6_200, WalletService.commission(31_000))
+        assertEquals(6_250, WalletService.commission(31_250))
+    }
+
     @Test fun `overflow and negative top up do not mutate balance`() {
         val cash = wallet(WalletOwner.DRIVER, WalletType.CASH, Long.MAX_VALUE)
         assertThrows(RuntimeException::class.java) { service.topUp(7, WalletOwner.DRIVER, WalletType.CASH, 1) }

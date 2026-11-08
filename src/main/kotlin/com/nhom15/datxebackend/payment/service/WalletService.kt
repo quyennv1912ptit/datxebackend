@@ -191,7 +191,9 @@ class WalletService(
     private fun requireFare(fare: Long) { if (fare < 0) throw BadRequestException(message = "Cước phí không hợp lệ") }
 
     companion object {
-        // Round down to whole VND; divide first to avoid multiplication overflow.
+        // Chiết khấu 20% = chia 5, làm tròn xuống đến 1 VND (không bao giờ làm tròn 1.000).
+        // finalFare là bội số 1.000 nên kết quả luôn nguyên: 31.000 / 5 = 6.200.
+        // Chia trước để tránh tràn số khi nhân 20.
         fun commission(fare: Long): Long { require(fare >= 0); return fare / 5 }
     }
 }

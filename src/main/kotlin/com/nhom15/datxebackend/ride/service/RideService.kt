@@ -10,6 +10,7 @@ import com.nhom15.datxebackend.common.exception.BadRequestException
 import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.common.exception.ForbiddenException
 import com.nhom15.datxebackend.common.exception.NotFoundException
+import com.nhom15.datxebackend.common.util.roundToNearestThousandVnd
 import com.nhom15.datxebackend.common.port.CustomerVehicleQueryPort
 import com.nhom15.datxebackend.common.port.CustomerVehicleSnapshot
 import com.nhom15.datxebackend.common.security.AuthUser
@@ -101,9 +102,13 @@ class RideService(
         val savedRoute = rideRoutes.resolve(actor.id, request.vehicleId, vehicle.vehicleType, quoteInput.pickup, quoteInput.dropoff, request.routeQuoteId)
         val quote = quoteProvider.quote(quoteInput.copy(route = savedRoute.drivingRoute()))
         val appliedVoucher = voucherService.calculate(actor, request.voucherCode, quote.estimatedFare)
+        // Số tiền khách thực trả được làm tròn 1.000; fare_estimate vẫn giữ giá gốc để đối soát.
+        val payableFare = (quote.estimatedFare - (appliedVoucher?.discountAmount ?: 0))
+            .coerceAtLeast(0)
+            .roundToNearestThousandVnd()
 
         if (request.paymentMethod == PaymentMethod.WALLET) {
-            wallets.checkBooking(actor.id, (quote.estimatedFare - (appliedVoucher?.discountAmount ?: 0)).coerceAtLeast(0))
+            wallets.checkBooking(actor.id, payableFare)
         }
         val pendingRide = rideRepository.saveAndFlush(
             RideFactory.create(

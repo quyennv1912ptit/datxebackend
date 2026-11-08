@@ -59,6 +59,9 @@ class NotificationDispatcher(
                     else -> UNREACHABLE
                 }
             }
+
+            // Ticket hỗ trợ chỉ dùng FCM theo yêu cầu kiến trúc REST + Push, không WebSocket.
+            PUSH_ONLY -> if (trySend(fcm, to, envelope)) SENT_PUSH else UNREACHABLE
         }
         persist(to, payload, envelope, result)
         log.info("notify type={} to={} policy={} result={}", payload.type, to, payload.type.policy, result)

@@ -1,6 +1,7 @@
 package com.nhom15.datxebackend.support
 
 import com.nhom15.datxebackend.common.enums.Role
+import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.common.exception.BadRequestException
 import com.nhom15.datxebackend.common.exception.ForbiddenException
 import com.nhom15.datxebackend.common.exception.NotFoundException
@@ -37,23 +38,41 @@ class SupportService(private val jdbc: JdbcTemplate, private val rides: RideRepo
             "SELECT id FROM support_tickets WHERE owner_id=? AND owner_role=? AND client_request_id=?",
             Long::class.java, actor.id, actor.role.name, request.clientRequestId,
         )!!
-        if (inserted != null) request.images.forEach {
-            jdbc.update("INSERT INTO support_ticket_images(ticket_id,file_url,public_id) VALUES (?,?,?)", id, it.fileUrl, it.publicId)
+        if (inserted != null) {
+            request.images.forEach {
+                jdbc.update("INSERT INTO support_ticket_images(ticket_id,file_url,public_id) VALUES (?,?,?)", id, it.fileUrl, it.publicId)
+            }
+            // Tin nhắn đầu tiên của timeline chat chính là mô tả ban đầu của người tạo.
+            jdbc.update(
+                """INSERT INTO support_ticket_messages(ticket_id,sender_id,sender_role,body,created_at)
+                   VALUES (?,?,?,?, (SELECT created_at FROM support_tickets WHERE id=?))""".trimIndent(),
+                id, actor.id, actor.role.name, request.description.trim(), id,
+            )
         }
-        return detail(actor, id)
+        val ticket = detail(actor, id)
+        if (ticket.rideId != request.rideId || ticket.category != request.category ||
+            ticket.description != request.description.trim() || ticket.images != request.images)
+            throw ConflictException(message = "Mã gửi yêu cầu đã được dùng cho nội dung khác. Vui lòng tải lại yêu cầu.")
+        return ticket
     }
 
     @Transactional(readOnly = true)
     fun list(actor: AuthUser, page: Int, status: String? = null): List<SupportTicket> {
         if (page !in 0..10000) throw BadRequestException(message = "Trang không hợp lệ")
-        if (actor.role == Role.ADMIN) {
-            if (status != null && status !in setOf("OPEN", "IN_PROGRESS", "RESOLVED")) throw BadRequestException()
-            return if (status == null) jdbc.query("SELECT * FROM support_tickets ORDER BY id DESC LIMIT 20 OFFSET ?", { r, _ -> map(r) }, page * 20)
-            else jdbc.query("SELECT * FROM support_tickets WHERE status=? ORDER BY id DESC LIMIT 20 OFFSET ?", { r, _ -> map(r) }, status, page * 20)
+        if (status != null && status !in SUPPORT_STATUSES) throw BadRequestException(message = "Trạng thái yêu cầu không hợp lệ")
+        val conditions = mutableListOf<String>()
+        val params = mutableListOf<Any>()
+        if (actor.role != Role.ADMIN) {
+            requireMember(actor)
+            conditions += "owner_id=? AND owner_role=?"
+            params += actor.id
+            params += actor.role.name
         }
-        requireMember(actor)
-        return jdbc.query("SELECT * FROM support_tickets WHERE owner_id=? AND owner_role=? ORDER BY id DESC LIMIT 20 OFFSET ?",
-            { r, _ -> map(r) }, actor.id, actor.role.name, page * 20)
+        if (status != null) { conditions += "status=?"; params += status }
+        val where = if (conditions.isEmpty()) "" else "WHERE " + conditions.joinToString(" AND ")
+        params += page * 20
+        return jdbc.query("SELECT * FROM support_tickets $where ORDER BY id DESC LIMIT 20 OFFSET ?",
+            { r, _ -> map(r) }, *params.toTypedArray())
     }
 
     @Transactional(readOnly = true)
@@ -66,11 +85,23 @@ class SupportService(private val jdbc: JdbcTemplate, private val rides: RideRepo
     @Transactional
     fun update(actor: AuthUser, id: Long, request: UpdateSupportTicket): SupportTicket {
         if (actor.role != Role.ADMIN) throw ForbiddenException()
-        if (request.status !in setOf("OPEN", "IN_PROGRESS", "RESOLVED")) throw BadRequestException()
+        if (request.status !in SUPPORT_STATUSES) throw BadRequestException()
         if ((request.response?.length ?: 0) > 4000 || (request.status == "RESOLVED" && request.response.isNullOrBlank()))
             throw BadRequestException(message = "Cần nội dung trả lời khi đóng yêu cầu; tối đa 4000 ký tự")
-        if (jdbc.update("UPDATE support_tickets SET status=?,response=?,handled_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                request.status, request.response?.trim(), actor.id, id) == 0) throw NotFoundException()
+        val updatedAt = jdbc.query("SELECT updated_at FROM support_tickets WHERE id=? FOR UPDATE",
+            { row, _ -> row.getTimestamp("updated_at").toInstant() }, id).firstOrNull() ?: throw NotFoundException()
+        if (request.expectedUpdatedAt != null && request.expectedUpdatedAt != updatedAt)
+            throw ConflictException(message = "Yêu cầu đã được người khác cập nhật. Vui lòng tải lại trước khi lưu.")
+        val response = request.response?.trim()
+        if (jdbc.update("UPDATE support_tickets SET status=?,response=?,handled_by=?,updated_at=GREATEST(clock_timestamp(),updated_at + interval '1 microsecond') WHERE id=?",
+                request.status, response, actor.id, id) == 0) throw NotFoundException()
+        if (!response.isNullOrEmpty()) {
+            // Màn admin cũ vẫn dùng endpoint này: đồng bộ phản hồi vào timeline chat.
+            jdbc.update(
+                "INSERT INTO support_ticket_messages(ticket_id,sender_id,sender_role,body) VALUES (?,?,?,?)",
+                id, actor.id, "ADMIN", response,
+            )
+        }
         return detail(actor, id)
     }
 
@@ -83,3 +114,5 @@ class SupportService(private val jdbc: JdbcTemplate, private val rides: RideRepo
             r.getTimestamp("created_at").toInstant(), r.getTimestamp("updated_at").toInstant(), r.getLong("owner_id"), r.getString("owner_role"))
     }
 }
+
+private val SUPPORT_STATUSES = setOf("OPEN", "IN_PROGRESS", "WAITING_FOR_USER", "RESOLVED", "CLOSED")

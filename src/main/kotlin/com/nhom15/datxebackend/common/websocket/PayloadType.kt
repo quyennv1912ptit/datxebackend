@@ -19,4 +19,5 @@ enum class PayloadType(val policy: DeliveryPolicy) {
     WITHDRAWAL_REVIEWED(DeliveryPolicy.PUSH_ALSO),
     CHAT_MESSAGE(DeliveryPolicy.PUSH_ALSO),
     CHAT_READ(DeliveryPolicy.WS_ONLY),
+    TICKET_REPLY(DeliveryPolicy.PUSH_ONLY),
 }

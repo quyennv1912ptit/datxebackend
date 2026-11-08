@@ -11,7 +11,7 @@ data class CreateSupportTicket(
     val description: String,
     val images: List<SupportImage> = emptyList(),
 )
-data class UpdateSupportTicket(val status: String, val response: String?)
+data class UpdateSupportTicket(val status: String, val response: String?, val expectedUpdatedAt: Instant? = null)
 data class SupportTicket(
     val id: Long, val code: String, val rideId: Long?, val category: String,
     val description: String, val status: String, val response: String?,

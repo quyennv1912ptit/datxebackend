@@ -1,6 +1,7 @@
 package com.nhom15.datxebackend.ride.service
 
 import com.nhom15.datxebackend.common.enums.RideStatus
+import com.nhom15.datxebackend.common.util.roundToNearestThousandVnd
 import com.nhom15.datxebackend.driver.entity.Driver
 import com.nhom15.datxebackend.pricing.model.RideQuote
 import com.nhom15.datxebackend.ride.dto.response.CreateRideResponse
@@ -48,7 +49,7 @@ internal object RideResponseMapper {
         returnFee = quote.returnFee,
         estimatedFare = quote.estimatedFare,
         discountAmount = discountAmount,
-        payableFare = (quote.estimatedFare - discountAmount).coerceAtLeast(0),
+        payableFare = (quote.estimatedFare - discountAmount).coerceAtLeast(0).roundToNearestThousandVnd(),
     )
 
     fun create(ride: Ride) = CreateRideResponse(
@@ -57,7 +58,7 @@ internal object RideResponseMapper {
         estimatedFare = ride.fareEstimate,
         createdAt = ride.createdAt,
         discountAmount = ride.discountAmount,
-        payableFare = (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0),
+        payableFare = (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).roundToNearestThousandVnd(),
     )
 
     fun status(ride: Ride, previousStatus: RideStatus) = RideStatusResponse(

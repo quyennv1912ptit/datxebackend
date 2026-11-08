@@ -80,6 +80,52 @@ class SupportPersistenceTests {
         assertThrows(BadRequestException::class.java) { service.create(driver, request.copy(clientRequestId = UUID.randomUUID())) }
     }
 
+    @Test fun `member filters cover older pages and isolate customer from driver with same id`() {
+        val own = service.create(customer, CreateSupportTicket(UUID.randomUUID(), category = "PAYMENT", description = "Kiểm tra khoản thanh toán của tôi"))
+        service.update(admin, own.id, UpdateSupportTicket("RESOLVED", "Đã kiểm tra xong"))
+        repeat(22) { service.create(customer, CreateSupportTicket(UUID.randomUUID(), category = "OTHER", description = "Yêu cầu mới thứ $it cần hỗ trợ")) }
+        service.create(driver, CreateSupportTicket(UUID.randomUUID(), category = "OTHER", description = "Tài xế cần được kiểm tra hỗ trợ"))
+        assertFalse(service.list(customer, 0).any { it.id == own.id })
+        assertEquals(own.id, service.list(customer, 0, "RESOLVED").single().id)
+        assertTrue(service.list(driver, 0, "RESOLVED").isEmpty())
+        assertEquals(20, service.list(customer, 0, "OPEN").size)
+        assertEquals(2, service.list(customer, 1, "OPEN").size)
+        assertThrows(BadRequestException::class.java) { service.list(customer, 0, "INVALID") }
+    }
+
+    @Test fun `both apps see the same admin processing states response and evidence`() {
+        for (owner in listOf(customer, driver)) {
+            val publicId = "app_dat_xe/${owner.role.name.lowercase()}/${owner.id}/support-evidence"
+            val image = SupportImage("https://res.cloudinary.com/test-cloud/image/upload/v1/$publicId.jpg", publicId)
+            val ticket = service.create(owner, CreateSupportTicket(UUID.randomUUID(), category = "HANDOVER", description = "Biên bản bàn giao cần kiểm tra lại", images = listOf(image)))
+            val progress = service.update(admin, ticket.id, UpdateSupportTicket("IN_PROGRESS", "Đang đối chiếu biên bản", ticket.updatedAt))
+            assertEquals(progress, service.list(owner, 0, "IN_PROGRESS").single())
+            val resolved = service.update(admin, ticket.id, UpdateSupportTicket("RESOLVED", "Đã hoàn tất đối chiếu", progress.updatedAt))
+            assertEquals(resolved, service.detail(owner, ticket.id))
+            assertEquals(listOf(image), resolved.images)
+            assertTrue(resolved.updatedAt > progress.updatedAt)
+            assertTrue(service.list(owner, 0, "IN_PROGRESS").isEmpty())
+        }
+    }
+
+    @Test fun `stale admin cannot overwrite another admin response`() {
+        val ticket = service.create(customer, CreateSupportTicket(UUID.randomUUID(), category = "OTHER", description = "Hỗ trợ kiểm tra thông tin cá nhân"))
+        val first = service.update(admin, ticket.id, UpdateSupportTicket("IN_PROGRESS", "Admin thứ nhất đang xử lý", ticket.updatedAt))
+        assertThrows(ConflictException::class.java) {
+            service.update(admin.copy(id = 4), ticket.id, UpdateSupportTicket("RESOLVED", "Phản hồi từ bản cũ", ticket.updatedAt))
+        }
+        assertEquals(first, service.detail(customer, ticket.id))
+        assertEquals(3L, jdbc.queryForObject("SELECT handled_by FROM support_tickets WHERE id=?", Long::class.java, ticket.id))
+    }
+
+    @Test fun `reused receipt key with different content fails instead of silently returning old complaint`() {
+        val request = CreateSupportTicket(UUID.randomUUID(), category = "ACCOUNT", description = "Kiểm tra tài khoản cần hỗ trợ")
+        val ticket = service.create(customer, request)
+        assertThrows(ConflictException::class.java) { service.create(customer, request.copy(description = "Nội dung khiếu nại hoàn toàn khác")) }
+        assertEquals(ticket, service.detail(customer, ticket.id))
+        assertEquals(1, service.list(customer, 0).size)
+    }
+
     @Test fun `cash receipt survives a fresh service and repeated confirmation preserves paidAt`() {
         jdbc.update("INSERT INTO customers(id,firebase_uid) VALUES (11,'test-customer')")
         jdbc.update("INSERT INTO drivers(id,firebase_uid,phone_number) VALUES (11,'test-driver','0900000000')")
