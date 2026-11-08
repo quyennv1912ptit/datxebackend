@@ -60,8 +60,11 @@ class FirebaseSecurityConfig(
                     .hasAnyRole("CUSTOMER", "DRIVER")
                     .requestMatchers("/api/driver/**").hasRole("DRIVER")
                     .requestMatchers("/api/customer/**").hasRole("CUSTOMER")
-                    .requestMatchers("/api/notifications", "/api/notifications/**", "/api/device-tokens", "/api/device-tokens/**", "/api/uploads", "/api/uploads/**")
+                    .requestMatchers("/api/notifications", "/api/notifications/**", "/api/device-tokens", "/api/device-tokens/**")
                     .hasAnyRole("CUSTOMER", "DRIVER")
+                    // Admin cũng cần ký upload ảnh khi trả lời ticket hỗ trợ.
+                    .requestMatchers("/api/uploads", "/api/uploads/**")
+                    .hasAnyRole("CUSTOMER", "DRIVER", "ADMIN")
                     .anyRequest().authenticated()
             }
             .exceptionHandling {
