@@ -31,7 +31,7 @@ val ACTIVE_RIDE_STATUSES: List<RideStatus> = listOf(
 )
 
 @Repository
-interface RideRepository : JpaRepository<Ride, Long> {
+interface RideRepository : JpaRepository<Ride, Long>, org.springframework.data.jpa.repository.JpaSpecificationExecutor<Ride> {
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select ride from Ride ride where ride.id = :rideId")

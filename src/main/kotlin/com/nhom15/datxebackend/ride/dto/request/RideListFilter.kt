@@ -15,4 +15,10 @@ data class RideListFilter(
     @field:Min(1)
     @field:Max(100)
     val size: Int = 20,
+
+    @field:Size(max = 200) val q: String? = null,
+    @param:org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE_TIME)
+    val createdFrom: java.time.Instant? = null,
+    @param:org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE_TIME)
+    val createdTo: java.time.Instant? = null,
 )

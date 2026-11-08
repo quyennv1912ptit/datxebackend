@@ -37,6 +37,11 @@ class AdminRideController(
         @Valid @ModelAttribute filter: RideListFilter,
     ): ApiResponse<PageResponse<RideSummaryResponse>> = ApiResponse.ok(adminRideService.listRides(actor, filter))
 
+    // Capabilities match the filters implemented by AdminRideService.listRides.
+    @GetMapping("/filter-capabilities")
+    fun filterCapabilities(): ApiResponse<AdminRideFilterCapabilities> =
+        ApiResponse.ok(AdminRideFilterCapabilities(search = true, createdRange = true))
+
     @GetMapping("/{id}")
     fun getRideDetail(
         @CurrentUser actor: AuthUser,
@@ -67,3 +72,9 @@ class AdminRideController(
         @Valid @RequestBody request: CancelRideRequest,
     ): ApiResponse<RideStatusResponse> = ApiResponse.ok(adminRideService.cancelRide(actor, id, request))
 }
+
+/** Advertise only filters implemented by AdminRideService.listRides. */
+data class AdminRideFilterCapabilities(
+    val search: Boolean,
+    val createdRange: Boolean,
+)

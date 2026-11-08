@@ -1,5 +1,6 @@
 package com.nhom15.datxebackend.admin.service
 
+import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
 import com.nhom15.datxebackend.admin.repository.AdminDriverQueryRepository
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.api.PageResponse
@@ -69,6 +70,7 @@ class AdminDriverService(
     fun list(actor: AuthUser, filter: AdminDriverFilter): PageResponse<AdminDriverSummary> {
         requireAdmin(actor)
         validatePage(filter.page, filter.size)
+        AdminSearchFilter(q = filter.search).validate()
         val verificationStatus = normalizeDriverStatus(filter.verificationStatus)
         val total = queryRepository.count(filter, verificationStatus)
         val content = queryRepository.findPage(filter, verificationStatus)

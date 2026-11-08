@@ -1,5 +1,6 @@
 package com.nhom15.datxebackend.support.ticket
 
+import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
 import com.nhom15.datxebackend.common.api.PageResponse
 import com.nhom15.datxebackend.common.enums.Role
 import com.nhom15.datxebackend.common.exception.BadRequestException
@@ -116,14 +117,28 @@ class TicketService(
     }
 
     @Transactional(readOnly = true)
-    fun adminList(status: TicketStatus?, page: Int, size: Int): PageResponse<AdminTicketSummary> {
+    fun adminList(status: TicketStatus?, page: Int, size: Int, filter: AdminSearchFilter = AdminSearchFilter(), ownerRole: String? = null, category: String? = null): PageResponse<AdminTicketSummary> {
         if (page < 0) throw BadRequestException(message = "page phải lớn hơn hoặc bằng 0")
         if (size !in 1..100) throw BadRequestException(message = "size phải nằm trong khoảng 1 đến 100")
-        val where = if (status == null) "" else "WHERE t.status = ?"
+        filter.validate()
+        if (ownerRole != null && ownerRole !in setOf("CUSTOMER", "DRIVER")) throw BadRequestException(message = "Vai trò không hợp lệ")
+        if (category != null && category !in setOf("TRIP", "PAYMENT", "HANDOVER", "ACCOUNT", "OTHER")) throw BadRequestException(message = "Chủ đề không hợp lệ")
+        val predicates = mutableListOf<String>()
         val params = mutableListOf<Any>()
-        if (status != null) params += status.name
+        if (status != null) { predicates += "t.status = ?"; params += status.name }
+        ownerRole?.let { predicates += "t.owner_role = ?"; params += it }
+        category?.let { predicates += "t.category = ?"; params += it }
+        filter.createdFrom?.let { predicates += "t.created_at >= ?"; params += java.sql.Timestamp.from(it) }
+        filter.createdTo?.let { predicates += "t.created_at < ?"; params += java.sql.Timestamp.from(it) }
+        filter.q?.trim()?.takeIf(String::isNotEmpty)?.let {
+            predicates += "(LOWER(COALESCE(c.full_name, d.full_name)) LIKE ? ESCAPE '!' OR COALESCE(c.phone_number, d.phone_number) LIKE ? ESCAPE '!' OR LOWER('HT-' || t.id::text) LIKE ? ESCAPE '!' OR t.ride_id::text = ?)"
+            params.addAll(listOf(filter.pattern(), filter.pattern(), filter.pattern(), it.removePrefix("#")))
+        }
+        val where = if (predicates.isEmpty()) "" else "WHERE " + predicates.joinToString(" AND ")
         val total = jdbc.queryForObject(
-            "SELECT COUNT(*) FROM support_tickets t $where",
+            """SELECT COUNT(*) FROM support_tickets t
+               LEFT JOIN customers c ON t.owner_role = 'CUSTOMER' AND c.id = t.owner_id
+               LEFT JOIN drivers d ON t.owner_role = 'DRIVER' AND d.id = t.owner_id $where""",
             Long::class.java,
             *params.toTypedArray(),
         ) ?: 0L

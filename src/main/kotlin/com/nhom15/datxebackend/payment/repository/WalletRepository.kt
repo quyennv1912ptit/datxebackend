@@ -18,7 +18,7 @@ interface WalletTransactionRepository : JpaRepository<WalletTransaction, Long> {
     fun findByWithdrawalIdAndTransactionType(withdrawalId: Long, transactionType: TransactionType): WalletTransaction?
 }
 
-interface WithdrawalRepository : JpaRepository<WithdrawalRequest, Long> {
+interface WithdrawalRepository : JpaRepository<WithdrawalRequest, Long>, JpaSpecificationExecutor<WithdrawalRequest> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select r from WithdrawalRequest r where r.id = :id")
     fun lockRequest(id: Long): WithdrawalRequest?

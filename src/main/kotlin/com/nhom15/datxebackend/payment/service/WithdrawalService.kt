@@ -1,5 +1,7 @@
 package com.nhom15.datxebackend.payment.service
 
+import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
+import com.nhom15.datxebackend.admin.repository.AdminWithdrawalSpecifications
 import com.nhom15.datxebackend.common.exception.*
 import com.nhom15.datxebackend.common.api.PageResponse
 import com.nhom15.datxebackend.driver.repository.DriverRepository
@@ -67,13 +69,14 @@ class WithdrawalService(
 
     /** Admin xem hàng đợi rút tiền, lọc theo trạng thái; trả kèm tài khoản ngân hàng hiện tại của tài xế. */
     @Transactional(readOnly = true)
-    fun adminList(status: WithdrawalStatus?, page: Int, size: Int): PageResponse<AdminWithdrawalDto> {
+    fun adminList(status: WithdrawalStatus?, page: Int, size: Int, filter: AdminSearchFilter = AdminSearchFilter()): PageResponse<AdminWithdrawalDto> {
         if (page < 0) throw BadRequestException(message = "page phải lớn hơn hoặc bằng 0")
         if (size !in 1..100) throw BadRequestException(message = "size phải nằm trong khoảng 1 đến 100")
-        val result = requests.findByStatus(
-            status,
-            PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt", "id")),
-        )
+        filter.validate()
+        val pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt", "id"))
+        val result = if (filter.q.isNullOrBlank() && filter.createdFrom == null && filter.createdTo == null)
+            requests.findByStatus(status, pageable)
+        else requests.findAll(AdminWithdrawalSpecifications.matching(status, filter), pageable)
         val driversById = drivers.findAllById(result.content.map { it.driverId }.toSet())
             .associateBy { it.id }
         return PageResponse.from(result) { request ->

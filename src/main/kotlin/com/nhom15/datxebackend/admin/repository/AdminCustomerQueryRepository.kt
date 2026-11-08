@@ -1,5 +1,7 @@
 package com.nhom15.datxebackend.admin.repository
 
+import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
+import com.nhom15.datxebackend.admin.dto.AdminWalletFilter
 import com.nhom15.datxebackend.admin.dto.AdminCustomerFilter
 import com.nhom15.datxebackend.admin.dto.AdminCustomerRidesFilter
 import com.nhom15.datxebackend.admin.dto.AdminCustomerSummary
@@ -80,15 +82,30 @@ class AdminCustomerQueryRepository(private val jdbcTemplate: JdbcTemplate) {
         )
     }
 
-    fun countWalletTransactions(customerId: Long): Long = jdbcTemplate.queryForObject(
-        "SELECT COUNT(*) FROM wallet_transactions WHERE customer_id = ?",
-        Long::class.java,
-        customerId,
-    ) ?: 0L
+    private fun walletWhere(customerId: Long, search: AdminSearchFilter, filter: AdminWalletFilter): Pair<String, List<Any>> {
+        val predicates = mutableListOf("customer_id = ?")
+        val args = mutableListOf<Any>(customerId)
+        filter.type?.let { predicates += "type = ?"; args += it }
+        filter.status?.let { predicates += "status = ?"; args += it }
+        search.createdFrom?.let { predicates += "created_at >= ?"; args += Timestamp.from(it) }
+        search.createdTo?.let { predicates += "created_at < ?"; args += Timestamp.from(it) }
+        search.q?.trim()?.takeIf(String::isNotEmpty)?.let {
+            predicates += "(LOWER(description) LIKE ? ESCAPE '!' OR id::text = ? OR ride_id::text = ?)"
+            args.addAll(listOf(search.pattern(), it.removePrefix("#"), it.removePrefix("#")))
+        }
+        return " WHERE " + predicates.joinToString(" AND ") to args
+    }
 
-    fun findWalletTransactions(customerId: Long, page: Int, size: Int): List<AdminWalletTransaction> = jdbcTemplate.query(
+    fun countWalletTransactions(customerId: Long, search: AdminSearchFilter = AdminSearchFilter(), filter: AdminWalletFilter = AdminWalletFilter()): Long {
+        val (where, args) = walletWhere(customerId, search, filter)
+        return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM wallet_transactions$where", Long::class.java, *args.toTypedArray()) ?: 0L
+    }
+
+    fun findWalletTransactions(customerId: Long, page: Int, size: Int, search: AdminSearchFilter = AdminSearchFilter(), filter: AdminWalletFilter = AdminWalletFilter()): List<AdminWalletTransaction> {
+        val (where, args) = walletWhere(customerId, search, filter)
+        return jdbcTemplate.query(
         """SELECT id, ride_id, amount, type, status, description, wallet_type, balance_after, created_at
-           FROM wallet_transactions WHERE customer_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?""".trimIndent(),
+           FROM wallet_transactions$where ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?""".trimIndent(),
         { row, _ ->
             AdminWalletTransaction(
                 id = row.getLong("id"),
@@ -102,10 +119,9 @@ class AdminCustomerQueryRepository(private val jdbcTemplate: JdbcTemplate) {
                 createdAt = row.getTimestamp("created_at").toInstant(),
             )
         },
-        customerId,
-        size,
-        page.toLong() * size,
-    )
+        *(args + listOf(size, page.toLong() * size)).toTypedArray(),
+        )
+    }
 
     private fun customerWhere(filter: AdminCustomerFilter): Pair<String, List<Any>> {
         val predicates = mutableListOf("deleted_at IS NULL")
@@ -113,8 +129,8 @@ class AdminCustomerQueryRepository(private val jdbcTemplate: JdbcTemplate) {
         filter.status?.let { predicates += "status = ?"; args += it.name }
         filter.flagged?.let { predicates += "COALESCE(is_flagged, false) = ?"; args += it }
         filter.q?.trim()?.takeIf(String::isNotEmpty)?.let {
-            predicates += "(full_name ILIKE ? OR phone_number ILIKE ? OR email ILIKE ?)"
-            val pattern = "%$it%"
+            predicates += "(full_name ILIKE ? ESCAPE '!' OR phone_number ILIKE ? ESCAPE '!' OR email ILIKE ? ESCAPE '!')"
+            val pattern = AdminSearchFilter(q = it).pattern()
             args += pattern
             args += pattern
             args += pattern

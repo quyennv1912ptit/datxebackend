@@ -1,5 +1,6 @@
 package com.nhom15.datxebackend.support.ticket
 
+import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
 import com.nhom15.datxebackend.common.api.ApiResponse
 import com.nhom15.datxebackend.common.api.PageResponse
 import com.nhom15.datxebackend.common.security.AuthUser
@@ -56,7 +57,10 @@ class AdminTicketController(private val service: TicketService) {
         @RequestParam(required = false) status: TicketStatus?,
         @RequestParam(defaultValue = "0") page: Int,
         @RequestParam(defaultValue = "20") size: Int,
-    ): ApiResponse<PageResponse<AdminTicketSummary>> = ApiResponse.ok(service.adminList(status, page, size))
+        @org.springframework.web.bind.annotation.ModelAttribute filter: AdminSearchFilter,
+        @RequestParam(required = false) ownerRole: String?,
+        @RequestParam(required = false) category: String?,
+    ): ApiResponse<PageResponse<AdminTicketSummary>> = ApiResponse.ok(service.adminList(status, page, size, filter, ownerRole, category))
 
     @GetMapping("/{id}")
     fun detail(@CurrentUser admin: AuthUser, @PathVariable id: Long): ApiResponse<AdminTicketDetail> =

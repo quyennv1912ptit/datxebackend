@@ -1,5 +1,7 @@
 package com.nhom15.datxebackend.admin.controller
 
+import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
+import com.nhom15.datxebackend.admin.dto.AdminWalletFilter
 import com.nhom15.datxebackend.admin.dto.AdminCustomerDetail
 import com.nhom15.datxebackend.admin.dto.AdminCustomerFlagResponse
 import com.nhom15.datxebackend.admin.dto.AdminCustomerRidesFilter
@@ -66,8 +68,10 @@ class AdminCustomerController(private val adminCustomerService: AdminCustomerSer
         @PathVariable id: Long,
         @RequestParam(defaultValue = "0") page: Int,
         @RequestParam(defaultValue = "20") size: Int,
+        @org.springframework.web.bind.annotation.ModelAttribute search: AdminSearchFilter,
+        @org.springframework.web.bind.annotation.ModelAttribute filter: AdminWalletFilter,
     ): ApiResponse<PageResponse<AdminWalletTransaction>> =
-        ApiResponse.ok(adminCustomerService.walletTransactions(actor, id, page, size))
+        ApiResponse.ok(adminCustomerService.walletTransactions(actor, id, page, size, search, filter))
 
     @PutMapping("/{id}/status")
     fun updateStatus(

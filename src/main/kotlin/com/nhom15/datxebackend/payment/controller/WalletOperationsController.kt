@@ -1,5 +1,6 @@
 package com.nhom15.datxebackend.payment.controller
 
+import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
 import com.nhom15.datxebackend.common.api.ApiResponse
 import com.nhom15.datxebackend.common.api.PageResponse
 import com.nhom15.datxebackend.common.security.*
@@ -48,7 +49,8 @@ class AdminWithdrawalController(private val service: WithdrawalService) {
         @RequestParam(required = false) status: WithdrawalStatus?,
         @RequestParam(defaultValue = "0") page: Int,
         @RequestParam(defaultValue = "20") size: Int,
-    ): ApiResponse<PageResponse<AdminWithdrawalDto>> = ApiResponse.ok(service.adminList(status, page, size))
+        @ModelAttribute filter: AdminSearchFilter,
+    ): ApiResponse<PageResponse<AdminWithdrawalDto>> = ApiResponse.ok(service.adminList(status, page, size, filter))
 
     @PostMapping("/{id}/review")
     fun review(@CurrentUser actor: AuthUser, @PathVariable id: Long, @RequestBody body: ReviewBody) =

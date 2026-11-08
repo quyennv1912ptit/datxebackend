@@ -1,5 +1,7 @@
 package com.nhom15.datxebackend.admin.service
 
+import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
+import com.nhom15.datxebackend.admin.dto.AdminWalletFilter
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthException
 import com.nhom15.datxebackend.admin.dto.AdminCustomerDetail
@@ -65,6 +67,7 @@ class AdminCustomerService(
         validatePage(page, size)
         val sort = rawSort.trim().substringBefore(',')
         if (sort !in ALLOWED_SORTS) throw BadRequestException(message = "sort chỉ hỗ trợ createdAt, totalTrips hoặc cancelRate30d")
+        AdminSearchFilter(q = q).validate()
         val filter = AdminCustomerFilter(q, status, flagged, page, size, sort)
         val total = queryRepository.count(filter)
         val totalPages = pageCount(total, size)
@@ -124,14 +127,16 @@ class AdminCustomerService(
     }
 
     @Transactional(readOnly = true)
-    fun walletTransactions(actor: AuthUser, customerId: Long, page: Int, size: Int): PageResponse<AdminWalletTransaction> {
+    fun walletTransactions(actor: AuthUser, customerId: Long, page: Int, size: Int, search: AdminSearchFilter = AdminSearchFilter(), filter: AdminWalletFilter = AdminWalletFilter()): PageResponse<AdminWalletTransaction> {
         requireAdmin(actor)
         ensureCustomerExists(customerId)
         validatePage(page, size)
-        val total = queryRepository.countWalletTransactions(customerId)
+        search.validate()
+        filter.validate()
+        val total = queryRepository.countWalletTransactions(customerId, search, filter)
         val totalPages = pageCount(total, size)
         return PageResponse(
-            queryRepository.findWalletTransactions(customerId, page, size),
+            queryRepository.findWalletTransactions(customerId, page, size, search, filter),
             page,
             size,
             total,

@@ -1,5 +1,7 @@
 package com.nhom15.datxebackend.admin.service
 
+import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
+import com.nhom15.datxebackend.admin.repository.AdminRideSpecifications
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.api.PageResponse
 import com.nhom15.datxebackend.common.enums.DriverStatus
@@ -63,11 +65,10 @@ class AdminRideService(
             Sort.by(Sort.Direction.DESC, "createdAt", "id"),
         )
         val statuses = parseStatuses(filter.status)
-        val rides = if (statuses == null) {
-            rideRepository.findAll(pageable)
-        } else {
-            rideRepository.findAllByStatusIn(statuses, pageable)
-        }
+        AdminSearchFilter(filter.q, filter.createdFrom, filter.createdTo).validate()
+        val rides = rideRepository.findAll(
+            AdminRideSpecifications.matching(filter, statuses), pageable,
+        )
         return PageResponse.from(rides) { ride -> RideResponseMapper.summary(ride) }
     }
 

@@ -1,5 +1,6 @@
 package com.nhom15.datxebackend.admin.repository
 
+import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
 import com.nhom15.datxebackend.driver.dto.AdminDriverFilter
 import com.nhom15.datxebackend.driver.dto.AdminDriverSummary
 import org.springframework.jdbc.core.JdbcTemplate
@@ -52,15 +53,15 @@ class AdminDriverQueryRepository(private val jdbcTemplate: JdbcTemplate) {
             args += status
         }
         filter.online?.let {
-            predicates += if (it) "status <> 'OFFLINE'" else "status = 'OFFLINE'"
+            predicates += if (it) "status IN ('ONLINE', 'BUSY')" else "status = 'OFFLINE'"
         }
         filter.flagged?.let {
             predicates += "COALESCE(is_flagged, false) = ?"
             args += it
         }
         filter.search?.trim()?.takeIf(String::isNotEmpty)?.let {
-            predicates += "(full_name ILIKE ? OR phone_number ILIKE ?)"
-            val pattern = "%$it%"
+            predicates += "(full_name ILIKE ? ESCAPE '!' OR phone_number ILIKE ? ESCAPE '!')"
+            val pattern = AdminSearchFilter(q = it).pattern()
             args += pattern
             args += pattern
         }
