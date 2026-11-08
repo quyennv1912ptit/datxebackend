@@ -22,34 +22,41 @@ import java.time.ZoneId
 class AdminCustomerQueryRepository(private val jdbcTemplate: JdbcTemplate) {
     fun count(filter: AdminCustomerFilter): Long {
         val (where, args) = customerWhere(filter)
-        return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM customers$where", Long::class.java, *args.toTypedArray()) ?: 0L
+        return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM customers c$where", Long::class.java, *args.toTypedArray()) ?: 0L
     }
 
     fun findPage(filter: AdminCustomerFilter): List<AdminCustomerSummary> {
         val (where, args) = customerWhere(filter)
         val sortColumn = when (filter.sort) {
-            "createdAt" -> "created_at"
-            "totalTrips" -> "total_trips"
-            "cancelRate30d" -> "cancel_rate_30d"
+            "createdAt" -> "c.created_at"
+            "totalTrips" -> "stats.total_trips"
+            "cancelRate30d" -> "stats.cancel_rate_30d"
             else -> throw IllegalArgumentException("sort must be validated by service")
         }
+        val order = "ORDER BY $sortColumn DESC NULLS LAST, c.id DESC"
+        val sql = if (filter.sort == "createdAt") {
+            // The default sort can page customers before reading their ride histories.
+            """SELECT $SUMMARY_COLUMNS
+               FROM (SELECT * FROM customers c$where $order LIMIT ? OFFSET ?) c
+               $RIDE_STATS_JOIN
+               $order"""
+        } else {
+            """SELECT $SUMMARY_COLUMNS
+               FROM customers c
+               $RIDE_STATS_JOIN$where $order LIMIT ? OFFSET ?"""
+        }
         return jdbcTemplate.query(
-            """SELECT id, full_name, phone_number, email, status, COALESCE(is_flagged, false) AS is_flagged,
-                      COALESCE(total_trips, 0) AS total_trips, COALESCE(total_cancelled, 0) AS total_cancelled,
-                      COALESCE(cancel_rate_30d, 0) AS cancel_rate_30d, average_rating,
-                      COALESCE(wallet_balance, 0) AS wallet_balance, last_login_at, created_at
-               FROM customers$where ORDER BY $sortColumn DESC NULLS LAST, id DESC LIMIT ? OFFSET ?""".trimIndent(),
+            sql.trimIndent(),
             { row, _ -> row.toSummary() },
             *(args + listOf(filter.size, filter.page.toLong() * filter.size)).toTypedArray(),
         )
     }
 
     fun findById(id: Long): AdminCustomerSummary? = jdbcTemplate.query(
-        """SELECT id, full_name, phone_number, email, status, COALESCE(is_flagged, false) AS is_flagged,
-                  COALESCE(total_trips, 0) AS total_trips, COALESCE(total_cancelled, 0) AS total_cancelled,
-                  COALESCE(cancel_rate_30d, 0) AS cancel_rate_30d, average_rating,
-                  COALESCE(wallet_balance, 0) AS wallet_balance, last_login_at, created_at
-           FROM customers WHERE id = ? AND deleted_at IS NULL""".trimIndent(),
+        """SELECT $SUMMARY_COLUMNS
+           FROM customers c
+           $RIDE_STATS_JOIN
+           WHERE c.id = ? AND c.deleted_at IS NULL""".trimIndent(),
         { row, _ -> row.toSummary() },
         id,
     ).firstOrNull()
@@ -124,12 +131,12 @@ class AdminCustomerQueryRepository(private val jdbcTemplate: JdbcTemplate) {
     }
 
     private fun customerWhere(filter: AdminCustomerFilter): Pair<String, List<Any>> {
-        val predicates = mutableListOf("deleted_at IS NULL")
+        val predicates = mutableListOf("c.deleted_at IS NULL")
         val args = mutableListOf<Any>()
-        filter.status?.let { predicates += "status = ?"; args += it.name }
-        filter.flagged?.let { predicates += "COALESCE(is_flagged, false) = ?"; args += it }
+        filter.status?.let { predicates += "c.status = ?"; args += it.name }
+        filter.flagged?.let { predicates += "COALESCE(c.is_flagged, false) = ?"; args += it }
         filter.q?.trim()?.takeIf(String::isNotEmpty)?.let {
-            predicates += "(full_name ILIKE ? ESCAPE '!' OR phone_number ILIKE ? ESCAPE '!' OR email ILIKE ? ESCAPE '!')"
+            predicates += "(c.full_name ILIKE ? ESCAPE '!' OR c.phone_number ILIKE ? ESCAPE '!' OR c.email ILIKE ? ESCAPE '!')"
             val pattern = AdminSearchFilter(q = it).pattern()
             args += pattern
             args += pattern
@@ -179,6 +186,29 @@ class AdminCustomerQueryRepository(private val jdbcTemplate: JdbcTemplate) {
 
     private companion object {
         val VIETNAM_ZONE: ZoneId = ZoneId.of("Asia/Ho_Chi_Minh")
+
+        val SUMMARY_COLUMNS = """
+            c.id, c.full_name, c.phone_number, c.email, c.status, COALESCE(c.is_flagged, false) AS is_flagged,
+            stats.total_trips, stats.total_cancelled, stats.cancel_rate_30d, c.average_rating,
+            COALESCE(c.wallet_balance, 0) AS wallet_balance, c.last_login_at, c.created_at
+        """.trimIndent()
+
+        val RIDE_STATS_JOIN = """
+            CROSS JOIN LATERAL (
+                SELECT COUNT(*) AS total_trips,
+                       COUNT(*) FILTER (WHERE status = 'CANCELLED') AS total_cancelled,
+                       COALESCE(
+                           (COUNT(*) FILTER (WHERE recent AND status = 'CANCELLED' AND cancelled_by_role = 'CUSTOMER'))::double precision
+                           / NULLIF(COUNT(*) FILTER (WHERE recent), 0),
+                           0.0
+                       ) AS cancel_rate_30d
+                FROM (
+                    SELECT status, cancelled_by_role,
+                           created_at BETWEEN CURRENT_TIMESTAMP - INTERVAL '30 days' AND CURRENT_TIMESTAMP AS recent
+                    FROM rides WHERE customer_id = c.id
+                ) customer_rides
+            ) stats
+        """.trimIndent()
     }
 }
 
