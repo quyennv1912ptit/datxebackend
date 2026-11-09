@@ -5,6 +5,7 @@ import java.time.Duration
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.domain.GeoPoint
 import com.nhom15.datxebackend.common.enums.Role
+import com.nhom15.datxebackend.common.enums.RideStatus
 import com.nhom15.datxebackend.common.enums.PaymentMethod
 import com.nhom15.datxebackend.common.exception.BadRequestException
 import com.nhom15.datxebackend.common.exception.ConflictException
@@ -27,7 +28,6 @@ import com.nhom15.datxebackend.ride.entity.Ride
 import com.nhom15.datxebackend.ride.entity.RideType
 import com.nhom15.datxebackend.ride.repository.RideRepository
 import com.nhom15.datxebackend.ride.repository.RideCreateIdempotencyRepository
-import com.nhom15.datxebackend.ride.repository.RideDispatchOutboxRepository
 import com.nhom15.datxebackend.ride.repository.ACTIVE_RIDE_STATUSES
 import com.nhom15.datxebackend.ride.service.state.RideActor
 import com.nhom15.datxebackend.ride.service.state.RideStateMachine
@@ -51,7 +51,6 @@ class RideService(
     private val creationValidator: RideCreationValidator,
     private val customerRepository: CustomerRepository,
     private val idempotencyRepository: RideCreateIdempotencyRepository,
-    private val dispatchOutbox: RideDispatchOutboxRepository,
     private val rateLimiter: RedisRateLimiter,
     private val wallets: com.nhom15.datxebackend.payment.service.WalletService,
 ) {
@@ -59,8 +58,6 @@ class RideService(
     @Transactional
     fun createRide(actor: AuthUser, request: CreateRideRequest, idempotencyKey: String? = null): CreateRideResponse {
         requireCustomer(actor)
-        creationValidator.validate(request)
-
         val key = normalizeIdempotencyKey(idempotencyKey)
         val requestHash = key?.let { hashRequest(request) }
         customerRepository.findByIdForUpdate(actor.id).orElseThrow {
@@ -78,6 +75,13 @@ class RideService(
                 }
                 return RideResponseMapper.create(previousRide)
             }
+        }
+
+        creationValidator.validate(request)
+        if (request.type == RideType.SCHEDULED &&
+            rideRepository.existsByCustomerIdAndTypeAndStatus(actor.id, RideType.SCHEDULED, RideStatus.PENDING)
+        ) {
+            throw AppException(ErrorCode.SCHEDULED_RIDE_EXISTS)
         }
 
         rideRepository.findFirstByCustomerIdAndStatusInOrderByCreatedAtDesc(actor.id, ACTIVE_RIDE_STATUSES)?.let { active ->
@@ -126,11 +130,7 @@ class RideService(
         stateMachine.recordCreated(pendingRide, actor.id)
 
         val ride = if (request.type == RideType.INSTANT) {
-            val searchingRide = startSearching(
-                ride = pendingRide,
-            )
-            dispatchOutbox.enqueue(searchingRide.id)
-            searchingRide
+            startSearching(pendingRide)
         } else {
             pendingRide
         }

@@ -2,6 +2,7 @@ package com.nhom15.datxebackend.ride.service.state
 
 import com.nhom15.datxebackend.common.enums.DriverStatus
 import com.nhom15.datxebackend.config.properties.MatchingProperties
+import com.nhom15.datxebackend.config.properties.ScheduledRideProperties
 import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.ride.repository.DispatchOfferRepository
 import com.nhom15.datxebackend.ride.repository.RideDispatchOutboxRepository
@@ -20,6 +21,7 @@ import com.nhom15.datxebackend.common.util.roundToNearestThousandVnd
 import com.nhom15.datxebackend.common.port.RideAssignmentResult
 import com.nhom15.datxebackend.ride.entity.HandoverPhase
 import com.nhom15.datxebackend.ride.entity.Ride
+import com.nhom15.datxebackend.ride.entity.RideType
 import com.nhom15.datxebackend.ride.entity.RideActorRole
 import com.nhom15.datxebackend.ride.entity.RideStatusHistory
 import com.nhom15.datxebackend.ride.entity.VehicleHandoverReport
@@ -32,6 +34,7 @@ import com.nhom15.datxebackend.ride.repository.VehicleHandoverReportRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.Instant
+import java.time.Clock
 
 @Service
 class RideStateMachine(
@@ -46,6 +49,8 @@ class RideStateMachine(
     private val drivers: DriverRepository,
     private val wallets: com.nhom15.datxebackend.payment.service.WalletService,
     private val vouchers: com.nhom15.datxebackend.voucher.service.VoucherService,
+    private val scheduled: ScheduledRideProperties,
+    private val clock: Clock,
 ) {
 
     private val assignedDriverEvents = setOf(
@@ -75,13 +80,19 @@ class RideStateMachine(
 
         val ride = rideRepository.findByIdForUpdate(command.rideId).orElseThrow { NotFoundException(ErrorCode.RIDE_NOT_FOUND) }
         authorize(ride, command.event, command.actor)
+        val now = clock.instant()
+        val scheduledDeadline = if (ride.type == RideType.SCHEDULED) ride.scheduledAt?.plus(scheduled.expireAfter) else null
+        val scheduledSearchClosed = scheduledDeadline != null && !now.isBefore(scheduledDeadline)
 
         if (command.expectedSearchGeneration != null && ride.redispatchCount != command.expectedSearchGeneration) {
             throw ConflictException(ErrorCode.INVALID_RIDE_STATE, "Job thuộc vòng tìm tài xế cũ")
         }
         if (command.event == RideTransitionEvent.NO_DRIVER_FOUND &&
-            (ride.searchExpiresAt == null || ride.searchExpiresAt!!.isAfter(Instant.now()))) {
+            ride.searchExpiresAt?.let { !now.isBefore(it) } != true) {
             throw ConflictException(ErrorCode.INVALID_RIDE_STATE, "Chưa hết thời gian tìm tài xế")
+        }
+        if (command.event == RideTransitionEvent.START_SEARCH && scheduledSearchClosed) {
+            throw ConflictException(ErrorCode.INVALID_RIDE_STATE, "Đã hết thời gian tìm tài xế cho chuyến đặt lịch")
         }
         if (command.event == RideTransitionEvent.COMPLETE && ride.status != RideStatus.VEHICLE_RETURNED)
             throw com.nhom15.datxebackend.payment.exception.InvalidTripStateException()
@@ -90,7 +101,7 @@ class RideStateMachine(
         val retryDispatch = (command.event == RideTransitionEvent.CANCEL && command.actor.role == Role.DRIVER ||
             command.event == RideTransitionEvent.REDISPATCH) && previousStatus in setOf(RideStatus.DRIVER_ASSIGNED, RideStatus.DRIVER_ARRIVING)
         val nextStatus = if (retryDispatch) {
-            if (ride.redispatchCount < matching.maxRedispatch) RideStatus.SEARCHING else RideStatus.NO_DRIVER_FOUND
+            if (!scheduledSearchClosed && ride.redispatchCount < matching.maxRedispatch) RideStatus.SEARCHING else RideStatus.NO_DRIVER_FOUND
         } else RideTransitionRules.resolve(previousStatus, command.event)
 
         val cancellationReason = command.cancelReason?.trim()
@@ -110,7 +121,7 @@ class RideStateMachine(
             throw ConflictException(ErrorCode.INVALID_RIDE_STATE)
         }
         if (nextStatus == RideStatus.SEARCHING) {
-            ride.searchExpiresAt = Instant.now().plus(matching.searchTimeout)
+            ride.searchExpiresAt = scheduledDeadline ?: now.plus(matching.searchTimeout)
             if (retryDispatch) {
                 ride.redispatchCount++
                 ride.lastRedispatchReason = command.cancelReason?.trim()?.takeIf { it.isNotEmpty() }

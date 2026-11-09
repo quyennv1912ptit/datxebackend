@@ -1,11 +1,13 @@
 package com.nhom15.datxebackend.notification.dto
 
+import com.fasterxml.jackson.annotation.JsonFormat
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.nhom15.datxebackend.common.domain.Location
 import com.nhom15.datxebackend.common.enums.PaymentMethod
 import com.nhom15.datxebackend.common.enums.Transmission
 import com.nhom15.datxebackend.common.enums.VehicleType
 import com.nhom15.datxebackend.common.websocket.PayloadType
+import java.time.Instant
 
 data class LocationDto(
     val lat: Double,
@@ -53,7 +55,9 @@ data class RideOfferPayload(
     val pickupNote: String? = null,
     val offerId: String = "",
     val serverTime: Long = System.currentTimeMillis(),
-    val clientExpiresAt: Long = expiresAt
+    val clientExpiresAt: Long = expiresAt,
+    @get:JsonFormat(shape = JsonFormat.Shape.STRING)
+    val scheduledAt: Instant? = null,
 ) : NotificationPayload {
     override val type: PayloadType get() = PayloadType.RIDE_OFFER
 }
