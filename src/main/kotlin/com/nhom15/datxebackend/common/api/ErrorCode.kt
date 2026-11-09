@@ -39,6 +39,7 @@ enum class ErrorCode(val httpStatus: HttpStatus, val defaultMessage: String) {
     INVALID_RIDE_STATE(HttpStatus.CONFLICT, "Trạng thái chuyến đi không cho phép thao tác này"),
     RIDE_ALREADY_ASSIGNED(HttpStatus.CONFLICT, "Chuyến đã có tài xế nhận"),
     ACTIVE_RIDE_EXISTS(HttpStatus.CONFLICT, "Bạn đang có một chuyến chưa hoàn tất"),
+    SCHEDULED_RIDE_EXISTS(HttpStatus.CONFLICT, "Bạn đã có lịch hẹn đang chờ"),
     RIDE_NO_LONGER_AVAILABLE(HttpStatus.CONFLICT, "Chuyến không còn khả dụng"),
     OUT_OF_SERVICE_AREA(HttpStatus.UNPROCESSABLE_ENTITY, "Điểm đón hoặc điểm trả nằm ngoài vùng phục vụ"),
     RIDE_ALREADY_ACTIVE(HttpStatus.CONFLICT, "Bạn đang có một chuyến chưa hoàn tất"),

@@ -73,7 +73,8 @@ class RideOfferBuilder(
                 rating = customer?.averageRating ?: 5.0
             ),
             pickupNote = ride.pickupNote,
-            note = ride.note
+            note = ride.note,
+            scheduledAt = ride.scheduledAt,
         )
     }
 
