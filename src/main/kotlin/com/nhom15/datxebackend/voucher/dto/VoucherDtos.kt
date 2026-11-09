@@ -1,10 +1,10 @@
-package com.nhom15.datxebackend.voucher.dto
+﻿package com.nhom15.datxebackend.voucher.dto
 
 import java.time.Instant
 
 data class VoucherResponse(
     val id: Long,
-    val code: String,
+    val code: String?,
     val discountType: String,
     val value: Long,
     val maxDiscount: Long?,
@@ -13,10 +13,11 @@ data class VoucherResponse(
     val usageLimit: Int?,
     val validFrom: Instant,
     val validTo: Instant,
+    val source: String,
 )
 
 data class AppliedVoucher(
     val voucherId: Long,
-    val code: String,
+    val code: String?,
     val discountAmount: Long,
 )
