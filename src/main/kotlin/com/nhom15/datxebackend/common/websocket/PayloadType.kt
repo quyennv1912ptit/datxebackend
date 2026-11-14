@@ -20,4 +20,6 @@ enum class PayloadType(val policy: DeliveryPolicy) {
     CHAT_MESSAGE(DeliveryPolicy.PUSH_ALSO),
     CHAT_READ(DeliveryPolicy.WS_ONLY),
     TICKET_REPLY(DeliveryPolicy.PUSH_ONLY),
+    VOUCHER_GRANTED(DeliveryPolicy.PUSH_ALSO),
+    VOUCHER_CAMPAIGN(DeliveryPolicy.PUSH_ALSO),
 }

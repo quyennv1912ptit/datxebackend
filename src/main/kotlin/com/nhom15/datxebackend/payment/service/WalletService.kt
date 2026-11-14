@@ -32,7 +32,6 @@ class WalletService(
     fun history(userId: Long, owner: WalletOwner, page: Int, walletType: WalletType? = null) = transactions.history(userId, owner.name, walletType?.name,
         org.springframework.data.domain.PageRequest.of(page.coerceAtLeast(0), 20)).map { it.toDto() }
 
-    // Wallets are provisioned at account creation by the V19 database triggers.
     private fun locked(userId: Long, owner: WalletOwner, type: WalletType): Wallet {
         if ((owner == WalletOwner.CUSTOMER) != (type == WalletType.CUSTOMER)) throw InvalidWalletTypeException()
         if (owner == WalletOwner.DRIVER) drivers.findByIdForUpdate(userId).orElseThrow { UserNotFoundException() }
@@ -97,21 +96,16 @@ class WalletService(
         val balance = locked(driverId, WalletOwner.DRIVER, WalletType.CREDIT).balance
         if (balance < minimumCredit) throw CreditWalletBelowMinimumException()
         if (cashFare != null && balance < commission(cashFare)) throw InsufficientCreditBalanceException()
-
     }
 
     /**
      * Quyết toán chuyến và trả về phương thức thực tế đã dùng.
-     *
-     * WALLET chỉ được thu khi ví khách đủ tiền tại thời điểm quyết toán. Nếu thiếu,
-     * chuyển ngay sang CASH (trừ chiết khấu vào CREDIT như cuốc tiền mặt bình thường)
-     * thay vì ném lỗi làm rollback cả bước hoàn tất chuyến.
+     * 20% chiết khấu được tính trên giá gốc chưa làm tròn; phần làm tròn lên giữ lại cho App.
      */
     @Transactional
-    fun settle(rideId: Long, customerId: Long, driverId: Long, fare: Long, method: PaymentMethod): PaymentMethod {
+    fun settle(rideId: Long, customerId: Long, driverId: Long, fare: Long, method: PaymentMethod, rawFare: Long = fare): PaymentMethod {
         requireFare(fare)
-        // Caller holds the ride lock; unique settlement marker is acquired by PaymentService.
-        val fee = commission(fare)
+        val fee = commission(fare, rawFare)
         return when (method) {
             PaymentMethod.CASH -> {
                 change(locked(driverId, WalletOwner.DRIVER, WalletType.CREDIT), -fee, TransactionType.COMMISSION_FEE, rideId)
@@ -121,7 +115,6 @@ class WalletService(
             PaymentMethod.WALLET -> {
                 val customer = locked(customerId, WalletOwner.CUSTOMER, WalletType.CUSTOMER)
                 if (customer.balance < fare) {
-                    // Không đủ tiền: quyết toán như CASH để tài xế vẫn hoàn tất được chuyến.
                     change(
                         locked(driverId, WalletOwner.DRIVER, WalletType.CREDIT), -fee, TransactionType.COMMISSION_FEE, rideId,
                         description = "Chiết khấu chuyến (ví khách không đủ, tự động thu tiền mặt)",
@@ -191,9 +184,18 @@ class WalletService(
     private fun requireFare(fare: Long) { if (fare < 0) throw BadRequestException(message = "Cước phí không hợp lệ") }
 
     companion object {
-        // Chiết khấu 20% = chia 5, làm tròn xuống đến 1 VND (không bao giờ làm tròn 1.000).
-        // finalFare là bội số 1.000 nên kết quả luôn nguyên: 31.000 / 5 = 6.200.
-        // Chia trước để tránh tràn số khi nhân 20.
-        fun commission(fare: Long): Long { require(fare >= 0); return fare / 5 }
+        /**
+         * Tính phí sàn bao gồm 20% chiết khấu trên giá gốc chưa làm tròn + tiền chênh lệch làm tròn lên (CEILING).
+         */
+        fun driverNetEarning(rawFare: Long): Long {
+            require(rawFare >= 0) { "Giá gốc không được âm" }
+            return rawFare - (rawFare / 5)
+        }
+
+        fun commission(fare: Long, rawFare: Long = fare): Long {
+            require(fare >= 0) { "Cước phí không được âm" }
+            require(rawFare >= 0) { "Giá gốc không được âm" }
+            return (fare - driverNetEarning(rawFare)).coerceAtLeast(0)
+        }
     }
 }

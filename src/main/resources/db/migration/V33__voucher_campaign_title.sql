@@ -1,0 +1,2 @@
+ALTER TABLE vouchers
+    ADD COLUMN IF NOT EXISTS campaign_title VARCHAR(180) NULL;

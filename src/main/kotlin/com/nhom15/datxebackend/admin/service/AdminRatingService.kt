@@ -1,5 +1,6 @@
-package com.nhom15.datxebackend.admin.service
+﻿package com.nhom15.datxebackend.admin.service
 
+import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.api.PageResponse
 import com.nhom15.datxebackend.common.enums.Role
 import com.nhom15.datxebackend.common.exception.BadRequestException
@@ -12,7 +13,6 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.LocalDate
-import com.nhom15.datxebackend.common.api.ErrorCode
 
 @Service
 class AdminRatingService(
@@ -116,7 +116,7 @@ class AdminRatingService(
             "$selectSql WHERE r.id = ?",
             { rs, _ -> mapRating(rs) },
             id,
-        ).firstOrNull() ?: throw NotFoundException(ErrorCode.RIDE_NOT_FOUND)
+        ).firstOrNull() ?: throw NotFoundException(message = "Không tìm thấy đánh giá id=$id")
     }
 
     @Transactional
@@ -156,7 +156,7 @@ class AdminRatingService(
         )
 
         if (updated == 0) {
-            throw NotFoundException(ErrorCode.RIDE_NOT_FOUND)
+            throw NotFoundException(message = "Không tìm thấy đánh giá id=$id để cập nhật")
         }
 
         // Không cập nhật average_rating tại đây:

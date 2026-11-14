@@ -1,4 +1,4 @@
-package com.nhom15.datxebackend.payment.service
+﻿package com.nhom15.datxebackend.payment.service
 
 import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.common.api.ErrorCode
@@ -16,6 +16,7 @@ import com.nhom15.datxebackend.payment.dto.WalletTransactionResponse
 import com.nhom15.datxebackend.ride.event.RideCompleted
 import com.nhom15.datxebackend.ride.repository.RideRepository
 import com.nhom15.datxebackend.common.security.AuthUser
+import com.nhom15.datxebackend.voucher.service.PromoBudgetService
 import com.nhom15.datxebackend.payment.dto.CashPaymentConfirmationResponse
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
@@ -32,6 +33,7 @@ class PaymentService(
     private val rideRepository: RideRepository,
     private val wallets: WalletService,
     private val events: org.springframework.context.ApplicationEventPublisher,
+    private val promoBudget: PromoBudgetService? = null,
 ) {
     @Transactional(readOnly = true)
     fun getDriverDailySummary(driverId: Long): DriverDailySummary {
@@ -92,7 +94,6 @@ class PaymentService(
             throw PaymentMethodMismatchException()
         }
         if (payment.status != PaymentStatus.PAID.name) {
-            // Dùng đồng hồ JVM cho paid_at/updated_at, đồng bộ với quyết toán WALLET.
             val paidAt = java.sql.Timestamp.from(Instant.now())
             val changed = jdbcTemplate.update(
                 "UPDATE payments SET status = ?, paid_at = ?, updated_at = ? WHERE ride_id = ? AND status = ? AND method = 'CASH'",
@@ -115,7 +116,6 @@ class PaymentService(
         return (loadPayment(rideId) ?: throw NotFoundException(ErrorCode.PAYMENT_NOT_FOUND)).toConfirmation(rideId)
     }
 
-    /** Persist the payment row in the ride-completion transaction so it cannot be lost after commit. */
     @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT)
     @Transactional(propagation = Propagation.MANDATORY)
     fun onRideCompleted(event: RideCompleted) {
@@ -129,8 +129,12 @@ class PaymentService(
         val acquired = jdbcTemplate.update(
             "INSERT INTO ride_wallet_settlements(ride_id) VALUES (?) ON CONFLICT DO NOTHING", ride.id)
         if (acquired == 0) return
-        // WALLET có thể được quyết toán thành CASH nếu ví khách không đủ tiền.
-        val settledMethod = wallets.settle(ride.id, ride.customerId, event.driverId, event.finalFare.amount, ride.paymentMethod)
+
+        promoBudget?.spend(ride.id)
+
+        // Driver's 80% share is based on the original fare before the voucher.
+        val rawFare = ride.fareEstimate
+        val settledMethod = wallets.settle(ride.id, ride.customerId, event.driverId, event.finalFare.amount, ride.paymentMethod, rawFare)
         if (ride.paymentMethod != settledMethod) ride.paymentMethod = settledMethod
         val paidAt = if (settledMethod == PaymentMethod.WALLET) java.sql.Timestamp.from(Instant.now()) else null
         jdbcTemplate.update(

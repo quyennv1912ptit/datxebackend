@@ -1,6 +1,9 @@
 ﻿-- Voucher ownership and personal reward support.
 
 ALTER TABLE vouchers
+    ADD COLUMN IF NOT EXISTS owner_customer_id bigint,
+    ADD COLUMN IF NOT EXISTS source varchar(20) NOT NULL DEFAULT 'PUBLIC_CODE',
+    ADD COLUMN IF NOT EXISTS milestone integer NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS allowed_payment_method varchar(30);
 
 -- Safely drop legacy constraints if they exist

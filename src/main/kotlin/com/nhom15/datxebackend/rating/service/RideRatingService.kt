@@ -14,6 +14,8 @@ import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import java.time.Duration
+import java.time.Instant
 
 @Service
 class RideRatingService(
@@ -78,6 +80,11 @@ class RideRatingService(
 
         if (ride.status != RideStatus.COMPLETED) {
             throw BadRequestException(message = "Chỉ đánh giá được chuyến đã hoàn thành")
+        }
+        val completedAt = ride.completedAt
+            ?: throw BadRequestException(message = "Không xác định được thời điểm hoàn thành chuyến")
+        if (Instant.now().isAfter(completedAt.plus(Duration.ofDays(3)))) {
+            throw BadRequestException(message = "Đã hết thời hạn đánh giá 3 ngày")
         }
 
         val tags = request.tags.orEmpty()

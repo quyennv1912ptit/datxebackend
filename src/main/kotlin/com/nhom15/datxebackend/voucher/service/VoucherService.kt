@@ -1,4 +1,4 @@
-﻿package com.nhom15.datxebackend.voucher.service
+package com.nhom15.datxebackend.voucher.service
 
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.enums.PaymentMethod
@@ -8,6 +8,11 @@ import com.nhom15.datxebackend.common.exception.ForbiddenException
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.voucher.dto.AppliedVoucher
 import com.nhom15.datxebackend.voucher.dto.VoucherResponse
+import com.nhom15.datxebackend.voucher.dto.VoucherCampaignResponse
+import org.slf4j.LoggerFactory
+import com.nhom15.datxebackend.notification.api.NotificationPort
+import com.nhom15.datxebackend.notification.api.Recipient
+import com.nhom15.datxebackend.notification.dto.VoucherGrantedPayload
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
@@ -18,24 +23,33 @@ import java.sql.ResultSet
 import java.time.Instant
 
 @Service
-class VoucherService(private val jdbcTemplate: JdbcTemplate) {
+class VoucherService(
+    private val jdbcTemplate: JdbcTemplate,
+    private val grantService: VoucherGrantService? = null,
+    private val promoBudget: PromoBudgetService? = null,
+    private val notifications: NotificationPort? = null,
+) {
+    private val log = LoggerFactory.getLogger(javaClass)
 
     @Transactional(readOnly = true)
     fun listAvailable(actor: AuthUser): List<VoucherResponse> {
         requireCustomer(actor)
 
+        ensureWelcomeVoucher(actor.id)
+
         return jdbcTemplate.query(
             """
             SELECT v.id, v.code, v.discount_type, v.value, v.max_discount,
                    v.minimum_order_amount, v.usage_count, v.usage_limit,
-                   v.valid_from, v.valid_to, v.source
+                   v.valid_from, v.valid_to, v.owner_customer_id,
+                   v.source, v.allowed_payment_method
             FROM vouchers v
             WHERE v.active = TRUE
               AND v.valid_from <= CURRENT_TIMESTAMP
               AND v.valid_to > CURRENT_TIMESTAMP
               AND (v.usage_limit IS NULL OR v.usage_count < v.usage_limit)
               AND (
-                  (v.source = 'PUBLIC_CODE' AND v.owner_customer_id IS NULL)
+                  (v.source = 'PUBLIC_CODE' AND v.owner_customer_id IS NULL AND v.campaign_budget_limit IS NULL)
                   OR
                   (v.source = 'SYSTEM_REWARD' AND v.owner_customer_id = ?)
               )
@@ -53,6 +67,77 @@ class VoucherService(private val jdbcTemplate: JdbcTemplate) {
         )
     }
 
+    @Transactional(readOnly = true)
+    fun listClaimableCampaigns(actor: AuthUser): List<VoucherCampaignResponse> {
+        requireCustomer(actor)
+        return jdbcTemplate.query(
+            """SELECT v.id,v.code,v.campaign_title,v.description,v.discount_type,v.value,v.max_discount,v.minimum_order_amount,
+                      v.campaign_claim_count,v.usage_limit,v.valid_from,v.valid_to,v.campaign_budget_limit,
+                      GREATEST(v.campaign_budget_limit-COALESCE(cb.held_amount,0)-COALESCE(cb.spent_amount,0),0) AS budget_remaining
+               FROM vouchers v JOIN voucher_campaign_budget cb ON cb.campaign_id=v.id
+               WHERE v.source='PUBLIC_CODE' AND v.owner_customer_id IS NULL AND v.campaign_budget_limit IS NOT NULL
+                 AND v.active AND v.valid_from<=CURRENT_TIMESTAMP AND v.valid_to>CURRENT_TIMESTAMP
+                 AND v.campaign_claim_count<v.usage_limit
+                 AND NOT EXISTS(SELECT 1 FROM vouchers claimed WHERE claimed.campaign_id=v.id AND claimed.owner_customer_id=?)
+                 AND v.campaign_budget_limit-COALESCE(cb.held_amount,0)-COALESCE(cb.spent_amount,0)>=v.forecast_reserve_per_use
+                ORDER BY v.valid_to,v.id""".trimIndent(),
+        { rs, _ -> VoucherCampaignResponse(
+            id=rs.getLong("id"), code=rs.getString("code"), campaignTitle=rs.getString("campaign_title"), description=rs.getString("description"),
+            discountType=rs.getString("discount_type"), value=rs.getLong("value"),
+            maxDiscount=rs.getObject("max_discount",Long::class.javaObjectType),
+            minimumOrderAmount=rs.getLong("minimum_order_amount"), claimedCount=rs.getInt("campaign_claim_count"),
+            claimLimit=rs.getInt("usage_limit"), validFrom=rs.getTimestamp("valid_from").toInstant(),
+            validTo=rs.getTimestamp("valid_to").toInstant(), budgetLimit=rs.getLong("campaign_budget_limit"),
+            budgetRemaining=rs.getLong("budget_remaining"),
+        ) }, actor.id)
+    }
+
+    @Transactional
+    fun claimCampaign(actor: AuthUser, campaignId: Long): VoucherResponse {
+        requireCustomer(actor)
+        if (campaignId <= 0) throw BadRequestException(ErrorCode.VOUCHER_INVALID)
+        val campaign = jdbcTemplate.query(
+            """SELECT id,discount_type,value,max_discount,minimum_order_amount,usage_limit,valid_from,valid_to,
+                      allowed_payment_method,forecast_reserve_per_use,campaign_budget_limit
+               FROM vouchers WHERE id=? AND source='PUBLIC_CODE' AND campaign_budget_limit IS NOT NULL
+               FOR UPDATE""".trimIndent(),
+            { rs, _ -> arrayOf(rs.getString("discount_type"),rs.getLong("value"),rs.getObject("max_discount",Long::class.javaObjectType),
+                rs.getLong("minimum_order_amount"),rs.getInt("usage_limit"),rs.getTimestamp("valid_from").toInstant(),
+                rs.getTimestamp("valid_to").toInstant(),rs.getString("allowed_payment_method"),rs.getLong("forecast_reserve_per_use")) },
+            campaignId,
+        ).firstOrNull() ?: throw BadRequestException(ErrorCode.VOUCHER_INVALID,"Chiến dịch không còn khả dụng")
+        val claimed = jdbcTemplate.update(
+            """UPDATE vouchers SET campaign_claim_count=campaign_claim_count+1
+               WHERE id=? AND active AND valid_from<=CURRENT_TIMESTAMP AND valid_to>CURRENT_TIMESTAMP
+                 AND campaign_claim_count<usage_limit
+                 AND campaign_budget_limit-COALESCE((SELECT held_amount+spent_amount FROM voucher_campaign_budget WHERE campaign_id=?),0)>=forecast_reserve_per_use
+                 AND NOT EXISTS(SELECT 1 FROM vouchers c WHERE c.campaign_id=? AND c.owner_customer_id=?) RETURNING campaign_claim_count""".trimIndent(), Int::class.java, campaignId, campaignId, campaignId, actor.id)
+        val claimSeq = claimed ?:  throw BadRequestException(ErrorCode.VOUCHER_INVALID,"Chiến dịch đã hết suất hoặc ngân sách không còn đủ")
+        val id = jdbcTemplate.queryForObject(
+            """INSERT INTO vouchers(code,discount_type,value,max_discount,minimum_order_amount,usage_count,usage_limit,valid_from,valid_to,active,owner_customer_id,source,milestone,allowed_payment_method,forecast_reserve_per_use,description,campaign_id,claim_sequence) SELECT NULL,discount_type,value,max_discount,minimum_order_amount,0,1,valid_from,valid_to,TRUE,?,'SYSTEM_REWARD',0,allowed_payment_method,forecast_reserve_per_use,description,id,? FROM vouchers WHERE id=? RETURNING id""".trimIndent(), Long::class.java, actor.id, claimSeq, campaignId,
+        ) ?: throw BadRequestException(ErrorCode.VOUCHER_INVALID)
+        val response = jdbcTemplate.queryForObject(
+            """SELECT id,code,discount_type,value,max_discount,minimum_order_amount,usage_count,usage_limit,valid_from,valid_to,source,owner_customer_id,allowed_payment_method
+               FROM vouchers WHERE id=?""".trimIndent(),
+            { rs, _ -> toVoucher(rs).toResponse() }, id,
+        ) ?: throw BadRequestException(ErrorCode.VOUCHER_INVALID)
+        return response
+    }
+
+    private fun ensureWelcomeVoucher(customerId: Long) {
+        try {
+            if (grantService?.grantWelcome(customerId) == true) {
+                log.info("Da tang voucher chao mung cho khach {}", customerId)
+                notifications?.send(Recipient.Customer(customerId), VoucherGrantedPayload("WELCOME"))
+            }
+        } catch (exception: Exception) {
+            log.error(
+                "Khong tang duoc voucher chao mung cho khach {}",
+                customerId,
+                exception,
+            )
+        }
+    }
     @Transactional(readOnly = true)
     fun calculate(
         actor: AuthUser,
@@ -184,13 +269,16 @@ class VoucherService(private val jdbcTemplate: JdbcTemplate) {
         try {
             jdbcTemplate.update(
                 """
-                INSERT INTO voucher_usages (voucher_id, customer_id, ride_id)
-                VALUES (?, ?, ?)
+                INSERT INTO voucher_usages (voucher_id, customer_id, ride_id, discount_amount)
+                VALUES (?, ?, ?, ?)
                 """.trimIndent(),
                 applied.voucherId,
                 customerId,
                 rideId,
+                applied.discountAmount,
             )
+            val forecast = jdbcTemplate.queryForObject("SELECT forecast_reserve_per_use FROM vouchers WHERE id=?", Long::class.javaObjectType, applied.voucherId) ?: 0L
+            promoBudget?.hold(rideId, applied.voucherId, applied.discountAmount, forecast)
         } catch (_: DataIntegrityViolationException) {
             throw BadRequestException(ErrorCode.VOUCHER_INVALID)
         }
@@ -213,6 +301,7 @@ class VoucherService(private val jdbcTemplate: JdbcTemplate) {
         )
 
         if (deleted == 1) {
+            promoBudget?.release(rideId)
             jdbcTemplate.update(
                 """
                 UPDATE vouchers
@@ -235,6 +324,7 @@ class VoucherService(private val jdbcTemplate: JdbcTemplate) {
             WHERE UPPER(v.code) = ?
               AND v.source = 'PUBLIC_CODE'
               AND v.owner_customer_id IS NULL
+              AND v.campaign_budget_limit IS NULL
               AND v.active = TRUE
               AND v.valid_from <= CURRENT_TIMESTAMP
               AND v.valid_to > CURRENT_TIMESTAMP
