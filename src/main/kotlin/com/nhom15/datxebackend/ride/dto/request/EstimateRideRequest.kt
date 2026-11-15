@@ -2,6 +2,7 @@ package com.nhom15.datxebackend.ride.dto.request
 
 import com.fasterxml.jackson.annotation.JsonAlias
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.nhom15.datxebackend.common.enums.PaymentMethod
 import jakarta.validation.constraints.DecimalMax
 import jakarta.validation.constraints.DecimalMin
 import jakarta.validation.constraints.Future
@@ -41,10 +42,18 @@ data class EstimateRideRequest(
     @field:Future
     val scheduledAt: Instant? = null,
 
+    val paymentMethod: PaymentMethod = PaymentMethod.CASH,
+
     @JsonProperty("voucher_code")
     @JsonAlias("voucherCode")
     @field:Size(max = 255)
     val voucherCode: String? = null,
+
+    @JsonProperty("voucher_id")
+    @JsonAlias("voucherId")
+    @field:Positive
+    val voucherId: Long? = null,
+
     @field:Size(max = 36)
     val routeQuoteId: String? = null,
 )

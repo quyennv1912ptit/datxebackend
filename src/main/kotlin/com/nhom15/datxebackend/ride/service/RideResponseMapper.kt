@@ -2,6 +2,7 @@ package com.nhom15.datxebackend.ride.service
 
 import com.nhom15.datxebackend.common.enums.RideStatus
 import com.nhom15.datxebackend.common.util.roundToNearestThousandVnd
+import com.nhom15.datxebackend.payment.service.WalletService
 import com.nhom15.datxebackend.driver.entity.Driver
 import com.nhom15.datxebackend.pricing.model.RideQuote
 import com.nhom15.datxebackend.ride.dto.response.CreateRideResponse
@@ -72,7 +73,7 @@ internal object RideResponseMapper {
         pickupLat = ride.pickup.geoPoint.lat, pickupLng = ride.pickup.geoPoint.lng,
         dropoffLat = ride.dropoff.geoPoint.lat, dropoffLng = ride.dropoff.geoPoint.lng,
         type = ride.type, status = ride.status,
-        estimatedFare = ride.fareEstimate, finalFare = ride.finalFare,
+        estimatedFare = ride.fareEstimate, finalFare = ride.finalFare, discountAmount = ride.discountAmount, payableFare = (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).roundToNearestThousandVnd(),
         scheduledAt = ride.scheduledAt, createdAt = ride.createdAt,
     )
 
@@ -104,6 +105,8 @@ internal object RideResponseMapper {
         acceptedAt = ride.acceptedAt, startedAt = ride.startedAt,
         completedAt = ride.completedAt, cancelledAt = ride.cancelledAt,
         cancelledByRole = ride.cancelledByRole?.let { RideActorRole.valueOf(it) }, discountAmount = ride.discountAmount,
+        payableFare = (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).roundToNearestThousandVnd(),
+        driverExpectedEarning = WalletService.driverNetEarning(ride.fareEstimate),
         unreadChatCount = unreadChatCount,
         pickupNote = ride.pickupNote,
         licensePlate = ride.licensePlate,
