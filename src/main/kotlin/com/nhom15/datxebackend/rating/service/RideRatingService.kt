@@ -15,12 +15,43 @@ import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.annotation.Isolation
+import java.time.Instant
+
+data class DriverReview(val id: Long, val stars: Int, val comment: String?, val createdAt: Instant)
+data class DriverReviews(val averageRating: Double?, val total: Long, val distribution: Map<Int, Long>, val recent: List<DriverReview>)
 
 @Service
 class RideRatingService(
     private val rideRepository: RideRepository,
     private val jdbcTemplate: JdbcTemplate,
 ) {
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    fun reviewsForRide(actor: AuthUser, rideId: Long): DriverReviews {
+        val ride = rideRepository.findById(rideId).orElseThrow { NotFoundException(ErrorCode.RIDE_NOT_FOUND) }
+        if (ride.customerId != actor.id) throw NotFoundException(ErrorCode.RIDE_NOT_FOUND)
+        return driverReviews(ride.driverId ?: throw NotFoundException(ErrorCode.RIDE_NOT_FOUND))
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    fun driverReviews(driverId: Long): DriverReviews {
+        val distribution = jdbcTemplate.query(
+            """SELECT stars, COUNT(*) AS total FROM ratings
+               WHERE ratee_id = ? AND direction = 'CUSTOMER_TO_DRIVER' GROUP BY stars""",
+            { rs, _ -> rs.getInt("stars") to rs.getLong("total") }, driverId,
+        ).toMap()
+        val total = distribution.values.sum()
+        val average = if (total == 0L) null else distribution.entries.sumOf { (stars, count) -> stars * count }.toDouble() / total
+        val recent = jdbcTemplate.query(
+            """SELECT id, stars, comment, created_at FROM ratings
+               WHERE ratee_id = ? AND direction = 'CUSTOMER_TO_DRIVER'
+               ORDER BY created_at DESC, id DESC LIMIT 10""",
+            { rs, _ -> DriverReview(rs.getLong("id"), rs.getInt("stars"), rs.getString("comment"), rs.getTimestamp("created_at").toInstant()) },
+            driverId,
+        )
+        return DriverReviews(average, total, distribution, recent)
+    }
+
     @Transactional
     fun rate(actor: AuthUser, rideId: Long, request: CreateRideRatingRequest): RideRatingResponse {
         if (request.tip > 0) {

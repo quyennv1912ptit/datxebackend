@@ -82,7 +82,7 @@ class AdminCustomerQueryRepository(private val jdbcTemplate: JdbcTemplate) {
     fun findRides(customerId: Long, filter: AdminCustomerRidesFilter, status: RideStatus?): List<RideSummaryResponse> {
         val (where, args) = ridesWhere(customerId, filter, status)
         return jdbcTemplate.query(
-            """SELECT id, pickup_address, dropoff_address, type, status, fare_estimate, final_fare, scheduled_at, created_at
+            """SELECT id, pickup_address, dropoff_address, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, type, status, fare_estimate, final_fare, scheduled_at, created_at
                FROM rides$where ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?""".trimIndent(),
             { row, _ -> row.toRideSummary() },
             *(args + listOf(filter.size, filter.page.toLong() * filter.size)).toTypedArray(),
@@ -176,6 +176,10 @@ class AdminCustomerQueryRepository(private val jdbcTemplate: JdbcTemplate) {
         id = getLong("id"),
         pickupAddress = getString("pickup_address"),
         dropoffAddress = getString("dropoff_address"),
+        pickupLat = getObject("pickup_lat", Double::class.javaObjectType),
+        pickupLng = getObject("pickup_lng", Double::class.javaObjectType),
+        dropoffLat = getObject("dropoff_lat", Double::class.javaObjectType),
+        dropoffLng = getObject("dropoff_lng", Double::class.javaObjectType),
         type = RideType.valueOf(getString("type")),
         status = RideStatus.valueOf(getString("status")),
         estimatedFare = getLong("fare_estimate"),

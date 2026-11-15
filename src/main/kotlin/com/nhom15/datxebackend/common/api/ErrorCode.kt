@@ -14,6 +14,12 @@ enum class ErrorCode(val httpStatus: HttpStatus, val defaultMessage: String) {
     NOT_FOUND(HttpStatus.NOT_FOUND, "Không tìm thấy dữ liệu"),
     CONFLICT(HttpStatus.CONFLICT, "Dữ liệu vừa bị thay đổi, vui lòng thử lại"),
 
+    EKYC_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "Dịch vụ đọc giấy tờ tạm thời không khả dụng"),
+    EKYC_BUSY(HttpStatus.SERVICE_UNAVAILABLE, "Dịch vụ đọc giấy tờ đang bận, vui lòng thử lại"),
+    EKYC_TIMEOUT(HttpStatus.GATEWAY_TIMEOUT, "Đọc giấy tờ quá thời gian, vui lòng thử lại"),
+    EKYC_INVALID_IMAGE(HttpStatus.BAD_REQUEST, "Ảnh giấy tờ không hợp lệ"),
+    EKYC_IMAGE_TOO_LARGE(HttpStatus.CONTENT_TOO_LARGE, "Ảnh giấy tờ vượt quá giới hạn"),
+
     // ---- Auth & User ----
     USER_NOT_FOUND(HttpStatus.NOT_FOUND, "Không tìm thấy người dùng"),
     PHONE_ALREADY_EXISTS(HttpStatus.CONFLICT, "Số điện thoại đã được đăng ký"),
