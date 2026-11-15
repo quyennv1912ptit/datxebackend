@@ -1,4 +1,4 @@
-﻿package com.nhom15.datxebackend.admin.service
+package com.nhom15.datxebackend.admin.service
 
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.api.PageResponse
@@ -54,6 +54,7 @@ class AdminRatingService(
     @Transactional(readOnly = true)
     fun list(
         actor: AuthUser,
+        rideId: Long? = null,
         direction: String?,
         stars: Int?,
         raterId: Long?,
@@ -68,7 +69,7 @@ class AdminRatingService(
         validateFilters(stars, from, to, page, size)
 
         val (where, params) = buildFilters(
-            direction, stars, raterId, rateeId, from, to, hidden,
+            rideId, direction, stars, raterId, rateeId, from, to, hidden,
         )
 
         val total = jdbcTemplate.queryForObject(
@@ -165,7 +166,7 @@ class AdminRatingService(
     }
 
     private fun buildFilters(
-        direction: String?,
+        rideId: Long?, direction: String?,
         stars: Int?,
         raterId: Long?,
         rateeId: Long?,
@@ -175,6 +176,11 @@ class AdminRatingService(
     ): Pair<String, List<Any>> {
         val conditions = mutableListOf<String>()
         val params = mutableListOf<Any>()
+
+        rideId?.let {
+            conditions += "r.ride_id = ?"
+            params += it
+        }
 
         direction?.let {
             conditions += "r.direction = ?"

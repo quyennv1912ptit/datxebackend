@@ -22,6 +22,7 @@ class AdminRatingController(
     @GetMapping
     fun list(
         @CurrentUser actor: AuthUser,
+        @RequestParam(required = false) rideId: Long?,
         @RequestParam(required = false) direction: String?,
         @RequestParam(required = false) stars: Int?,
         @RequestParam(required = false) raterId: Long?,
@@ -38,7 +39,7 @@ class AdminRatingController(
     ): ApiResponse<PageResponse<AdminRatingItem>> =
         ApiResponse.ok(
             ratingService.list(
-                actor, direction, stars, raterId, rateeId,
+                actor, rideId, direction, stars, raterId, rateeId,
                 from, to, hidden, page, size,
             ),
         )

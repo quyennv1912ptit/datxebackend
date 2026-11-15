@@ -22,4 +22,5 @@ enum class PayloadType(val policy: DeliveryPolicy) {
     TICKET_REPLY(DeliveryPolicy.PUSH_ONLY),
     VOUCHER_GRANTED(DeliveryPolicy.PUSH_ALSO),
     VOUCHER_CAMPAIGN(DeliveryPolicy.PUSH_ALSO),
+    RATING_RECEIVED(DeliveryPolicy.PUSH_ALSO),
 }

@@ -185,7 +185,7 @@ class RideService(
                 rideId = ride.id,
                 event = RideTransitionEvent.START_SEARCH,
                 actor = customerRideActor(ride.customerId),
-                note = "Báº¯t Ä‘áº§u tÃ¬m tÃ i xáº¿ cho ride tá»©c thá»i",
+                note = "Bắt đầu tìm tài xế cho chuyến đi tức thì",
             ),
         )
 

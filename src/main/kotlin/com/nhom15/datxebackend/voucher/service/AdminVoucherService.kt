@@ -141,9 +141,9 @@ class AdminVoucherService(
         requireAdmin(actor)
         return jdbcTemplate.query(
             """SELECT v.id AS voucher_id,
-                      c.id AS customer_id,
-                      COALESCE(NULLIF(TRIM(c.full_name), ''), 'Khách hàng #' || c.id) AS full_name,
-                      COALESCE(NULLIF(TRIM(u.phone), ''), NULLIF(TRIM(u.email), ''), '—') AS phone,
+                      v.owner_customer_id AS customer_id,
+                      COALESCE(NULLIF(TRIM(c.full_name), ''), 'Khách hàng #' || v.owner_customer_id) AS full_name,
+                      COALESCE(NULLIF(TRIM(c.phone_number), ''), NULLIF(TRIM(u.phone), ''), NULLIF(TRIM(u.email), ''), '—') AS phone,
                       v.created_at AS claimed_at,
                       vu.ride_id,
                       vu.discount_amount,
@@ -154,11 +154,11 @@ class AdminVoucherService(
                           ELSE 'CLAIMED'
                       END AS claim_status
                FROM vouchers v
-               JOIN customers c ON c.id = v.owner_customer_id
-               LEFT JOIN users u ON u.id = c.user_id
+               LEFT JOIN customers c ON c.id = v.owner_customer_id
+               LEFT JOIN users u ON u.id = v.owner_customer_id
                LEFT JOIN voucher_usages vu ON vu.voucher_id = v.id
                LEFT JOIN rides r ON r.id = vu.ride_id
-               WHERE v.campaign_id = ?
+               WHERE v.campaign_id = ? AND v.owner_customer_id IS NOT NULL
                ORDER BY v.id DESC""".trimIndent(),
             { rs, _ ->
                 CampaignClaimantResponse(

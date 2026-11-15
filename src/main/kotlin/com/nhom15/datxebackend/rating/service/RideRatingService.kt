@@ -8,6 +8,9 @@ import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.common.exception.ForbiddenException
 import com.nhom15.datxebackend.common.exception.NotFoundException
 import com.nhom15.datxebackend.common.security.AuthUser
+import com.nhom15.datxebackend.notification.dto.RatingReceivedNotificationPayload
+import com.nhom15.datxebackend.notification.api.NotificationPort
+import com.nhom15.datxebackend.notification.api.Recipient
 import com.nhom15.datxebackend.rating.dto.*
 import com.nhom15.datxebackend.ride.repository.RideRepository
 import org.springframework.dao.DataIntegrityViolationException
@@ -21,6 +24,7 @@ import java.time.Instant
 class RideRatingService(
     private val rideRepository: RideRepository,
     private val jdbcTemplate: JdbcTemplate,
+    private val notifications: NotificationPort,
 ) {
     @Transactional
     fun rate(
@@ -94,6 +98,16 @@ class RideRatingService(
 
         val storedTags = tags.joinToString(",").takeIf(String::isNotEmpty)
 
+        val alreadyExists = jdbcTemplate.queryForObject(
+            "SELECT COUNT(*) FROM ratings WHERE ride_id = ? AND direction = ?",
+            Int::class.java,
+            rideId,
+            target.direction,
+        ) ?: 0
+        if (alreadyExists > 0) {
+            throw ConflictException(ErrorCode.RATING_ALREADY_EXISTS)
+        }
+
         if (
             request.stars !in 1..5 ||
             request.tip < 0 ||
@@ -153,6 +167,24 @@ class RideRatingService(
 
         if (updated == 0) {
             throw NotFoundException(ErrorCode.USER_NOT_FOUND)
+        }
+
+                val cleanComment = request.comment?.trim()?.takeIf(String::isNotEmpty)
+        val recipient = if (target.direction == "CUSTOMER_TO_DRIVER") {
+            Recipient.Driver(target.rateeId)
+        } else {
+            Recipient.Customer(target.rateeId)
+        }
+        runCatching {
+            notifications.send(
+                recipient,
+                RatingReceivedNotificationPayload(
+                    rideId = rideId,
+                    stars = request.stars,
+                    comment = cleanComment,
+                    tags = tags,
+                ),
+            )
         }
 
         return RideRatingResponse(
@@ -218,6 +250,11 @@ class RideRatingService(
                 RatingReceivedItem(
                     stars = rs.getInt("stars"),
                     comment = rs.getString("comment"),
+                    tags = rs.getString("tags")
+                        ?.split(",")
+                        ?.map(String::trim)
+                        ?.filter(String::isNotEmpty)
+                        ?: emptyList(),
                     createdAt = rs.getTimestamp("created_at").toLocalDateTime(),
                 )
             },

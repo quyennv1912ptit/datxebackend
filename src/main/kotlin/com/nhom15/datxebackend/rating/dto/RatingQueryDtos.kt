@@ -5,6 +5,7 @@ import java.time.LocalDateTime
 data class RatingReceivedItem(
     val stars: Int,
     val comment: String?,
+    val tags: List<String> = emptyList(),
     val createdAt: LocalDateTime,
 )
 

@@ -16,4 +16,6 @@ data class RideSummaryResponse(
     val payableFare: Long = estimatedFare,
     val scheduledAt: Instant?,
     val createdAt: Instant,
+    val hasRated: Boolean = false,
+    val myRatingStars: Int? = null,
 )
