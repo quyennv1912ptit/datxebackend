@@ -2,6 +2,7 @@ package com.nhom15.datxebackend.ride.repository
 
 import com.nhom15.datxebackend.common.enums.RideStatus
 import com.nhom15.datxebackend.ride.entity.Ride
+import com.nhom15.datxebackend.ride.entity.RideType
 import jakarta.persistence.LockModeType
 import jakarta.transaction.Transactional
 import org.springframework.data.domain.Page
@@ -51,6 +52,8 @@ interface RideRepository : JpaRepository<Ride, Long>, org.springframework.data.j
         statuses: Collection<RideStatus>
     ): Boolean
 
+    fun existsByCustomerIdAndTypeAndStatus(customerId: Long, type: RideType, status: RideStatus): Boolean
+
     fun existsByCustomerIdAndStatusNotIn(
         customerId: Long,
         statuses: Collection<RideStatus>
@@ -79,7 +82,11 @@ interface RideRepository : JpaRepository<Ride, Long>, org.springframework.data.j
     fun findByStatusAndScheduledAtIsNullAndUpdatedAtBefore(status: RideStatus, cutoff: Instant): List<Ride>
 
     /** Chuyến đặt lịch đã đến lúc xử lý (gần giờ đón để dispatch, hoặc quá giờ để chuyển EXPIRED). */
-    fun findByStatusAndScheduledAtLessThanEqual(status: RideStatus, time: Instant): List<Ride>
+    fun findByTypeAndStatusAndScheduledAtLessThanEqualOrderByScheduledAtAscIdAsc(
+        type: RideType,
+        status: RideStatus,
+        time: Instant,
+    ): List<Ride>
 
     // =========================================================================
     // 3. NHÓM HÀM TRUY VẤN LỊCH SỬ VÀ PHÂN TRANG (API)

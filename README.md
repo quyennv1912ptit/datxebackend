@@ -77,6 +77,24 @@ Các route trong nhóm này yêu cầu vai trò `CUSTOMER`.
 | DELETE | `/api/customer/vehicles/{id}/images/{imageId}` | Xóa ảnh xe. |
 | GET | `/api/customer/vouchers` | Danh sách voucher khả dụng. |
 
+Chuyến `SCHEDULED` cần `scheduledAt` trong tương lai và được tạo ở trạng thái
+`PENDING`. Mỗi khách có thể tạo một lịch chờ. Yêu cầu tạo lịch thứ hai trả
+`409 SCHEDULED_RIDE_EXISTS`. Chuyến đi ngay vẫn có thể được tạo khi khách có
+lịch chờ và chưa có chuyến đang hoạt động.
+
+Mặc định backend quét lịch mỗi 30 giây và bắt đầu tìm tài xế trong 15 phút
+trước giờ hẹn. Nếu khách đang có chuyến khác, lịch tiếp tục chờ. Đến 10 phút
+sau giờ đón, lịch còn chờ chuyển sang `EXPIRED`, chuyến đang tìm chuyển sang
+`NO_DRIVER_FOUND`. Lời mời tài xế có `scheduledAt` dạng ISO 8601 UTC cho
+chuyến hẹn giờ và `null` cho chuyến đi ngay.
+
+Khi cập nhật backend, chuyển các cấu hình `ride.scheduling.*` cũ nếu đang dùng.
+`dispatch-lead-minutes` chuyển thành `SCHEDULED_RIDE_DISPATCH_LEAD_TIME`
+(ví dụ `15m`), `poll-interval-ms` thành `SCHEDULED_RIDE_POLL_INTERVAL_MS`.
+`SCHEDULED_RIDE_EXPIRE_AFTER` thay `expire-grace-minutes` và mặc định là
+`10m`, áp dụng cho cả lịch chờ lẫn chuyến đang tìm. Khi đã mở đến bán kính tối
+đa, `SCHEDULED_RIDE_IDLE_RESCAN_DELAY` điều khiển nhịp quét lại, mặc định `15s`.
+
 ### Tài xế — `/api/driver`
 
 Các route trong nhóm này yêu cầu vai trò `DRIVER`.

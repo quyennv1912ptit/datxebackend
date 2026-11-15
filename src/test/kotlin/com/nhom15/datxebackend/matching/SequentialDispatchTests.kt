@@ -5,11 +5,14 @@ import com.nhom15.datxebackend.common.enums.*
 import com.nhom15.datxebackend.common.event.EventPublisher
 import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.common.port.NearbyDriverQueryPort
+import com.nhom15.datxebackend.common.port.NearbyDriver
+import com.nhom15.datxebackend.matching.dto.RankedDriverDTO
 import com.nhom15.datxebackend.common.redis.RedisKeys
 import com.nhom15.datxebackend.config.properties.MatchingProperties
 import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.matching.service.*
 import com.nhom15.datxebackend.notification.api.NotificationPort
+import com.nhom15.datxebackend.notification.api.Recipient
 import com.nhom15.datxebackend.notification.dto.RideOfferPayload
 import com.nhom15.datxebackend.common.port.RideAssignmentPort
 import com.nhom15.datxebackend.ride.entity.*
@@ -21,11 +24,15 @@ import org.mockito.Mockito.*
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.data.redis.core.StringRedisTemplate
 import java.time.Instant
+import java.time.Duration
+import java.time.Clock
+import com.nhom15.datxebackend.config.properties.ScheduledRideProperties
 import java.util.Optional
 
 class SequentialDispatchTests {
-    private fun ride(status: RideStatus = RideStatus.SEARCHING) = Ride(
-        customerId=1, vehicleId=2, type=RideType.INSTANT, pickup=Location(GeoPoint(21.03,105.84),"Đón"),
+    private fun ride(status: RideStatus = RideStatus.SEARCHING, scheduledAt: Instant? = null) = Ride(
+        customerId=1, vehicleId=2, type=if (scheduledAt == null) RideType.INSTANT else RideType.SCHEDULED,
+        scheduledAt=scheduledAt, pickup=Location(GeoPoint(21.03,105.84),"Đón"),
         dropoff=Location(GeoPoint(21.04,105.85),"Đến"), vehicleType=VehicleType.CAR,
         transmission=Transmission.AUTO, fareEstimate=30000, paymentMethod=PaymentMethod.CASH,
         status=status,
@@ -52,7 +59,7 @@ class SequentialDispatchTests {
         `when`(redis.opsForHash<String,String>().get(RedisKeys.rideState("42"),"nextRoundIndex")).thenReturn("0","1","2","3")
         val service=RideDispatchService(nearby,selection,MatchingProperties(),redis,publisher,
             mock(RideOfferBuilder::class.java),notifications,mock(OfferReleaseService::class.java),rides,
-            mock(RideDispatchOutboxRepository::class.java),offers)
+            mock(RideDispatchOutboxRepository::class.java),offers,ScheduledRideProperties(),Clock.systemUTC())
         repeat(4) { assertEquals(java.time.Duration.ofSeconds(3), service.dispatchRide(42)) }
         verify(nearby).findNearbyDrivers(GeoPoint(21.03,105.84),2.0,500L)
         verify(nearby).findNearbyDrivers(GeoPoint(21.03,105.84),3.0,500L)
@@ -83,11 +90,105 @@ class SequentialDispatchTests {
         assertSame(payload, service.pendingOffer(7))
     }
 
+    @Test fun `scheduled searches slow down at max radius and stop at 08 10`() {
+        val rides = mock(RideRepository::class.java)
+        val redis = mock(StringRedisTemplate::class.java, RETURNS_DEEP_STUBS)
+        val nearby = mock(NearbyDriverQueryPort::class.java)
+        val publisher = mock(ApplicationEventPublisher::class.java)
+        val notifications = mock(NotificationPort::class.java)
+        val selection = mock(DriverSelectionService::class.java)
+        val builder = mock(RideOfferBuilder::class.java)
+        val offers = mock(DispatchOfferRepository::class.java) { invocation ->
+            if (invocation.method.name == "record") true else RETURNS_DEFAULTS.answer(invocation)
+        }
+        val pickup = Instant.parse("2026-11-09T01:00:00Z")
+        val cutoff = pickup.plusSeconds(600)
+        val clock = mock(Clock::class.java)
+        `when`(rides.findById(42)).thenReturn(Optional.of(ride(scheduledAt = pickup).apply { searchExpiresAt = cutoff }))
+        `when`(redis.opsForValue().setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
+        `when`(redis.opsForHash<String,String>().get(RedisKeys.rideState("42"), "status")).thenReturn("SEARCHING")
+        `when`(redis.opsForHash<String,String>().get(RedisKeys.rideState("42"), "nextRoundIndex")).thenReturn("0", "1", "2", "3")
+        val service = RideDispatchService(nearby, selection, MatchingProperties(), redis,
+            publisher, builder, notifications, mock(OfferReleaseService::class.java), rides,
+            mock(RideDispatchOutboxRepository::class.java), offers,
+            ScheduledRideProperties(), clock)
+
+        `when`(clock.instant()).thenReturn(pickup.minusSeconds(900))
+        assertEquals(Duration.ofSeconds(3), service.dispatchRide(42))
+        assertEquals(Duration.ofSeconds(3), service.dispatchRide(42))
+        assertEquals(Duration.ofSeconds(15), service.dispatchRide(42))
+
+        `when`(clock.instant()).thenReturn(pickup.plusSeconds(60))
+        assertEquals(Duration.ofSeconds(15), service.dispatchRide(42))
+        verify(nearby).findNearbyDrivers(GeoPoint(21.03,105.84), 2.0, 500L)
+        verify(nearby).findNearbyDrivers(GeoPoint(21.03,105.84), 3.0, 500L)
+        verifyNoInteractions(publisher)
+
+        val lateDriver = listOf(NearbyDriver(7, 4.0, GeoPoint(21.06, 105.86)))
+        `when`(clock.instant()).thenReturn(pickup.plusSeconds(75))
+        `when`(nearby.findNearbyDrivers(GeoPoint(21.03,105.84), 5.0, 500L)).thenReturn(lateDriver)
+        `when`(selection.filterAndRankDrivers(lateDriver, VehicleType.CAR, Transmission.AUTO, 5.0))
+            .thenReturn(listOf(RankedDriverDTO(7, 4.0, 1.0)))
+        `when`(redis.execute(eq(DispatchScripts.OFFER_NEXT), anyList(), anyString(), anyString(), anyString(),
+            anyString(), anyString(), anyString())).thenReturn("7")
+        val payload = mock(RideOfferPayload::class.java)
+        `when`(builder.build(eq(42L), eq(7L), eq(pickup.plusSeconds(102).toEpochMilli()), anyString())).thenReturn(payload)
+        assertEquals(Duration.ofSeconds(28), service.dispatchRide(42))
+        verify(notifications).send(Recipient.Driver(7), payload)
+        verify(nearby, times(3)).findNearbyDrivers(GeoPoint(21.03,105.84), 5.0, 500L)
+
+        `when`(clock.instant()).thenReturn(cutoff.minusSeconds(9))
+        assertEquals(Duration.ofSeconds(9), service.dispatchRide(42))
+        verifyNoMoreInteractions(nearby)
+
+        `when`(clock.instant()).thenReturn(cutoff)
+        assertNull(service.dispatchRide(42))
+        assertEquals(42L, (mockingDetails(publisher).invocations.single().arguments[0] as com.nhom15.datxebackend.ride.event.RideNoDriverFound).rideId)
+        verifyNoMoreInteractions(notifications)
+    }
+
+    @Test fun `scheduled search and redispatch share the original pickup deadline`() {
+        val rides = mock(RideRepository::class.java)
+        val outbox = mock(RideDispatchOutboxRepository::class.java)
+        val pickup = Instant.now().plusSeconds(15 * 60)
+        val current = ride(RideStatus.PENDING, pickup)
+        `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(current))
+        `when`(rides.compareAndSetStatus(eq(42L), anyString(), anyString(), anyLong())).thenReturn(1)
+        val service = machine(rides, mock(RideStatusHistoryRepository::class.java), mock(EventPublisher::class.java), outbox)
+
+        service.transition(RideTransitionCommand(42, RideTransitionEvent.START_SEARCH, SYSTEM_RIDE_ACTOR))
+        assertEquals(pickup.plus(Duration.ofMinutes(10)), current.searchExpiresAt)
+        assertThrows(ConflictException::class.java) {
+            service.transition(RideTransitionCommand(42, RideTransitionEvent.NO_DRIVER_FOUND, SYSTEM_RIDE_ACTOR))
+        }
+
+        current.status = RideStatus.DRIVER_ASSIGNED
+        current.driverId = 7
+        service.transition(RideTransitionCommand(42, RideTransitionEvent.CANCEL, driverRideActor(7), cancelReason = "Không thể đón"))
+        assertEquals(RideStatus.SEARCHING, current.status)
+        assertEquals(pickup.plus(Duration.ofMinutes(10)), current.searchExpiresAt)
+        verify(outbox, times(2)).schedule(42)
+    }
+
+    @Test fun `driver cancellation after a scheduled deadline cannot restart search`() {
+        val rides = mock(RideRepository::class.java)
+        val outbox = mock(RideDispatchOutboxRepository::class.java)
+        val current = ride(RideStatus.DRIVER_ASSIGNED, Instant.now().minusSeconds(11 * 60)).apply { driverId = 7 }
+        `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(current))
+        `when`(rides.compareAndSetStatus(eq(42L), anyString(), anyString(), anyLong())).thenReturn(1)
+        val service = machine(rides, mock(RideStatusHistoryRepository::class.java), mock(EventPublisher::class.java), outbox)
+
+        service.transition(RideTransitionCommand(42, RideTransitionEvent.CANCEL, driverRideActor(7), cancelReason = "Không thể đón"))
+        assertEquals(RideStatus.NO_DRIVER_FOUND, current.status)
+        verifyNoInteractions(outbox)
+    }
+
     @Test fun `an offer still renders when pickup GPS is unavailable`() {
         val rides = mock(RideRepository::class.java)
         val redis = mock(StringRedisTemplate::class.java, RETURNS_DEEP_STUBS)
         val customers = mock(com.nhom15.datxebackend.customer.repository.CustomerRepository::class.java)
-        `when`(rides.findById(42)).thenReturn(Optional.of(ride()))
+        val pickup = Instant.parse("2026-11-09T01:00:00Z")
+        `when`(rides.findById(42)).thenReturn(Optional.of(ride(scheduledAt = pickup)))
         `when`(redis.opsForHash<String, String>().entries(RedisKeys.driverLocation("7"))).thenReturn(emptyMap())
         `when`(redis.opsForGeo().position(RedisKeys.GEO_KEY, "7")).thenReturn(listOf(null))
         val offer = RideOfferBuilder(rides, redis, customers, MatchingProperties())
@@ -97,6 +198,9 @@ class SequentialDispatchTests {
         assertNull(offer.etaToPickupMin)
         assertEquals("Đón", offer.pickup.address)
         assertTrue(offer.driverEarning > 0)
+        assertEquals(pickup, offer.scheduledAt)
+        val mapper = tools.jackson.module.kotlin.jacksonObjectMapper()
+        assertEquals(pickup.toString(), mapper.readTree(mapper.writeValueAsString(offer)).path("scheduledAt").stringValue())
     }
 
     @Test fun `outstanding offer wakes the tick at expiry plus grace`() {
@@ -111,7 +215,8 @@ class SequentialDispatchTests {
         `when`(offers.outstanding(42)).thenReturn(DispatchOffer("offer-1",42,7,Instant.now().plusSeconds(10)))
         val service=RideDispatchService(nearby,mock(DriverSelectionService::class.java),MatchingProperties(),redis,
             mock(ApplicationEventPublisher::class.java),mock(RideOfferBuilder::class.java),mock(NotificationPort::class.java),
-            mock(OfferReleaseService::class.java),rides,mock(RideDispatchOutboxRepository::class.java),offers)
+            mock(OfferReleaseService::class.java),rides,mock(RideDispatchOutboxRepository::class.java),offers,
+            ScheduledRideProperties(),Clock.systemUTC())
         val delay=service.dispatchRide(42)
         assertNotNull(delay)
         assertTrue(delay!! >= java.time.Duration.ofSeconds(10) && delay <= java.time.Duration.ofSeconds(12))
@@ -238,5 +343,6 @@ class SequentialDispatchTests {
         RideStateMachine(rides,history,events,mock(VehicleHandoverReportRepository::class.java),
             mock(com.nhom15.datxebackend.chat.service.ConversationService::class.java),MatchingProperties(),outbox,
             mock(DispatchOfferRepository::class.java),mock(DriverRepository::class.java),
-            mock(com.nhom15.datxebackend.payment.service.WalletService::class.java), vouchers)
+            mock(com.nhom15.datxebackend.payment.service.WalletService::class.java), vouchers,
+            ScheduledRideProperties(),Clock.systemUTC())
 }
