@@ -29,14 +29,14 @@ class RideEstimateService(
     @org.springframework.transaction.annotation.Transactional
     fun estimateRide(actor: AuthUser, request: EstimateRideRequest): EstimateRideResponse {
         if (actor.role != Role.CUSTOMER) {
-            throw ForbiddenException(message = "Chỉ khách hàng mới có thể báo giá chuyến đi")
+            throw ForbiddenException(message = "Chá»‰ khÃ¡ch hÃ ng má»›i cÃ³ thá»ƒ bÃ¡o giÃ¡ chuyáº¿n Ä‘i")
         }
         validateEstimate(request)
 
         val now = Instant.now()
         val scheduledAt = request.scheduledAt
         if (scheduledAt != null && !scheduledAt.isAfter(now)) {
-            throw BadRequestException(message = "scheduledAt phải nằm trong tương lai")
+            throw BadRequestException(message = "scheduledAt pháº£i náº±m trong tÆ°Æ¡ng lai")
         }
         val vehicle = vehicleQueryPort.findOwnedVehicle(request.vehicleId, actor.id)
             ?: throw NotFoundException(ErrorCode.VEHICLE_NOT_FOUND)
@@ -50,31 +50,31 @@ class RideEstimateService(
         quoteProvider.requirePricing(vehicle.vehicleType)
         val savedRoute = rideRoutes.resolve(actor.id, request.vehicleId, vehicle.vehicleType, input.pickup, input.dropoff, request.routeQuoteId)
         val quote = quoteProvider.quote(input.copy(route = savedRoute.drivingRoute()))
-        val voucher = voucherService.calculate(actor, request.voucherCode, quote.estimatedFare)
+        val voucher = voucherService.calculate(actor, request.voucherCode, quote.estimatedFare, request.paymentMethod, request.voucherId)
         return RideResponseMapper.estimate(quote, voucher?.discountAmount ?: 0, savedRoute)
     }
 
     private fun validateEstimate(request: EstimateRideRequest) {
         if (request.vehicleId <= 0) {
-            throw BadRequestException(message = "vehicleId phải lớn hơn 0")
+            throw BadRequestException(message = "vehicleId pháº£i lá»›n hÆ¡n 0")
         }
         if (request.pickupAddress.isBlank() || request.pickupAddress.length > 255) {
-            throw BadRequestException(message = "Địa chỉ đón phải có nội dung và không vượt quá 255 ký tự")
+            throw BadRequestException(message = "Äá»‹a chá»‰ Ä‘Ã³n pháº£i cÃ³ ná»™i dung vÃ  khÃ´ng vÆ°á»£t quÃ¡ 255 kÃ½ tá»±")
         }
         if (request.dropoffAddress.isBlank() || request.dropoffAddress.length > 255) {
-            throw BadRequestException(message = "Địa chỉ đến phải có nội dung và không vượt quá 255 ký tự")
+            throw BadRequestException(message = "Äá»‹a chá»‰ Ä‘áº¿n pháº£i cÃ³ ná»™i dung vÃ  khÃ´ng vÆ°á»£t quÃ¡ 255 kÃ½ tá»±")
         }
         if (!request.pickupLat.isFinite() || request.pickupLat < -90.0 || request.pickupLat > 90.0) {
-            throw BadRequestException(message = "pickupLat phải hữu hạn và từ -90 đến 90")
+            throw BadRequestException(message = "pickupLat pháº£i há»¯u háº¡n vÃ  tá»« -90 Ä‘áº¿n 90")
         }
         if (!request.pickupLng.isFinite() || request.pickupLng < -180.0 || request.pickupLng > 180.0) {
-            throw BadRequestException(message = "pickupLng phải hữu hạn và từ -180 đến 180")
+            throw BadRequestException(message = "pickupLng pháº£i há»¯u háº¡n vÃ  tá»« -180 Ä‘áº¿n 180")
         }
         if (!request.dropoffLat.isFinite() || request.dropoffLat < -90.0 || request.dropoffLat > 90.0) {
-            throw BadRequestException(message = "dropoffLat phải hữu hạn và từ -90 đến 90")
+            throw BadRequestException(message = "dropoffLat pháº£i há»¯u háº¡n vÃ  tá»« -90 Ä‘áº¿n 90")
         }
         if (!request.dropoffLng.isFinite() || request.dropoffLng < -180.0 || request.dropoffLng > 180.0) {
-            throw BadRequestException(message = "dropoffLng phải hữu hạn và từ -180 đến 180")
+            throw BadRequestException(message = "dropoffLng pháº£i há»¯u háº¡n vÃ  tá»« -180 Ä‘áº¿n 180")
         }
     }
 

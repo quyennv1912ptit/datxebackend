@@ -1,4 +1,4 @@
-package com.nhom15.datxebackend.ride.dto.request
+﻿package com.nhom15.datxebackend.ride.dto.request
 
 import com.fasterxml.jackson.annotation.JsonAlias
 import com.fasterxml.jackson.annotation.JsonProperty
@@ -49,6 +49,7 @@ data class CreateRideRequest(
 
     @field:Size(max = 500)
     val note: String? = null,
+
     @field:Size(max = 500)
     val pickupNote: String? = null,
 
@@ -56,6 +57,12 @@ data class CreateRideRequest(
     @JsonAlias("voucherCode")
     @field:Size(max = 255)
     val voucherCode: String? = null,
+
+    @JsonProperty("voucher_id")
+    @JsonAlias("voucherId")
+    @field:Positive
+    val voucherId: Long? = null,
+
     @field:Size(max = 36)
     val routeQuoteId: String? = null,
 )

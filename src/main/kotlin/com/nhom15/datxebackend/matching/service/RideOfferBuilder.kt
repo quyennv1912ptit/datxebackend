@@ -5,6 +5,8 @@ import com.nhom15.datxebackend.common.domain.GeoPoint
 import com.nhom15.datxebackend.common.exception.NotFoundException
 import com.nhom15.datxebackend.common.redis.RedisKeys
 import com.nhom15.datxebackend.common.util.GeoUtils.distanceKm
+import com.nhom15.datxebackend.common.util.roundToNearestThousandVnd
+import com.nhom15.datxebackend.payment.service.WalletService
 import com.nhom15.datxebackend.notification.dto.CustomerBrief
 import com.nhom15.datxebackend.notification.dto.RideOfferPayload
 import com.nhom15.datxebackend.notification.dto.VehicleInfo
@@ -64,8 +66,8 @@ class RideOfferBuilder(
             etaToPickupMin = toPickupKm?.let(::minutesFor),
             tripDistanceKm = round1(tripKm),
             estDurationMin = tripMin,
-            fareEstimate = ride.fareEstimate,
-            driverEarning = (ride.fareEstimate * DRIVER_SHARE).roundToLong(),
+            fareEstimate = (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).roundToNearestThousandVnd(),
+            driverEarning = WalletService.driverNetEarning(ride.fareEstimate),
             paymentMethod = ride.paymentMethod,
             vehicle = VehicleInfo(ride.vehicleType, ride.transmission),
             customer = CustomerBrief(

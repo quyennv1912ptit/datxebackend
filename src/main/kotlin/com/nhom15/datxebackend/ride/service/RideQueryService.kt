@@ -1,5 +1,6 @@
 package com.nhom15.datxebackend.ride.service
 
+import org.springframework.jdbc.core.JdbcTemplate
 import com.nhom15.datxebackend.chat.service.ChatService
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.api.PageResponse
@@ -30,6 +31,7 @@ import org.springframework.transaction.annotation.Transactional
 
 @Service
 class RideQueryService(
+    private val jdbcTemplate: JdbcTemplate,
     private val rideRepository: RideRepository,
     private val historyRepository: RideStatusHistoryRepository,
     private val reportRepository: VehicleHandoverReportRepository,
@@ -156,7 +158,25 @@ class RideQueryService(
             Role.ADMIN -> throw ForbiddenException()
         }
 
-        return PageResponse.from(rides) { ride -> RideResponseMapper.summary(ride) }
+        val rideIds = rides.content.map { it.id }
+        val ratingMap: Map<Long, Int> = if (rideIds.isNotEmpty() && actor.role in setOf(Role.CUSTOMER, Role.DRIVER)) {
+            val dir = if (actor.role == Role.CUSTOMER) "CUSTOMER_TO_DRIVER" else "DRIVER_TO_CUSTOMER"
+            val placeholders = rideIds.joinToString(",") { "?" }
+            val args = (listOf<Any>(dir, actor.id) + rideIds).toTypedArray()
+            jdbcTemplate.query(
+                "SELECT ride_id, stars FROM ratings WHERE direction = ? AND rater_id = ? AND ride_id IN ($placeholders)",
+                { rs, _ -> rs.getLong("ride_id") to rs.getInt("stars") },
+                *args,
+            ).toMap()
+        } else emptyMap()
+
+        return PageResponse.from(rides) { ride ->
+            val ratedStars = ratingMap[ride.id]
+            RideResponseMapper.summary(ride).copy(
+                hasRated = ratedStars != null,
+                myRatingStars = ratedStars,
+            )
+        }
     }
 
     private fun parseStatuses(raw: String?): List<RideStatus>? {
