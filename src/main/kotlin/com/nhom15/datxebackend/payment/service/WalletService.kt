@@ -108,7 +108,20 @@ class WalletService(
         val fee = commission(fare, rawFare)
         return when (method) {
             PaymentMethod.CASH -> {
-                change(locked(driverId, WalletOwner.DRIVER, WalletType.CREDIT), -fee, TransactionType.COMMISSION_FEE, rideId)
+                val driverNet = driverNetEarning(rawFare)
+                if (fee > 0) {
+                    change(locked(driverId, WalletOwner.DRIVER, WalletType.CREDIT), -fee, TransactionType.COMMISSION_FEE, rideId)
+                }
+                if (driverNet > fare) {
+                    val subsidy = driverNet - fare
+                    change(
+                        locked(driverId, WalletOwner.DRIVER, WalletType.CASH),
+                        subsidy,
+                        TransactionType.RIDE_PAYMENT,
+                        rideId,
+                        description = "Bù cước voucher từ hệ thống",
+                    )
+                }
                 PaymentMethod.CASH
             }
 

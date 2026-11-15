@@ -143,8 +143,8 @@ class AdminVoucherService(
             """SELECT v.id AS voucher_id,
                       v.owner_customer_id AS customer_id,
                       COALESCE(NULLIF(TRIM(c.full_name), ''), 'Khách hàng #' || v.owner_customer_id) AS full_name,
-                      COALESCE(NULLIF(TRIM(c.phone_number), ''), NULLIF(TRIM(u.phone), ''), NULLIF(TRIM(u.email), ''), '—') AS phone,
-                      v.created_at AS claimed_at,
+                      COALESCE(NULLIF(TRIM(c.phone_number), ''), NULLIF(TRIM(c.email), ''), '—') AS phone,
+                      COALESCE(v.valid_from, CURRENT_TIMESTAMP) AS claimed_at,
                       vu.ride_id,
                       vu.discount_amount,
                       CASE
@@ -155,7 +155,6 @@ class AdminVoucherService(
                       END AS claim_status
                FROM vouchers v
                LEFT JOIN customers c ON c.id = v.owner_customer_id
-               LEFT JOIN users u ON u.id = v.owner_customer_id
                LEFT JOIN voucher_usages vu ON vu.voucher_id = v.id
                LEFT JOIN rides r ON r.id = vu.ride_id
                WHERE v.campaign_id = ? AND v.owner_customer_id IS NOT NULL

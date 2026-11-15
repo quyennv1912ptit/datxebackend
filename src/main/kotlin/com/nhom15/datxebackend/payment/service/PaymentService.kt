@@ -1,4 +1,4 @@
-﻿package com.nhom15.datxebackend.payment.service
+package com.nhom15.datxebackend.payment.service
 
 import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.common.api.ErrorCode
@@ -160,15 +160,27 @@ class PaymentService(
     @Transactional(readOnly = true)
     fun getDriverRideEarnings(driverId: Long, rideId: Long): com.nhom15.datxebackend.payment.dto.DriverRideEarnings? {
         val payment = loadPayment(rideId) ?: return null
-        val type = if (payment.method == PaymentMethod.CASH.name) "COMMISSION_FEE" else "TRIP_EARNING"
-        val recorded = jdbcTemplate.query(
-            "SELECT amount FROM wallet_transactions WHERE driver_id=? AND ride_id=? AND type=? AND status='SUCCESS'",
-            { row, _ -> row.getLong("amount") }, driverId, rideId, type).firstOrNull() ?: return null
         val cash = payment.method == PaymentMethod.CASH.name
+        if (!cash) {
+            val recorded = jdbcTemplate.query(
+                "SELECT amount FROM wallet_transactions WHERE driver_id=? AND ride_id=? AND type='TRIP_EARNING' AND status='SUCCESS'",
+                { row, _ -> row.getLong("amount") }, driverId, rideId).firstOrNull() ?: return null
+            return com.nhom15.datxebackend.payment.dto.DriverRideEarnings(
+                recorded, payment.amount - recorded, true, payment.status == PaymentStatus.PAID.name)
+        }
+        val commissionRecorded = jdbcTemplate.query(
+            "SELECT amount FROM wallet_transactions WHERE driver_id=? AND ride_id=? AND type='COMMISSION_FEE' AND status='SUCCESS'",
+            { row, _ -> row.getLong("amount") }, driverId, rideId).firstOrNull() ?: 0L
+        val subsidyRecorded = jdbcTemplate.query(
+            "SELECT amount FROM wallet_transactions WHERE driver_id=? AND ride_id=? AND type='TRIP_EARNING' AND wallet_type='CASH' AND status='SUCCESS'",
+            { row, _ -> row.getLong("amount") }, driverId, rideId).firstOrNull() ?: 0L
+        if (commissionRecorded == 0L && subsidyRecorded == 0L) return null
         return com.nhom15.datxebackend.payment.dto.DriverRideEarnings(
-            if (cash) payment.amount + recorded else recorded,
-            if (cash) -recorded else payment.amount - recorded,
-            !cash, payment.status == PaymentStatus.PAID.name)
+            payment.amount + commissionRecorded + subsidyRecorded,
+            -commissionRecorded,
+            subsidyRecorded > 0L,
+            payment.status == PaymentStatus.PAID.name || payment.amount == 0L,
+        )
     }
 
     private fun loadPayment(rideId: Long, forUpdate: Boolean = false): PaymentRow? = jdbcTemplate.query(
