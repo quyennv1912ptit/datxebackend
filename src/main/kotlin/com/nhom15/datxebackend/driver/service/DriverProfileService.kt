@@ -78,6 +78,7 @@ class DriverProfileService(
         val complete = !driver.licenseNumber.isNullOrBlank() && !driver.licenseClass.isNullOrBlank()
         return DriverProfileResponse(
             id = id,
+            avatarUrl = driver.avatarUrl,
             licenseNumber = driver.licenseNumber,
             licenseClass = driver.licenseClass,
             yearsOfExperience = driver.yearsOfExperience,
