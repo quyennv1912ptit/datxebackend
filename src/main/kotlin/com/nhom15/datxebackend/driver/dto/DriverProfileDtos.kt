@@ -43,6 +43,7 @@ data class UpdateDriverProfileRequest(
 
 data class DriverProfileResponse(
     val id: Long,
+    @JsonProperty("avatar_url") val avatarUrl: String? = null,
     @JsonProperty("license_number") val licenseNumber: String?,
     @JsonProperty("license_class") val licenseClass: String?,
     @JsonProperty("years_of_experience") val yearsOfExperience: Int?,
