@@ -4,6 +4,8 @@ Tài liệu này mô tả các HTTP route, kênh STOMP/WebSocket, FCM và upload
 
 ## Tổng quan
 
+Backend dùng Kotlin, Java 21, Spring Boot, Gradle Wrapper, PostgreSQL 17 và Redis 7. Controllers nhận và xác thực dữ liệu, các service xử lý nghiệp vụ, còn repository truy cập PostgreSQL. Flyway chạy migration và Hibernate kiểm tra mapping khi khởi động.
+
 - HTTP API chạy mặc định tại `http://localhost:8080`; prefix API chính là `/api`.
 - Xác thực bằng Firebase ID token: `Authorization: Bearer <Firebase ID token>`.
 - Các vai trò dùng trong API: `CUSTOMER`, `DRIVER`, `ADMIN`.
@@ -19,6 +21,16 @@ Tài liệu này mô tả các HTTP route, kênh STOMP/WebSocket, FCM và upload
 5. Chạy `docker compose up --build`.
 
 Flyway tạo schema. Khi ứng dụng khởi động, bootstrap chỉ tạo admin nếu UID chưa tồn tại và chỉ tạo bảng giá cho loại xe chưa có giá active; cấu hình không ghi đè giá đang hoạt động. Các biến admin có thể để trống khi chưa muốn cấp quyền admin. `.env.example` chỉ là mẫu phát triển, không dùng nguyên trạng cho production.
+
+### Build và kiểm thử
+
+Chạy `./gradlew check build` trên Linux/macOS hoặc `./gradlew.bat check build` trên Windows. Dùng PostgreSQL test tách riêng và đặt `TEST_DB_URL`, `TEST_DB_USER`, `TEST_DB_PASSWORD` để chạy các ca Flyway, truy vấn và giao dịch thật. Các ca kiểm tra đồng bộ eKYC còn đọc `VERIFICATION_E2E_PG_URL`, `VERIFICATION_E2E_PG_USER`, `VERIFICATION_E2E_PG_PASSWORD`, `VERIFICATION_SYNC_TEST_DB` và `VERIFICATION_SYNC_TEST_PASSWORD`. Bộ test projection dùng username `sync_test`.
+
+Backend gọi OCR và face quality bằng cấu hình `DATXE_EKYC_*` ở server. Đồng bộ workflow eKYC độc lập dùng `DATXE_VERIFICATION_SYNC_*` khi được bật. Dùng cấu hình dev riêng cho Firebase/FCM, Cloudinary, Goong và cổng thanh toán. Khi kiểm tra local, giữ các ca gọi provider thật ở chế độ tắt. Có thể đọc route từ OpenAPI theo mục Health check bên dưới.
+
+Trước khi chạy xác minh với dữ liệu thật, dùng Compose production với `DATXE_VERIFICATION_HOST_DIR` trỏ tới volume riêng và cấp `DATXE_VERIFICATION_ENCRYPTION_KEY` từ secret manager. Compose dev tiếp tục dùng storage local đã ignore. Lập kế hoạch chuyển ảnh đã lưu và kiểm thử khôi phục cùng khóa trước khi thay volume hoặc xoay khóa.
+
+Dùng [quy trình release và rollback](docs/release-and-rollback.md) cho Compose production và chuyển kho ảnh có phê duyệt.
 
 ### Quy ước response và dữ liệu
 
