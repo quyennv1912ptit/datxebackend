@@ -1,6 +1,8 @@
 package com.nhom15.datxebackend.pricing.service
 
 import com.nhom15.datxebackend.common.api.ErrorCode
+import com.nhom15.datxebackend.common.enums.VehicleType
+import com.nhom15.datxebackend.vehicle.catalog.VehicleCatalog
 import com.nhom15.datxebackend.common.exception.AppException
 import com.nhom15.datxebackend.common.exception.NotFoundException
 import com.nhom15.datxebackend.pricing.model.RideQuote
@@ -22,13 +24,18 @@ class PricingRideQuoteService(
     private val drivingRouteProvider: DrivingRouteProvider,
 ) : RideQuoteProvider {
 
-    override fun requirePricing(vehicleType: com.nhom15.datxebackend.common.enums.VehicleType) {
-        if (pricingRuleRepository.findFirstByVehicleTypeAndActiveTrueOrderByCreatedAtDesc(vehicleType) == null) throw NotFoundException(ErrorCode.PRICING_RULE_NOT_FOUND)
+    private fun activeRule(vehicleType: VehicleType): PricingRule {
+        if (vehicleType !in VehicleCatalog.bookingTypes) throw NotFoundException(ErrorCode.PRICING_RULE_NOT_FOUND)
+        return pricingRuleRepository.findFirstByVehicleTypeAndActiveTrueOrderByCreatedAtDesc(vehicleType)
+            ?: throw NotFoundException(ErrorCode.PRICING_RULE_NOT_FOUND)
+    }
+
+    override fun requirePricing(vehicleType: VehicleType) {
+        activeRule(vehicleType)
     }
 
     override fun quote(input: RideQuoteInput): RideQuote {
-        val rule = pricingRuleRepository.findFirstByVehicleTypeAndActiveTrueOrderByCreatedAtDesc(input.vehicleType)
-            ?: throw NotFoundException(ErrorCode.PRICING_RULE_NOT_FOUND)
+        val rule = activeRule(input.vehicleType)
 
         val route = input.route ?: drivingRouteProvider.findRoute(input.pickup, input.dropoff, input.vehicleType)
         if (!route.distanceMeters.isFinite() || route.distanceMeters < 0.0 ||

@@ -6,6 +6,9 @@ import com.nhom15.datxebackend.common.enums.PaymentMethod
 import com.nhom15.datxebackend.common.enums.RideStatus
 import com.nhom15.datxebackend.common.enums.Transmission
 import com.nhom15.datxebackend.common.enums.VehicleType
+import com.nhom15.datxebackend.common.port.VehicleBookingDetails
+import org.hibernate.annotations.JdbcTypeCode
+import org.hibernate.type.SqlTypes
 import jakarta.persistence.*
 import java.time.Instant
 
@@ -28,7 +31,7 @@ class Ride(
     var driverId: Long? = null,
 
     @Column(name = "vehicle_id", nullable = false)
-    var vehicleId: Long,
+    val vehicleId: Long,
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 30)
@@ -134,8 +137,11 @@ class Ride(
     var lastRedispatchDriverId: Long? = null,
 
     @Column(name = "cancelled_by_role", length = 20)
-    var cancelledByRole: String? = null
+    var cancelledByRole: String? = null,
 
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "vehicle_booking_snapshot", columnDefinition = "jsonb", updatable = false)
+    val vehicleBookingSnapshot: VehicleBookingDetails? = null,
 ) : BaseEntity() {
 
     @Version

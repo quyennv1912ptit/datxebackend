@@ -1,5 +1,7 @@
 package com.nhom15.datxebackend.ride.service
 
+import com.nhom15.datxebackend.auth.security.AuthenticatedUserCache
+
 import com.nhom15.datxebackend.common.enums.DriverStatus
 import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.matching.service.DriverReleaseService
@@ -33,6 +35,7 @@ class RideDispatchRecoveryTask(
     private val drivers: DriverRepository,
     private val driverRelease: DriverReleaseService,
     transactionManager: PlatformTransactionManager,
+    private val userCache: AuthenticatedUserCache? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
     private val transactions = TransactionTemplate(transactionManager)
@@ -68,6 +71,7 @@ class RideDispatchRecoveryTask(
                     if (driver.status != DriverStatus.BUSY) {
                         driver.status = DriverStatus.BUSY
                         drivers.save(driver)
+                        userCache?.evictAfterCommit(driver.firebaseUid)
                     }
                 }
                 val id = driverId.toString()
@@ -87,9 +91,12 @@ class RideDispatchRecoveryTask(
         drivers.findByStatus(DriverStatus.BUSY).forEach { candidate -> safely(candidate.id) {
             transactions.executeWithoutResult {
                 val driver = drivers.findByIdForUpdate(candidate.id).orElse(null) ?: return@executeWithoutResult
-                if (rideRepository.findFirstByDriverIdAndStatusInOrderByCreatedAtDesc(driver.id, assigned) == null && !offers.driverHasOffer(driver.id)) {
+                if (driver.status == DriverStatus.BUSY &&
+                    rideRepository.findFirstByDriverIdAndStatusInOrderByCreatedAtDesc(driver.id, assigned) == null &&
+                    !offers.driverHasOffer(driver.id)) {
                     driver.status = DriverStatus.ONLINE
                     drivers.save(driver)
+                    userCache?.evictAfterCommit(driver.firebaseUid)
                     val current = redisTemplate.opsForValue().get(RedisKeys.driverCurrentRide(driver.id.toString())) ?: ""
                     driverRelease.reconcileIdle(driver.id, current)
                 }

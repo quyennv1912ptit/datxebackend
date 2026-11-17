@@ -24,6 +24,6 @@ class DriverPresenceController(
         @CurrentUser user: AuthUser,
         @RequestBody request: DriverAvailabilityRequest,
     ): ApiResponse<DriverAvailabilityResponse> = ApiResponse.ok(
-        DriverAvailabilityResponse(driverPresenceService.setOnline(user.id, request.online, request.vehicleType)),
+        driverPresenceService.updateAvailability(user.id, request.online, request.vehicleType),
     )
 }

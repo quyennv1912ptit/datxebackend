@@ -12,4 +12,7 @@ data class DriverAvailabilityRequest(
     val vehicleType: VehicleType? = null,
 )
 
-data class DriverAvailabilityResponse(val status: DriverStatus)
+data class DriverAvailabilityResponse(
+    val status: DriverStatus,
+    val onlineVehicleType: VehicleType? = null,
+)

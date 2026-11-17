@@ -120,6 +120,18 @@ class RideRatingService(
         )
     }
 
+    fun hasRatedCustomer(rideId: Long, driverId: Long): Boolean =
+        jdbcTemplate.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM ratings WHERE ride_id = ? AND direction = 'DRIVER_TO_CUSTOMER' AND rater_id = ?)",
+            Boolean::class.java, rideId, driverId,
+        ) == true
+
+    fun hasRatedDriver(rideId: Long, customerId: Long): Boolean =
+        jdbcTemplate.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM ratings WHERE ride_id = ? AND direction = 'CUSTOMER_TO_DRIVER' AND rater_id = ?)",
+            Boolean::class.java, rideId, customerId,
+        ) == true
+
     private data class RatingTarget(
         val direction: String,
         val rateeId: Long,

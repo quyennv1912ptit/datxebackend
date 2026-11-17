@@ -17,6 +17,7 @@ internal object RideFactory {
     ) = Ride(
         customerId = customerId,
         vehicleId = vehicle.id,
+        vehicleBookingSnapshot = vehicle.bookingDetails,
         vehicleType = vehicle.vehicleType,
         transmission = vehicle.transmission,
         licensePlate = vehicle.licensePlate,

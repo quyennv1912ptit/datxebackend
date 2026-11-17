@@ -21,6 +21,7 @@ import com.nhom15.datxebackend.ride.entity.HandoverPhase
 import com.nhom15.datxebackend.ride.repository.HandoverPhotoRepository
 import com.nhom15.datxebackend.ride.repository.ACTIVE_RIDE_STATUSES
 import com.nhom15.datxebackend.ride.repository.RideRepository
+import com.nhom15.datxebackend.ride.repository.RideSpecifications
 import com.nhom15.datxebackend.ride.repository.RideStatusHistoryRepository
 import com.nhom15.datxebackend.ride.repository.VehicleHandoverReportRepository
 import org.springframework.data.domain.PageRequest
@@ -38,6 +39,7 @@ class RideQueryService(
     private val customerRepository: CustomerRepository,
     private val driverRepository: DriverRepository,
     private val paymentService: com.nhom15.datxebackend.payment.service.PaymentService,
+    private val ratingService: com.nhom15.datxebackend.rating.service.RideRatingService? = null,
 ) {
     @Transactional(readOnly = true)
     fun getActiveRide(actor: AuthUser): RideDetailResponse? {
@@ -113,7 +115,13 @@ class RideQueryService(
             chatService.unreadCount(ride, actor)
         } else 0L
         return RideResponseMapper.detail(ride, historyResponses, reportResponses, unreadChatCount, customer, driver)
-            .copy(payment = paymentService.getRidePayment(rideId), paymentMethod = ride.paymentMethod, driverEarnings =
+            .copy(driverHasRatedCustomer =
+                if (actor.role == Role.DRIVER && ride.status == RideStatus.COMPLETED)
+                    ratingService?.hasRatedCustomer(rideId, actor.id) else null,
+                customerHasRatedDriver =
+                if (actor.role == Role.CUSTOMER && ride.status == RideStatus.COMPLETED)
+                    ratingService?.hasRatedDriver(rideId, actor.id) else null,
+                payment = paymentService.getRidePayment(rideId), paymentMethod = ride.paymentMethod, driverEarnings =
                 if (actor.role == Role.DRIVER && ride.driverId == actor.id) paymentService.getDriverRideEarnings(actor.id, rideId) else null)
     }
 
@@ -131,6 +139,12 @@ class RideQueryService(
         if (filter.size < 1 || filter.size > 100) {
             throw BadRequestException(message = "size phải nằm trong khoảng 1 đến 100")
         }
+        if ((filter.q?.length ?: 0) > 200) {
+            throw BadRequestException(message = "Từ khóa tối đa 200 ký tự")
+        }
+        if (filter.createdFrom != null && filter.createdTo != null && filter.createdFrom >= filter.createdTo) {
+            throw BadRequestException(message = "Khoảng ngày không hợp lệ")
+        }
 
         // id giúp thứ tự nhất quán khi nhiều ride có cùng thời gian tạo.
         val sort = Sort.by(Sort.Direction.DESC, "createdAt", "id")
@@ -138,23 +152,8 @@ class RideQueryService(
         val statuses = parseStatuses(filter.status)
 
         // Luôn lấy id từ principal, không lấy customerId/driverId do client gửi.
-        val rides = when (actor.role) {
-            Role.CUSTOMER -> {
-                if (statuses == null) {
-                    rideRepository.findAllByCustomerId(actor.id, pageable)
-                } else {
-                    rideRepository.findAllByCustomerIdAndStatusIn(actor.id, statuses, pageable)
-                }
-            }
-            Role.DRIVER -> {
-                if (statuses == null) {
-                    rideRepository.findAllByDriverId(actor.id, pageable)
-                } else {
-                    rideRepository.findAllByDriverIdAndStatusIn(actor.id, statuses, pageable)
-                }
-            }
-            Role.ADMIN -> throw ForbiddenException()
-        }
+        val spec = RideSpecifications.forUser(actor.id, actor.role, filter, statuses)
+        val rides = rideRepository.findAll(spec, pageable)
 
         return PageResponse.from(rides) { ride -> RideResponseMapper.summary(ride) }
     }

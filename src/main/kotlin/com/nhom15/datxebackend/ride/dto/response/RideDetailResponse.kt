@@ -61,10 +61,13 @@ data class RideDetailResponse(
     val route: com.nhom15.datxebackend.routing.model.SavedRideRoute? = null,
     val licensePlate: String? = null,
     val vehicleType: VehicleType? = null,
+    val driverHasRatedCustomer: Boolean? = null,
+    val customerHasRatedDriver: Boolean? = null,
     val transmission: Transmission? = null,
     val driver: RideDriverResponse? = null,
     val customer: RideCustomerResponse? = null,
     val paymentMethod: com.nhom15.datxebackend.common.enums.PaymentMethod? = null,
     val driverEarnings: com.nhom15.datxebackend.payment.dto.DriverRideEarnings? = null,
     val payment: com.nhom15.datxebackend.payment.dto.RidePaymentResponse? = null,
+    val vehicleSnapshot: com.nhom15.datxebackend.common.port.VehicleBookingDetails? = null,
 )

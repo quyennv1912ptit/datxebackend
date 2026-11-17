@@ -18,4 +18,5 @@ data class RideSummaryResponse(
     val finalFare: Long?,
     val scheduledAt: Instant?,
     val createdAt: Instant,
+    val vehicleType: com.nhom15.datxebackend.common.enums.VehicleType? = null,
 )

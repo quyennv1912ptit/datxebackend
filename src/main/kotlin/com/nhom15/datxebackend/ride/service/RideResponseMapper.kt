@@ -67,6 +67,7 @@ internal object RideResponseMapper {
     )
 
     fun summary(ride: Ride) = RideSummaryResponse(
+        vehicleType = ride.vehicleType,
         id = ride.id, pickupAddress = ride.pickup.address,
         dropoffAddress = ride.dropoff.address,
         pickupLat = ride.pickup.geoPoint.lat, pickupLng = ride.pickup.geoPoint.lng,
@@ -93,6 +94,7 @@ internal object RideResponseMapper {
         route = savedRoute(ride),
         id = ride.id, customerId = ride.customerId,
         driverId = ride.driverId, vehicleId = ride.vehicleId, type = ride.type,
+        vehicleSnapshot = ride.vehicleBookingSnapshot,
         scheduledAt = ride.scheduledAt, pickupAddress = ride.pickup.address,
         pickup = GeoPointResponse(ride.pickup.geoPoint.lat, ride.pickup.geoPoint.lng),
         dropoffAddress = ride.dropoff.address,

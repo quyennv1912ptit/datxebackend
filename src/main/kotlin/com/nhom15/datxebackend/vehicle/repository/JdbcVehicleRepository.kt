@@ -5,6 +5,8 @@ import com.nhom15.datxebackend.common.exception.BadRequestException
 import com.nhom15.datxebackend.common.exception.NotFoundException
 import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.common.enums.VehicleType
+import com.nhom15.datxebackend.vehicle.catalog.EngineType
+import com.nhom15.datxebackend.vehicle.dto.CustomerVehicleSpecifications
 import com.nhom15.datxebackend.vehicle.dto.CreateVehicleRequest
 import com.nhom15.datxebackend.vehicle.dto.UpdateVehicleRequest
 import com.nhom15.datxebackend.vehicle.dto.VehicleImageResponse
@@ -20,7 +22,7 @@ class JdbcVehicleRepository(private val jdbcTemplate: JdbcTemplate) {
 
     fun findAllByOwnerId(ownerId: Long): List<VehicleResponse> {
         val vehicles = jdbcTemplate.query(
-            "SELECT * FROM vehicles WHERE customer_id = ? ORDER BY id",
+            "SELECT * FROM vehicles WHERE customer_id = ? AND archived_at IS NULL ORDER BY is_default DESC, id",
         { row, _ ->
             val labels = (1..row.metaData.columnCount).associate {
                 row.metaData.getColumnLabel(it).lowercase() to it
@@ -37,6 +39,7 @@ class JdbcVehicleRepository(private val jdbcTemplate: JdbcTemplate) {
                 brand = value("brand", "make", "manufacturer", "brand_model"),
                 model = value("model"),
                 color = value("color", "colour"),
+                isDefault = row.getBoolean("is_default"), specifications = readSpecifications(row),
             )
         },
         ownerId,
@@ -47,19 +50,29 @@ class JdbcVehicleRepository(private val jdbcTemplate: JdbcTemplate) {
         }
     }
 
+    fun lockGarage(ownerId: Long) {
+        jdbcTemplate.queryForObject("SELECT id FROM customers WHERE id=? FOR UPDATE", Long::class.java, ownerId)
+    }
+
+    fun setDefault(id: Long, ownerId: Long): VehicleResponse {
+        lockGarage(ownerId)
+        if (!lockOwnedVehicle(id, ownerId)) throw NotFoundException(ErrorCode.VEHICLE_NOT_FOUND)
+        jdbcTemplate.update("UPDATE vehicles SET is_default=false WHERE customer_id=? AND is_default AND id<>?", ownerId, id)
+        jdbcTemplate.update("UPDATE vehicles SET is_default=true WHERE customer_id=? AND id=?", ownerId, id)
+        return findByIdAndOwnerId(id, ownerId) ?: throw NotFoundException(ErrorCode.VEHICLE_NOT_FOUND)
+    }
+
     fun create(ownerId: Long, request: CreateVehicleRequest): VehicleResponse {
+        lockGarage(ownerId)
         val columns = vehicleColumns()
         val selected = linkedMapOf<String, Any>(
             "customer_id" to ownerId,
             "plate_number" to request.plateNumber.trim().uppercase(),
             "transmission_type" to request.transmissionType.name,
         )
-        when {
-            request.vehicleType == VehicleType.MOTORCYCLE && (request.engineCc == null || request.engineCc <= 0) ->
-                throw BadRequestException(message = "Xe máy cần khai báo dung tích xi-lanh engine_cc lớn hơn 0")
-            request.vehicleType == VehicleType.CAR && request.engineCc != null ->
-                throw BadRequestException(message = "engine_cc chỉ áp dụng cho xe máy")
-        }
+        validateSpecifications(request.vehicleType, request.engineCc, request.specifications)
+        request.specifications?.let { specificationsValues(it).filterValues { value -> value != null }
+            .forEach { (key, value) -> selected[key] = requireNotNull(value) } }
         if ("vehicle_type" in columns) {
             selected["vehicle_type"] = request.vehicleType.name
         } else if (request.vehicleType != VehicleType.CAR) {
@@ -98,30 +111,25 @@ class JdbcVehicleRepository(private val jdbcTemplate: JdbcTemplate) {
         return findByIdAndOwnerId(id, ownerId) ?: throw IllegalStateException("Không đọc lại được xe vừa tạo")
     }
 
-    fun deleteByIdAndOwnerId(id: Long, ownerId: Long): List<String> {
-        if (!lockOwnedVehicle(id, ownerId)) throw NotFoundException(ErrorCode.VEHICLE_NOT_FOUND)
-        val publicIds = jdbcTemplate.query(
-            "SELECT cloudinary_public_id FROM vehicle_images WHERE vehicle_id = ?",
-            { row, _ -> row.getString("cloudinary_public_id") },
-            id,
+    fun archive(id: Long, ownerId: Long) {
+        lockGarage(ownerId)
+        val changed = jdbcTemplate.update(
+            """UPDATE vehicles SET archived_at=now(), is_default=false, updated_at=now()
+               WHERE id=? AND customer_id=? AND archived_at IS NULL""",
+            id, ownerId,
         )
-        val deleted = try {
-            jdbcTemplate.update("DELETE FROM vehicles WHERE id = ? AND customer_id = ?", id, ownerId)
-        } catch (_: DataIntegrityViolationException) {
-            throw ConflictException(message = "Xe đã được sử dụng trong chuyến đi nên không thể xóa")
-        }
-        if (deleted == 0) throw NotFoundException(ErrorCode.VEHICLE_NOT_FOUND)
-        return publicIds
+        if (changed == 0 && jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM vehicles WHERE id=? AND customer_id=?", Long::class.java, id, ownerId,
+            ) == 0L
+        ) throw NotFoundException(ErrorCode.VEHICLE_NOT_FOUND)
     }
 
     fun updateByIdAndOwnerId(id: Long, ownerId: Long, request: UpdateVehicleRequest): VehicleResponse {
+        lockGarage(ownerId)
+        val before = findByIdAndOwnerId(id, ownerId) ?: throw NotFoundException(ErrorCode.VEHICLE_NOT_FOUND)
+        val specs = request.specifications ?: before.specifications.takeIf { before.vehicleType == request.vehicleType.name }
         val columns = vehicleColumns()
-        when {
-            request.vehicleType == VehicleType.MOTORCYCLE && (request.engineCc == null || request.engineCc <= 0) ->
-                throw BadRequestException(message = "Xe máy cần khai báo dung tích xi-lanh engine_cc lớn hơn 0")
-            request.vehicleType == VehicleType.CAR && request.engineCc != null ->
-                throw BadRequestException(message = "engine_cc chỉ áp dụng cho xe máy")
-        }
+        validateSpecifications(request.vehicleType, request.engineCc, specs)
 
         val selected = linkedMapOf<String, Any?>(
             "plate_number" to request.plateNumber.trim().uppercase(),
@@ -141,8 +149,9 @@ class JdbcVehicleRepository(private val jdbcTemplate: JdbcTemplate) {
         addUpdateValue(selected, columns, listOf("model"), request.model, "mẫu xe")
         addUpdateValue(selected, columns, listOf("color", "colour"), request.color, "màu xe")
 
+        selected.putAll(specificationsValues(specs))
         val names = selected.keys.toList()
-        val sql = "UPDATE vehicles SET ${names.joinToString { "$it = ?" }}, updated_at = now() WHERE id = ? AND customer_id = ?"
+        val sql = "UPDATE vehicles SET ${names.joinToString { "$it = ?" }}, updated_at = now() WHERE id = ? AND customer_id = ? AND archived_at IS NULL"
         val args = selected.values.toMutableList().apply {
             add(id)
             add(ownerId)
@@ -164,7 +173,7 @@ class JdbcVehicleRepository(private val jdbcTemplate: JdbcTemplate) {
     }
 
     fun lockOwnedVehicle(id: Long, ownerId: Long): Boolean = jdbcTemplate.query(
-        "SELECT id FROM vehicles WHERE id = ? AND customer_id = ? FOR UPDATE",
+        "SELECT id FROM vehicles WHERE id = ? AND customer_id = ? AND archived_at IS NULL FOR UPDATE",
         { _, _ -> true },
         id,
         ownerId,
@@ -192,7 +201,7 @@ class JdbcVehicleRepository(private val jdbcTemplate: JdbcTemplate) {
             """SELECT image.cloudinary_public_id
                FROM vehicle_images image
                JOIN vehicles vehicle ON vehicle.id = image.vehicle_id
-               WHERE image.id = ? AND image.vehicle_id = ? AND vehicle.customer_id = ?""".trimIndent(),
+               WHERE image.id = ? AND image.vehicle_id = ? AND vehicle.customer_id = ? AND vehicle.archived_at IS NULL""".trimIndent(),
             { row, _ -> row.getString("cloudinary_public_id") },
             imageId,
             vehicleId,
@@ -209,7 +218,7 @@ class JdbcVehicleRepository(private val jdbcTemplate: JdbcTemplate) {
     }
 
     private fun findByIdAndOwnerId(id: Long, ownerId: Long): VehicleResponse? = jdbcTemplate.query(
-        "SELECT * FROM vehicles WHERE id = ? AND customer_id = ?",
+        "SELECT * FROM vehicles WHERE id = ? AND customer_id = ? AND archived_at IS NULL",
         { row, _ ->
             val labels = (1..row.metaData.columnCount).associate {
                 row.metaData.getColumnLabel(it).lowercase() to it
@@ -223,6 +232,7 @@ class JdbcVehicleRepository(private val jdbcTemplate: JdbcTemplate) {
                 brand = value("brand", "make", "manufacturer", "brand_model"), model = value("model"),
                 engineCc = if ("engine_cc" in labels) row.getObject("engine_cc", Int::class.javaObjectType) else null,
                 color = value("color", "colour"),
+                isDefault = row.getBoolean("is_default"), specifications = readSpecifications(row),
             )
         },
         id,
@@ -233,7 +243,7 @@ class JdbcVehicleRepository(private val jdbcTemplate: JdbcTemplate) {
         """SELECT image.vehicle_id, image.id, image.secure_url
            FROM vehicle_images image
            JOIN vehicles vehicle ON vehicle.id = image.vehicle_id
-           WHERE vehicle.customer_id = ?
+           WHERE vehicle.customer_id = ? AND vehicle.archived_at IS NULL
            ORDER BY image.created_at, image.id""".trimIndent(),
         { row, _ ->
             row.getLong("vehicle_id") to VehicleImageResponse(
@@ -281,4 +291,31 @@ class JdbcVehicleRepository(private val jdbcTemplate: JdbcTemplate) {
         }
         selected[column] = value?.trim()?.takeIf(String::isNotEmpty)
     }
+}
+
+
+internal fun readSpecifications(row: java.sql.ResultSet): CustomerVehicleSpecifications? =
+    CustomerVehicleSpecifications(
+        engineType = row.getString("engine_type")?.let(EngineType::valueOf),
+        electricMotorKw = row.getObject("electric_motor_kw", Double::class.javaObjectType),
+        passengerSeats = row.getObject("passenger_seats", Int::class.javaObjectType),
+        designedMassKg = row.getObject("designed_mass_kg", Int::class.javaObjectType),
+        trailerMassKg = row.getObject("trailer_mass_kg", Int::class.javaObjectType),
+    ).takeUnless { it == CustomerVehicleSpecifications() }
+
+private fun specificationsValues(specs: CustomerVehicleSpecifications?) = mapOf(
+    "engine_type" to specs?.engineType?.name,
+    "electric_motor_kw" to specs?.electricMotorKw,
+    "passenger_seats" to specs?.passengerSeats,
+    "designed_mass_kg" to specs?.designedMassKg,
+    "trailer_mass_kg" to specs?.trailerMassKg,
+)
+
+private fun validateSpecifications(type: VehicleType, cc: Int?, specs: CustomerVehicleSpecifications?) {
+    val electric = specs?.engineType == EngineType.ELECTRIC
+    if (specs?.electricMotorKw?.let { !it.isFinite() || it <= 0 || !electric } == true ||
+        (type == VehicleType.MOTORCYCLE && (if (electric) cc != null || specs.electricMotorKw == null else cc == null || cc <= 0)) ||
+        (type == VehicleType.CAR && cc != null) ||
+        (type == VehicleType.MOTORCYCLE && specs?.trailerMassKg != null)
+    ) throw BadRequestException(message = "Thông số động cơ hoặc rơ-moóc không phù hợp loại xe")
 }

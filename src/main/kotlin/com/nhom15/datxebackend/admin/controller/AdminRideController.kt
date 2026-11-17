@@ -58,6 +58,13 @@ class AdminRideController(
     ): ApiResponse<MessagePage> =
         ApiResponse.ok(chatService.adminMessages(id, actor, beforeId, afterId, size.coerceIn(1, 100)))
 
+    @PostMapping("/{id}/assignable-drivers")
+    fun assignableDrivers(
+        @CurrentUser actor: AuthUser,
+        @PathVariable id: Long,
+        @RequestBody driverIds: List<Long>,
+    ): ApiResponse<List<Long>> = ApiResponse.ok(adminRideService.assignableDriverIds(actor, id, driverIds))
+
     @PostMapping("/{id}/assign")
     fun assignDriver(
         @CurrentUser actor: AuthUser,

@@ -49,7 +49,12 @@ class RideAcceptanceService(
 
     fun accept(rideId: Long, driverId: Long, offerId: String): Boolean {
         val current = rideRepository.findById(rideId).orElse(null)
-        if (current?.driverId == driverId && current.status in ACTIVE_RIDE_STATUSES && current.status != RideStatus.SEARCHING) return true
+        if (current?.driverId == driverId && current.status in ACTIVE_RIDE_STATUSES && current.status != RideStatus.SEARCHING) {
+            return offers.accepted(offerId, rideId, driverId, current.redispatchCount)
+        }
+        if (current?.status != RideStatus.SEARCHING) return false
+        val offer = offers.outstanding(rideId) ?: return false
+        if (offer.offerId != offerId || offer.driverId != driverId || offer.generation != current.redispatchCount) return false
         val id = rideId.toString()
 
         val accepted = redisTemplate.execute(
@@ -78,6 +83,8 @@ class RideAcceptanceService(
                 return true
             }
             rollbackRedisAcceptance(id, rideId, driverId, currentRide.status)
+            offers.close(offerId, "CANCELLED", driverId, rideId)
+            if (currentRide.status == RideStatus.SEARCHING) dispatchService.sendOfferToNextDriver(rideId)
             throw exception
         }
 

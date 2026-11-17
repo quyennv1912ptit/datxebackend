@@ -122,6 +122,38 @@ class DispatchPersistenceTests {
         jdbc.update("UPDATE rides SET search_expires_at=CURRENT_TIMESTAMP+INTERVAL '90 seconds' WHERE id=42")
         assertEquals(1,jdbc.update(query));assertEquals(0,jdbc.update(query))
     }
+    @Test fun `two driver sessions competing for assignment have exactly one winner`() {
+        val offers = DispatchOfferRepository(jdbc)
+        assertTrue(offers.record(DispatchOffer(UUID.randomUUID().toString(), 42, 7, Instant.now().plusSeconds(60))))
+        val query = RideRepository::class.java
+            .getMethod("assignDriverIfSearching", Long::class.javaPrimitiveType, Long::class.javaPrimitiveType)
+            .getAnnotation(org.springframework.data.jpa.repository.Query::class.java).value
+            .replace(":rideId", "42")
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val futures = listOf(7, 8).map { driverId ->
+                executor.submit<Int> {
+                    open().use { session ->
+                        session.createStatement().use { statement ->
+                            statement.execute("SET search_path TO $schema")
+                            ready.countDown()
+                            check(start.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                            statement.executeUpdate(query.replace(":driverId", driverId.toString()))
+                        }
+                    }
+                }
+            }
+            assertTrue(ready.await(10, java.util.concurrent.TimeUnit.SECONDS))
+            start.countDown()
+            assertEquals(listOf(1, 0), futures.map { it.get(10, java.util.concurrent.TimeUnit.SECONDS) })
+            assertEquals(7L, jdbc.queryForObject("SELECT driver_id FROM rides WHERE id=42", Long::class.java))
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
     @Test fun `idempotency receipt is stable for five minutes and expired key may be reused`() {
         val receipts = RideCreateIdempotencyRepository(jdbc, com.nhom15.datxebackend.config.properties.MatchingProperties())
         receipts.insert(1, "booking-key", "hash-a", 42)
