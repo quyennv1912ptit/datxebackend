@@ -1,0 +1,15 @@
+services:
+  backend:
+    image: ${DATXE_BACKEND_IMAGE:?set release image}
+    user: "${DATXE_DEPLOY_UID:?set deploy UID}:${DATXE_DEPLOY_GID:?set deploy GID}"
+    environment:
+      SPRING_PROFILES_ACTIVE: production
+      APP_VERIFICATION_REQUIRE_PROTECTED_STORAGE: "true"
+      DATXE_VERIFICATION_STORAGE_DIR: /var/lib/ptitgo/verification
+      CLOUDFLARE_TOKEN: ""
+    volumes:
+      - type: bind
+        source: ${DATXE_VERIFICATION_HOST_DIR:?set persistent capture storage}
+        target: /var/lib/ptitgo/verification
+        bind:
+          create_host_path: false

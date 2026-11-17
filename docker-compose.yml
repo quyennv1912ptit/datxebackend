@@ -44,7 +44,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    env_file: .env
+    env_file: ${DATXE_DEPLOY_ENV_FILE:-.env}
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
       DB_USERNAME: ${POSTGRES_USER}
@@ -52,7 +52,7 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       FIREBASE_CREDENTIALS_LOCATION: file:/run/secrets/firebase.json
     volumes:
-      - ./secrets/firebase-service-account.json:/run/secrets/firebase.json:ro
+      - ${DATXE_FIREBASE_FILE:-./secrets/firebase-service-account.json}:/run/secrets/firebase.json:ro
     ports:
       - "8080:8080"
 
@@ -60,7 +60,9 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: cloudflare-tunnel
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TOKEN}
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TOKEN}
     depends_on:
       - backend
 
