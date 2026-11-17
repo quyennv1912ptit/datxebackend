@@ -4,6 +4,8 @@ import com.nhom15.datxebackend.common.enums.Role
 import com.nhom15.datxebackend.common.security.AuthUser
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.util.concurrent.ConcurrentHashMap
 
 /** Short lived positive cache for request authentication; status changes evict entries after commit. */
@@ -27,6 +29,16 @@ class AuthenticatedUserCache(
         val loaded = loader() ?: return null
         if (ttlMillis > 0) entries[key] = Entry(loaded, now + ttlMillis)
         return loaded
+    }
+
+    fun evictAfterCommit(firebaseUid: String) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            evict(firebaseUid)
+            return
+        }
+        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+            override fun afterCommit() = evict(firebaseUid)
+        })
     }
 
     fun evict(firebaseUid: String) {

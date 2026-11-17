@@ -4,20 +4,33 @@ import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
 import com.nhom15.datxebackend.driver.dto.AdminDriverFilter
 import com.nhom15.datxebackend.driver.dto.AdminDriverSummary
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Repository
 import java.sql.ResultSet
 
 @Repository
-class AdminDriverQueryRepository(private val jdbcTemplate: JdbcTemplate) {
+class AdminDriverQueryRepository(
+    private val jdbcTemplate: JdbcTemplate,
+    @Value("\${app.verification-sync.enabled:false}") private val syncEnabled: Boolean = false,
+) {
+    private val verificationStatusSql = if (syncEnabled) {
+        """CASE WHEN d.verification_status = 'SUSPENDED' THEN 'SUSPENDED' ELSE COALESCE((
+               SELECT CASE p.status WHEN 'APPROVED' THEN 'APPROVED'
+                   WHEN 'REJECTED' THEN 'REJECTED' WHEN 'REVOKED' THEN 'REJECTED'
+                   ELSE 'PENDING' END
+               FROM driver_verification_projection p CROSS JOIN verification_sync_checkpoint c
+               WHERE p.owner_uid = d.firebase_uid AND c.caught_up_at > clock_timestamp() - interval '10 seconds'
+           ), 'PENDING') END"""
+    } else "COALESCE(d.verification_status, 'PENDING')"
     fun findPage(filter: AdminDriverFilter, status: String?): List<AdminDriverSummary> {
         val (where, args) = whereClause(filter, status)
         return jdbcTemplate.query(
-            """SELECT id, full_name, phone_number, email, status, COALESCE(verification_status, 'PENDING') AS verification_status,
+            """SELECT id, full_name, phone_number, email, status, $verificationStatusSql AS verification_status,
                       COALESCE(is_flagged, false) AS flagged, COALESCE(total_trips, 0) AS total_trips,
                       average_rating, acceptance_rate, completion_rate, cancel_rate_30d,
                       COALESCE(credit_balance, 0) AS credit_balance, COALESCE(income_balance, 0) AS income_balance,
                       created_at
-               FROM drivers$where
+               FROM drivers d$where
                ORDER BY created_at DESC, id DESC
                LIMIT ? OFFSET ?""".trimIndent(),
             { row, _ -> row.toSummary() },
@@ -28,19 +41,19 @@ class AdminDriverQueryRepository(private val jdbcTemplate: JdbcTemplate) {
     fun count(filter: AdminDriverFilter, status: String?): Long {
         val (where, args) = whereClause(filter, status)
         return jdbcTemplate.queryForObject(
-            "SELECT COUNT(*) FROM drivers$where",
+            "SELECT COUNT(*) FROM drivers d$where",
             Long::class.java,
             *args.toTypedArray(),
         ) ?: 0L
     }
 
     fun findById(id: Long): AdminDriverSummary? = jdbcTemplate.query(
-        """SELECT id, full_name, phone_number, email, status, COALESCE(verification_status, 'PENDING') AS verification_status,
+        """SELECT id, full_name, phone_number, email, status, $verificationStatusSql AS verification_status,
                   COALESCE(is_flagged, false) AS flagged, COALESCE(total_trips, 0) AS total_trips,
                   average_rating, acceptance_rate, completion_rate, cancel_rate_30d,
                   COALESCE(credit_balance, 0) AS credit_balance, COALESCE(income_balance, 0) AS income_balance,
                   created_at
-           FROM drivers WHERE id = ?""".trimIndent(),
+           FROM drivers d WHERE id = ?""".trimIndent(),
         { row, _ -> row.toSummary() },
         id,
     ).firstOrNull()
@@ -49,7 +62,7 @@ class AdminDriverQueryRepository(private val jdbcTemplate: JdbcTemplate) {
         val predicates = mutableListOf<String>()
         val args = mutableListOf<Any>()
         if (status != null) {
-            predicates += "COALESCE(verification_status, 'PENDING') = ?"
+            predicates += "$verificationStatusSql = ?"
             args += status
         }
         filter.online?.let {

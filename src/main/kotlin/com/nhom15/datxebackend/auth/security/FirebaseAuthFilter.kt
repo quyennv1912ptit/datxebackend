@@ -72,6 +72,8 @@ class FirebaseAuthFilter(
             request.requestURI.startsWith("/api/customer/") -> Role.CUSTOMER
             request.requestURI.startsWith("/api/driver/") -> Role.DRIVER
             request.requestURI.startsWith("/api/admin/") -> Role.ADMIN
+            request.requestURI.startsWith("/ekyc/driver-verification/v1/admin/") -> Role.ADMIN
+            request.requestURI.startsWith("/ekyc/driver-verification/v1/") -> Role.DRIVER
             else -> null
         }
     }

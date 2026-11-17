@@ -1,6 +1,7 @@
 package com.nhom15.datxebackend.auth.dto
 
 import com.nhom15.datxebackend.common.enums.Role
+import com.nhom15.datxebackend.common.enums.VehicleType
 
 data class AuthProfileResponse(
     val id: Long,
@@ -11,4 +12,5 @@ data class AuthProfileResponse(
     val phoneNumber: String?,
     val status: String,
     val verificationStatus: String? = null,
+    val onlineVehicleType: VehicleType? = null,
 )

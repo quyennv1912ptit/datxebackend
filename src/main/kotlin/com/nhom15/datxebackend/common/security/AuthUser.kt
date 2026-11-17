@@ -1,6 +1,7 @@
 package com.nhom15.datxebackend.common.security
 
 import com.nhom15.datxebackend.common.enums.Role
+import com.nhom15.datxebackend.common.enums.VehicleType
 
 /** Authenticated account data shared with business modules without exposing persistence entities. */
 data class AuthUser(
@@ -12,4 +13,5 @@ data class AuthUser(
     val phoneNumber: String?,
     val status: String,
     val verificationStatus: String? = null,
+    val onlineVehicleType: VehicleType? = null,
 )
