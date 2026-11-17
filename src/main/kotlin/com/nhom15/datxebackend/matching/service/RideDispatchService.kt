@@ -95,7 +95,7 @@ class RideDispatchService(
                 val radius = matchingProperties.searchRadiiKm[minOf(round, matchingProperties.searchRadiiKm.lastIndex)]
                 val nearby = nearbyDriverQueryPort.findNearbyDrivers(GeoPoint(ride.pickup.geoPoint.lat, ride.pickup.geoPoint.lng),
                     radius, matchingProperties.candidateScanLimit.toLong() + attempted.size)
-                val eligible = selectionService.filterAndRankDrivers(nearby, ride.vehicleType, ride.transmission, radius)
+                val eligible = selectionService.filterAndRankDrivers(nearby, ride.vehicleType, ride.transmission, radius, ride)
                 val ignored = offers.ignoredCounts(eligible.map { it.driverId }, matchingProperties.ignoredWindow)
                 val ordered = if (matchingProperties.rankingMode == DriverRanking.DISTANCE) {
                     eligible.sortedWith(compareBy(
@@ -130,7 +130,7 @@ class RideDispatchService(
                 return matchingProperties.rescanDelay
             }
             val offer = DispatchOffer(offerId, rideId, driverId, deadline, ride.redispatchCount)
-            if (!offers.record(offer)) {
+            if (!selectionService.recordOfferIfEligible(ride, driverId) { offers.record(offer) }) {
                 releaseService.release(rideId, driverId, "unreachable", offerId)
                 return matchingProperties.rescanDelay
             }

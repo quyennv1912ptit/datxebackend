@@ -1,5 +1,10 @@
 package com.nhom15.datxebackend.ride.service.state
 
+import com.nhom15.datxebackend.auth.security.AuthenticatedUserCache
+
+import com.nhom15.datxebackend.driver.repository.DriverSkillRepository
+import com.nhom15.datxebackend.driver.verification.DriverVerificationEligibility
+
 import com.nhom15.datxebackend.common.enums.DriverStatus
 import com.nhom15.datxebackend.config.properties.MatchingProperties
 import com.nhom15.datxebackend.config.properties.ScheduledRideProperties
@@ -51,6 +56,9 @@ class RideStateMachine(
     private val vouchers: com.nhom15.datxebackend.voucher.service.VoucherService,
     private val scheduled: ScheduledRideProperties,
     private val clock: Clock,
+    private val verification: DriverVerificationEligibility = DriverVerificationEligibility(),
+    private val skills: DriverSkillRepository? = null,
+    private val userCache: AuthenticatedUserCache? = null,
 ) {
 
     private val assignedDriverEvents = setOf(
@@ -96,6 +104,12 @@ class RideStateMachine(
         }
         if (command.event == RideTransitionEvent.COMPLETE && ride.status != RideStatus.VEHICLE_RETURNED)
             throw com.nhom15.datxebackend.payment.exception.InvalidTripStateException()
+        if (command.event == RideTransitionEvent.START_TRIP && verification.synchronizedWorkflow) {
+            val driver = ride.driverId?.let { drivers.findByIdForUpdate(it).orElse(null) }
+            if (driver == null || skills == null ||
+                !verification.mayDriveForRide(driver, ride, skills, starting = true, now = now)
+            ) throw ConflictException(ErrorCode.DRIVER_NOT_VERIFIED)
+        }
         val previousStatus = ride.status
         val oldDriver = ride.driverId
         val retryDispatch = (command.event == RideTransitionEvent.CANCEL && command.actor.role == Role.DRIVER ||
@@ -162,6 +176,7 @@ class RideStateMachine(
                     if (driver.status == DriverStatus.BUSY) {
                         driver.status = DriverStatus.ONLINE
                         drivers.save(driver)
+                        userCache?.evictAfterCommit(driver.firebaseUid)
                     }
                 }
             }
@@ -191,7 +206,7 @@ class RideStateMachine(
             to = RideStatus.PENDING,
             actorId = actorId,
             actorRole = RideActorRole.CUSTOMER,
-            note = "Khởi tạo ride",
+            note = "Tạo yêu cầu chuyến",
         )
         publishStatusChanged(
             ride = ride,
@@ -221,12 +236,15 @@ class RideStateMachine(
         val ride = findRide(rideId)
         val driver = drivers.findByIdForUpdate(driverId).orElseThrow { NotFoundException(ErrorCode.USER_NOT_FOUND) }
         if (driver.status != DriverStatus.ONLINE) throw ConflictException(ErrorCode.DRIVER_NOT_AVAILABLE)
-        wallets.requireEligibleDriver(driverId,
-            (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).takeIf {
-                ride.paymentMethod == com.nhom15.datxebackend.common.enums.PaymentMethod.CASH
-            })
+        if (verification.synchronizedWorkflow && (
+            skills == null || !verification.mayDriveForRide(driver, ride, skills, now = clock.instant())
+        )) throw ConflictException(ErrorCode.DRIVER_NOT_VERIFIED)
+        val cashPayable = (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).roundToNearestThousandVnd()
+            .takeIf { ride.paymentMethod == com.nhom15.datxebackend.common.enums.PaymentMethod.CASH }
+        wallets.requireEligibleDriver(driverId, cashPayable, ride.fareEstimate.takeIf { cashPayable != null })
         driver.status = DriverStatus.BUSY
         drivers.save(driver)
+        userCache?.evictAfterCommit(driver.firebaseUid)
         dispatchOffers.outstanding(rideId)?.let { dispatchOffers.close(it.offerId, "ACCEPTED") }
         conversationService.upsert(ride.id, ride.customerId, driverId)
         recordHistory(
@@ -274,12 +292,15 @@ class RideStateMachine(
             throw ConflictException(ErrorCode.INVALID_RIDE_STATE)
         }
         drivers.findByIdForUpdate(driverId).orElseThrow { NotFoundException(ErrorCode.USER_NOT_FOUND) }.let { driver ->
-            wallets.requireEligibleDriver(driverId,
-            (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).takeIf {
-                ride.paymentMethod == com.nhom15.datxebackend.common.enums.PaymentMethod.CASH
-            })
+            if (verification.synchronizedWorkflow &&
+                (skills == null || !verification.mayDriveForRide(driver, ride, skills, now = clock.instant()))
+            ) throw ConflictException(ErrorCode.DRIVER_NOT_VERIFIED)
+            val cashPayable = (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).roundToNearestThousandVnd()
+            .takeIf { ride.paymentMethod == com.nhom15.datxebackend.common.enums.PaymentMethod.CASH }
+        wallets.requireEligibleDriver(driverId, cashPayable, ride.fareEstimate.takeIf { cashPayable != null })
         driver.status = DriverStatus.BUSY
             drivers.save(driver)
+            userCache?.evictAfterCommit(driver.firebaseUid)
         }
         ride.driverId = driverId
         ride.status = RideStatus.DRIVER_ASSIGNED

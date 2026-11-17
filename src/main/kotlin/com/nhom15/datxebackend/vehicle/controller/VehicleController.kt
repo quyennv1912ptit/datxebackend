@@ -38,6 +38,10 @@ class VehicleController(private val vehicleService: VehicleService) {
         .status(HttpStatus.CREATED)
         .body(ApiResponse.ok(vehicleService.create(actor, request)))
 
+    @PutMapping("/{id}/default")
+    fun setDefault(@CurrentUser actor: AuthUser, @PathVariable id: Long): ApiResponse<VehicleResponse> =
+        ApiResponse.ok(vehicleService.setDefault(actor, id))
+
     @PutMapping("/{id}")
     fun update(
         @CurrentUser actor: AuthUser,

@@ -1,7 +1,7 @@
 plugins {
 	kotlin("jvm") version "2.3.21"
 	kotlin("plugin.spring") version "2.3.21"
-	id("org.springframework.boot") version "4.1.1"
+	id("org.springframework.boot") version "4.1.2"
 	id("io.spring.dependency-management") version "1.1.7"
 	kotlin("plugin.jpa") version "2.3.21"
 }
@@ -19,7 +19,15 @@ repositories {
 	mavenCentral()
 }
 
+// Keep the stable OpenTelemetry modules aligned through Spring Boot's BOM.
+extra["opentelemetry.version"] = "1.67.0"
+
 dependencies {
+	constraints {
+		implementation("com.google.guava:guava:33.7.2-jre") {
+			because("Addresses GHSA-xxph-c9ww-hj94 in the Firebase Admin dependency tree")
+		}
+	}
 	implementation("org.springframework.boot:spring-boot-starter-data-jpa")
 	implementation("org.springframework.boot:spring-boot-starter-data-redis")
 	implementation("org.springframework.boot:spring-boot-starter-security")

@@ -1,5 +1,7 @@
 package com.nhom15.datxebackend.admin.service
 
+import com.nhom15.datxebackend.auth.security.AuthenticatedUserCache
+
 import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
 import com.nhom15.datxebackend.admin.repository.AdminRideSpecifications
 import com.nhom15.datxebackend.common.api.ErrorCode
@@ -31,6 +33,11 @@ import com.nhom15.datxebackend.ride.service.RideService
 import com.nhom15.datxebackend.ride.service.RideQueryService
 import com.nhom15.datxebackend.ride.service.RideResponseMapper
 import com.nhom15.datxebackend.ride.service.state.RideStateMachine
+import com.nhom15.datxebackend.common.domain.GeoPoint
+import com.nhom15.datxebackend.common.util.GeoUtils
+import com.nhom15.datxebackend.config.properties.MatchingProperties
+import com.nhom15.datxebackend.driver.entity.Driver
+import com.nhom15.datxebackend.ride.entity.Ride
 import org.slf4j.LoggerFactory
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.script.DefaultRedisScript
@@ -40,7 +47,7 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
-import java.time.LocalDate
+import com.nhom15.datxebackend.driver.verification.DriverVerificationEligibility
 
 @Service
 class AdminRideService(
@@ -52,6 +59,10 @@ class AdminRideService(
     private val driverSkillRepository: DriverSkillRepository,
     private val redisTemplate: StringRedisTemplate,
     private val notificationPort: NotificationPort,
+    private val verification: DriverVerificationEligibility = DriverVerificationEligibility(),
+    private val matching: MatchingProperties = MatchingProperties(),
+    @org.springframework.beans.factory.annotation.Value("\${wallet.minimum-credit:50000}") private val minimumCredit: Long = 50_000,
+    private val userCache: AuthenticatedUserCache? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
     @Transactional(readOnly = true)
@@ -78,6 +89,42 @@ class AdminRideService(
         return rideQueryService.getDetail(actor, rideId)
     }
 
+    @Transactional(readOnly = true)
+    fun assignableDriverIds(actor: AuthUser, rideId: Long, ids: List<Long>): List<Long> {
+        requireAdmin(actor)
+        if (ids.size > 20 || ids.any { it <= 0 }) throw BadRequestException(message = "Danh sách tài xế không hợp lệ")
+        val ride = rideRepository.findById(rideId).orElseThrow { NotFoundException(ErrorCode.RIDE_NOT_FOUND) }
+        if (ride.status !in setOf(RideStatus.NO_DRIVER_FOUND, RideStatus.DRIVER_ASSIGNED, RideStatus.DRIVER_ARRIVING) ||
+            (ride.status != RideStatus.NO_DRIVER_FOUND && ride.driverId?.let(::isDisconnected) != true) ||
+            !verification.currentAtSource()
+        ) return emptyList()
+        return driverRepository.findAllById(ids.distinct()).filter { driver ->
+            assignmentEligible(driver, ride, verifySource = false) && canReserveDriver(driver.id)
+        }.map { it.id }
+    }
+
+    private fun assignmentEligible(driver: Driver, ride: Ride, verifySource: Boolean = true): Boolean {
+        if (ride.driverId == driver.id ||
+            !verification.mayDriveForRide(driver, ride, driverSkillRepository, verifySource) ||
+            rideRepository.existsByDriverIdAndStatusIn(driver.id, ACTIVE_RIDE_STATUSES)
+        ) return false
+        if (!verification.synchronizedWorkflow) return driverSkillRepository.hasVerifiedSkill(driver.id, ride.vehicleType)
+        if ((driver.creditBalance ?: 0) < minimumCredit) return false
+        val position = redisTemplate.opsForHash<String, String>().entries(RedisKeys.driverLocation(driver.id.toString()))
+        val lat = position["lat"]?.toDoubleOrNull() ?: return false
+        val lng = position["lng"]?.toDoubleOrNull() ?: return false
+        val point = GeoPoint(lat, lng)
+        return GeoUtils.isValid(point) && GeoUtils.distanceKm(point, ride.pickup.geoPoint) <= matching.searchRadiiKm.last()
+    }
+
+    private fun canReserveDriver(driverId: Long): Boolean {
+        val id = driverId.toString()
+        return redisTemplate.opsForValue().get(RedisKeys.driverStatus(id)) == "ONLINE" &&
+            redisTemplate.hasKey(RedisKeys.driverAlive(id)) == true &&
+            redisTemplate.hasKey(RedisKeys.driverCurrentRide(id)) == false &&
+            redisTemplate.hasKey(RedisKeys.driverLock(id)) == false
+    }
+
     @Transactional
     fun assignDriver(actor: AuthUser, rideId: Long, request: AdminAssignRideRequest): RideStatusResponse {
         requireAdmin(actor)
@@ -102,12 +149,7 @@ class AdminRideService(
         }.toMap()
         val driver = lockedDrivers[request.driverId]
             ?: throw NotFoundException(ErrorCode.USER_NOT_FOUND, "Không tìm thấy tài xế")
-        if (driver.status != DriverStatus.ONLINE || driver.verificationStatus != "APPROVED" || driver.isFlagged == true ||
-            driver.onlineVehicleType != ride.vehicleType ||
-            driver.licenseExpiryDate == null || driver.licenseExpiryDate!!.isBefore(LocalDate.now()) ||
-            rideRepository.existsByDriverIdAndStatusIn(request.driverId, ACTIVE_RIDE_STATUSES) ||
-            !driverSkillRepository.hasVerifiedSkill(request.driverId, ride.vehicleType)
-        ) {
+        if (!assignmentEligible(driver, ride)) {
             throw ConflictException(message = "Tài xế chưa online hoặc không đủ điều kiện nhận loại chuyến này")
         }
 
@@ -122,6 +164,7 @@ class AdminRideService(
                 oldDriver.status = DriverStatus.OFFLINE
                 oldDriver.onlineVehicleType = null
                 driverRepository.save(oldDriver)
+                userCache?.evictAfterCommit(oldDriver.firebaseUid)
             }
         }
 

@@ -40,8 +40,13 @@ class VehicleService(
     @Transactional
     fun delete(actor: AuthUser, id: Long) {
         requireCustomer(actor)
-        vehicleRepository.deleteByIdAndOwnerId(id, actor.id)
-            .forEach(cloudinaryAssetService::deleteAfterCommit)
+        vehicleRepository.archive(id, actor.id)
+    }
+
+    @Transactional
+    fun setDefault(actor: AuthUser, id: Long): VehicleResponse {
+        requireCustomer(actor)
+        return vehicleRepository.setDefault(id, actor.id)
     }
 
     @Transactional

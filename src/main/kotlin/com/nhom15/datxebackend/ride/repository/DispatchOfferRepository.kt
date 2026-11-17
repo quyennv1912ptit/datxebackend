@@ -14,6 +14,13 @@ class DispatchOfferRepository(private val jdbc: JdbcTemplate) {
         { rs, _ -> DispatchOffer(rs.getString("offer_id"), rs.getLong("ride_id"), rs.getLong("driver_id"), rs.getTimestamp("expires_at").toInstant(), rs.getInt("generation")) }, rideId,
     ).firstOrNull()
 
+    fun accepted(offerId: String, rideId: Long, driverId: Long, generation: Int): Boolean =
+        jdbc.queryForObject(
+            """SELECT EXISTS(SELECT 1 FROM ride_dispatch_offers WHERE offer_id=? AND ride_id=?
+               AND driver_id=? AND generation=? AND status='ACCEPTED')""",
+            Boolean::class.java, offerId, rideId, driverId, generation,
+        ) == true
+
     fun attemptedDrivers(rideId: Long): Set<String> = jdbc.query(
         "SELECT driver_id FROM ride_dispatch_offers WHERE ride_id=?", { rs, _ -> rs.getLong(1).toString() }, rideId,
     ).toSet()

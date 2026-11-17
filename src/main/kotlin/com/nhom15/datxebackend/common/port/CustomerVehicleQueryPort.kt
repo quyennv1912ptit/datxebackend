@@ -13,4 +13,5 @@ data class CustomerVehicleSnapshot(
     val transmission: Transmission,
     val vehicleType: VehicleType,
     val licensePlate: String?,
+    val bookingDetails: VehicleBookingDetails? = null,
 )

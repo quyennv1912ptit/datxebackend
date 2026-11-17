@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.*
 import org.springframework.context.ApplicationEventPublisher
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.data.redis.core.StringRedisTemplate
 import java.time.Instant
 import java.time.Duration
@@ -96,7 +97,10 @@ class SequentialDispatchTests {
         val nearby = mock(NearbyDriverQueryPort::class.java)
         val publisher = mock(ApplicationEventPublisher::class.java)
         val notifications = mock(NotificationPort::class.java)
-        val selection = mock(DriverSelectionService::class.java)
+        val selection = mock(DriverSelectionService::class.java) { invocation ->
+            if (invocation.method.name == "recordOfferIfEligible") invocation.getArgument<() -> Boolean>(2).invoke()
+            else RETURNS_DEFAULTS.answer(invocation)
+        }
         val builder = mock(RideOfferBuilder::class.java)
         val offers = mock(DispatchOfferRepository::class.java) { invocation ->
             if (invocation.method.name == "record") true else RETURNS_DEFAULTS.answer(invocation)
@@ -104,7 +108,8 @@ class SequentialDispatchTests {
         val pickup = Instant.parse("2026-11-09T01:00:00Z")
         val cutoff = pickup.plusSeconds(600)
         val clock = mock(Clock::class.java)
-        `when`(rides.findById(42)).thenReturn(Optional.of(ride(scheduledAt = pickup).apply { searchExpiresAt = cutoff }))
+        val scheduledRide = ride(scheduledAt = pickup).apply { searchExpiresAt = cutoff }
+        `when`(rides.findById(42)).thenReturn(Optional.of(scheduledRide))
         `when`(redis.opsForValue().setIfAbsent(anyString(), anyString(), any(Duration::class.java))).thenReturn(true)
         `when`(redis.opsForHash<String,String>().get(RedisKeys.rideState("42"), "status")).thenReturn("SEARCHING")
         `when`(redis.opsForHash<String,String>().get(RedisKeys.rideState("42"), "nextRoundIndex")).thenReturn("0", "1", "2", "3")
@@ -127,7 +132,7 @@ class SequentialDispatchTests {
         val lateDriver = listOf(NearbyDriver(7, 4.0, GeoPoint(21.06, 105.86)))
         `when`(clock.instant()).thenReturn(pickup.plusSeconds(75))
         `when`(nearby.findNearbyDrivers(GeoPoint(21.03,105.84), 5.0, 500L)).thenReturn(lateDriver)
-        `when`(selection.filterAndRankDrivers(lateDriver, VehicleType.CAR, Transmission.AUTO, 5.0))
+        `when`(selection.filterAndRankDrivers(lateDriver, VehicleType.CAR, Transmission.AUTO, 5.0, scheduledRide))
             .thenReturn(listOf(RankedDriverDTO(7, 4.0, 1.0)))
         `when`(redis.execute(eq(DispatchScripts.OFFER_NEXT), anyList(), anyString(), anyString(), anyString(),
             anyString(), anyString(), anyString())).thenReturn("7")
@@ -220,6 +225,28 @@ class SequentialDispatchTests {
         val delay=service.dispatchRide(42)
         assertNotNull(delay)
         assertTrue(delay!! >= java.time.Duration.ofSeconds(10) && delay <= java.time.Duration.ofSeconds(12))
+    }
+
+    @Test fun `stale offer token and generation never reserve and only the accepted token can replay`() {
+        val rides = mock(RideRepository::class.java)
+        val redis = mock(StringRedisTemplate::class.java)
+        val offers = mock(DispatchOfferRepository::class.java)
+        val service = RideAcceptanceService(redis, mock(RideAssignmentPort::class.java), rides,
+            mock(RideDispatchService::class.java), mock(OfferReleaseService::class.java),
+            mock(RideOfferBuilder::class.java), MatchingProperties(), offers)
+        val trip = ride()
+        `when`(rides.findById(42)).thenReturn(Optional.of(trip))
+        val offer = DispatchOffer("current", 42, 7, Instant.now().plusSeconds(10), 0)
+        `when`(offers.outstanding(42)).thenReturn(offer)
+        assertFalse(service.accept(42, 7, "stale"))
+        trip.redispatchCount = 1
+        assertFalse(service.accept(42, 7, "current"))
+        trip.status = RideStatus.DRIVER_ASSIGNED
+        trip.driverId = 7
+        `when`(offers.accepted("accepted", 42, 7, 1)).thenReturn(true)
+        assertFalse(service.accept(42, 7, "stale"))
+        assertTrue(service.accept(42, 7, "accepted"))
+        verifyNoInteractions(redis)
     }
 
     @Test fun `conditional status race loser produces no side effects`() {
@@ -338,11 +365,55 @@ class SequentialDispatchTests {
         verify(vouchers, never()).releaseForRide(anyLong())
     }
 
+    @Test fun `customer cancellation driver cancellation and completion all invalidate the released driver after commit`() {
+        val scenarios = listOf(
+            Triple(RideStatus.DRIVER_ASSIGNED, RideTransitionEvent.CANCEL, customerRideActor(1)),
+            Triple(RideStatus.DRIVER_ASSIGNED, RideTransitionEvent.CANCEL, driverRideActor(7)),
+            Triple(RideStatus.VEHICLE_RETURNED, RideTransitionEvent.COMPLETE, driverRideActor(7)),
+        )
+        for ((status, event, actor) in scenarios) {
+            val rides = mock(RideRepository::class.java)
+            val drivers = mock(DriverRepository::class.java)
+            val reports = mock(VehicleHandoverReportRepository::class.java)
+            val cache = com.nhom15.datxebackend.auth.security.AuthenticatedUserCache(60_000)
+            val current = ride(status).apply { driverId = 7 }
+            val driver = com.nhom15.datxebackend.driver.entity.Driver().apply {
+                firebaseUid = "driver7"
+                this.status = DriverStatus.BUSY
+            }
+            fun readStatus() = cache.get(driver.firebaseUid, Role.DRIVER) {
+                com.nhom15.datxebackend.common.security.AuthUser(7, driver.firebaseUid, Role.DRIVER, null, null, null, driver.status.name)
+            }?.status
+            `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(current))
+            `when`(rides.compareAndSetStatus(eq(42L), anyString(), anyString(), anyLong())).thenReturn(1)
+            `when`(drivers.findByIdForUpdate(7)).thenReturn(Optional.of(driver))
+            `when`(reports.findByRideIdAndPhase(42, HandoverPhase.DROPOFF)).thenReturn(
+                VehicleHandoverReport(current, HandoverPhase.DROPOFF, 1200, confirmedByCustomer = true),
+            )
+            val service = machine(rides, mock(RideStatusHistoryRepository::class.java), mock(EventPublisher::class.java),
+                mock(RideDispatchOutboxRepository::class.java), drivers = drivers, reports = reports, cache = cache)
+            TransactionSynchronizationManager.initSynchronization()
+            try {
+                assertEquals("BUSY", readStatus())
+                service.transition(RideTransitionCommand(42, event, actor, cancelReason = "Test"))
+                assertEquals(DriverStatus.ONLINE, driver.status)
+                assertEquals("BUSY", readStatus())
+                TransactionSynchronizationManager.getSynchronizations().single().afterCommit()
+                assertEquals("ONLINE", readStatus())
+            } finally {
+                TransactionSynchronizationManager.clearSynchronization()
+            }
+        }
+    }
+
     private fun machine(rides: RideRepository,history: RideStatusHistoryRepository,events: EventPublisher,outbox: RideDispatchOutboxRepository,
-                        vouchers: com.nhom15.datxebackend.voucher.service.VoucherService = mock(com.nhom15.datxebackend.voucher.service.VoucherService::class.java)) =
-        RideStateMachine(rides,history,events,mock(VehicleHandoverReportRepository::class.java),
+                        vouchers: com.nhom15.datxebackend.voucher.service.VoucherService = mock(com.nhom15.datxebackend.voucher.service.VoucherService::class.java),
+                        drivers: DriverRepository = mock(DriverRepository::class.java),
+                        reports: VehicleHandoverReportRepository = mock(VehicleHandoverReportRepository::class.java),
+                        cache: com.nhom15.datxebackend.auth.security.AuthenticatedUserCache? = null) =
+        RideStateMachine(rides,history,events,reports,
             mock(com.nhom15.datxebackend.chat.service.ConversationService::class.java),MatchingProperties(),outbox,
-            mock(DispatchOfferRepository::class.java),mock(DriverRepository::class.java),
+            mock(DispatchOfferRepository::class.java),drivers,
             mock(com.nhom15.datxebackend.payment.service.WalletService::class.java), vouchers,
-            ScheduledRideProperties(),Clock.systemUTC())
+            ScheduledRideProperties(),Clock.systemUTC(), userCache = cache)
 }

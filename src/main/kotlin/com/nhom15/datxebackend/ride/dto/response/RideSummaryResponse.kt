@@ -20,6 +20,7 @@ data class RideSummaryResponse(
     val payableFare: Long = estimatedFare,
     val scheduledAt: Instant?,
     val createdAt: Instant,
+    val vehicleType: com.nhom15.datxebackend.common.enums.VehicleType? = null,
     val hasRated: Boolean = false,
     val myRatingStars: Int? = null,
 )

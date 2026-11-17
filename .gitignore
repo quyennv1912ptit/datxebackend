@@ -1,5 +1,8 @@
 secrets/
 .env
+.env.*
+!.env.example
+/data/driver-verification-captures/
 .local-backups/
 
 HELP.md

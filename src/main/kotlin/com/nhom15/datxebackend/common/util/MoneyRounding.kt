@@ -1,4 +1,4 @@
-﻿package com.nhom15.datxebackend.common.util
+package com.nhom15.datxebackend.common.util
 
 import java.math.BigDecimal
 import java.math.RoundingMode

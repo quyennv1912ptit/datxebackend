@@ -83,4 +83,32 @@ class EkycClientTest {
             .andExpect(status().isBadRequest)
         mock.verify()
     }
+
+    @Test
+    fun `retries once on transient 503 and caches identical image extraction by sha256`() {
+        val image = byteArrayOf(7, 8, 9)
+        mock.expect(requestTo("https://fixture.modal.run/ekyc/documents/cccd_front/extract"))
+            .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE))
+        mock.expect(requestTo("https://fixture.modal.run/ekyc/documents/cccd_front/extract"))
+            .andRespond(
+                withSuccess(
+                    """{"success":true,"data":{"slot":"cccd_front","qrStatus":"QR_FOUND_SUPPORTED","candidates":[]}}""",
+                    MediaType.APPLICATION_JSON,
+                ),
+            )
+        val first = client.extract(EkycDocumentSlot.CCCD_FRONT, MediaType.IMAGE_JPEG, image.inputStream())
+        val second = client.extract(EkycDocumentSlot.CCCD_FRONT, MediaType.IMAGE_JPEG, image.inputStream())
+        assertEquals("QR_FOUND_SUPPORTED", first.path("qrStatus").asString())
+        assertEquals(first, second)
+        mock.verify()
+    }
+
+    @Test
+    fun `keeps face evaluation off when faceComparisonEnabled is false`() {
+        val result = client.evaluateFace(mapOf("selfie" to byteArrayOf(1, 2, 3)), qualityOnly = true)
+        assertEquals("NOT_EVALUATED", result.path("mode").asString())
+        assertEquals("DISABLED", result.path("reason").asString())
+        assertEquals("NOT_EVALUATED", result.path("liveness").asString())
+        mock.verify()
+    }
 }

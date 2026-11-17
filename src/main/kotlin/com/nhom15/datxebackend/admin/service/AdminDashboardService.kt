@@ -34,19 +34,18 @@ class AdminDashboardService(private val jdbc: JdbcTemplate, private val clock: C
             """SELECT (COALESCE(r.completed_at, r.created_at) AT TIME ZONE '${zone.id}')::date AS day,
                       SUM($grossFare) AS gmv,
                       SUM(COALESCE(r.discount_amount, 0)) AS promo_cost,
-                      SUM(CASE p.method WHEN 'CASH' THEN -ledger.amount
-                                        WHEN 'WALLET' THEN p.amount - ledger.amount ELSE 0 END) AS revenue,
+                      SUM(CASE p.method WHEN 'CASH' THEN -COALESCE(ledger.amount, 0)
+                                        WHEN 'WALLET' THEN p.amount - COALESCE(ledger.amount, 0) ELSE 0 END) AS revenue,
                       COUNT(*) FILTER (WHERE COALESCE(p.method, r.payment_method) = 'CASH') AS cash,
                       COUNT(*) FILTER (WHERE COALESCE(p.method, r.payment_method) = 'WALLET') AS wallet,
                       COUNT(*) FILTER (WHERE COALESCE(p.method, r.payment_method) NOT IN ('CASH', 'WALLET')) AS other
                FROM rides r
                LEFT JOIN payments p ON p.ride_id = r.id
                LEFT JOIN LATERAL (
-                   SELECT t.amount FROM wallet_transactions t
+                   SELECT COALESCE(SUM(t.amount), 0) AS amount FROM wallet_transactions t
                    WHERE t.ride_id = r.id AND t.driver_id = r.driver_id AND t.status = 'SUCCESS'
                      AND ((p.method = 'CASH' AND t.type = 'COMMISSION_FEE' AND t.wallet_type = 'CREDIT')
                        OR (p.method = 'WALLET' AND t.type = 'TRIP_EARNING' AND t.wallet_type = 'CASH'))
-                   ORDER BY t.id DESC LIMIT 1
                ) ledger ON TRUE
                WHERE r.status = 'COMPLETED' AND COALESCE(r.completed_at, r.created_at) >= ?
                  AND COALESCE(r.completed_at, r.created_at) < ?

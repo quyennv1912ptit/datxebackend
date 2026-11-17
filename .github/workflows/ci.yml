@@ -1,0 +1,43 @@
+name: Backend CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: datxe_test
+          POSTGRES_USER: sync_test
+          POSTGRES_PASSWORD: datxe_ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sync_test -d datxe_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DB_URL: jdbc:postgresql://localhost:5432/datxe_test
+      TEST_DB_USER: sync_test
+      TEST_DB_PASSWORD: datxe_ci_only
+      VERIFICATION_E2E_PG_URL: jdbc:postgresql://localhost:5432/datxe_test
+      VERIFICATION_E2E_PG_USER: sync_test
+      VERIFICATION_E2E_PG_PASSWORD: datxe_ci_only
+      VERIFICATION_SYNC_TEST_DB: jdbc:postgresql://localhost:5432/datxe_test
+      VERIFICATION_SYNC_TEST_PASSWORD: datxe_ci_only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      - run: bash ./gradlew check build

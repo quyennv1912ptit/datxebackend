@@ -1,5 +1,10 @@
 package com.nhom15.datxebackend.driver.service
 
+import com.nhom15.datxebackend.driver.verification.DriverVerificationEligibility
+import com.nhom15.datxebackend.driver.verification.VerificationProjectionRepository
+import com.nhom15.datxebackend.driver.verification.VerificationStatus
+import java.util.UUID
+
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.enums.DriverStatus
 import com.nhom15.datxebackend.common.enums.Role
@@ -29,7 +34,7 @@ import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 
 @Service
-class DriverOnboardingService(
+class DriverOnboardingService @org.springframework.beans.factory.annotation.Autowired constructor(
     private val driverRepository: DriverRepository,
     private val documentRepository: DriverDocumentRepository,
     private val skillRepository: DriverSkillRepository,
@@ -37,6 +42,8 @@ class DriverOnboardingService(
     private val locationService: LocationService,
     @Value("\${app.driver.required-document-types:CCCD,DRIVER_LICENSE}") requiredDocumentTypes: String,
     @Value("\${app.driver.license-document-type:DRIVER_LICENSE}") licenseDocumentType: String,
+    private val verificationEligibility: DriverVerificationEligibility = DriverVerificationEligibility(),
+    private val projection: VerificationProjectionRepository? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
     private val requiredDocumentTypes = requiredDocumentTypes.split(',')
@@ -94,6 +101,17 @@ class DriverOnboardingService(
             driver.verificationStatus = "PENDING"
             driver.status = DriverStatus.OFFLINE
             driver.onlineVehicleType = null
+            projection?.current(driver.firebaseUid)?.let { currentProj ->
+                projection.upsertDirectProjection(
+                    ownerUid = driver.firebaseUid,
+                    applicationId = currentProj.capabilities.firstOrNull()?.applicationId ?: UUID.randomUUID(),
+                    revision = currentProj.revision + 1L,
+                    status = VerificationStatus.NEEDS_MORE_INFO,
+                    entitlements = emptyList(),
+                    cccdExpiresOn = currentProj.cccdExpiresOn,
+                    capabilityReview = null,
+                )
+            }
         }
         driverRepository.save(driver)
         if (needsReverification) afterCommit {
@@ -124,10 +142,11 @@ class DriverOnboardingService(
             .toSet()
         val skills = skillRepository.findAllForDriver(actor.id)
         return DriverVerificationSummary(
-            verificationStatus = driver.verificationStatus ?: "PENDING",
+            verificationStatus = verificationEligibility.displayedStatus(driver),
             requiredDocumentTypes = requiredDocumentTypes,
             missingDocuments = requiredDocumentTypes.filterNot(approvedTypes::contains),
             unverifiedSkills = skills.filterNot { it.verified },
+            verificationWorkflow = "EKYC".takeIf { verificationEligibility.synchronizedWorkflow },
         )
     }
 

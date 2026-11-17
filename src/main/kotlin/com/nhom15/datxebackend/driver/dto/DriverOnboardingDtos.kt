@@ -94,6 +94,7 @@ data class DriverVerificationSummary(
     @JsonProperty("required_document_types") val requiredDocumentTypes: List<String>,
     @JsonProperty("missing_documents") val missingDocuments: List<String>,
     @JsonProperty("unverified_skills") val unverifiedSkills: List<DriverSkillResponse>,
+    @JsonProperty("verification_workflow") val verificationWorkflow: String? = null,
 )
 
 data class ReviewDriverDocumentRequest(

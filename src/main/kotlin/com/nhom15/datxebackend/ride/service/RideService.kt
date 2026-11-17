@@ -68,7 +68,7 @@ class RideService(
             val previous = idempotencyRepository.find(actor.id, key)
             if (previous != null) {
                 if (previous.requestHash != requestHash) {
-                    throw ConflictException(message = "Idempotency-Key Ä‘Ã£ Ä‘Æ°á»£c dÃ¹ng vá»›i ná»™i dung khÃ¡c")
+                    throw ConflictException(message = "Idempotency-Key đã được dùng với nội dung khác")
                 }
                 val previousRide = rideRepository.findById(previous.rideId).orElseThrow {
                     NotFoundException(ErrorCode.RIDE_NOT_FOUND)
@@ -92,7 +92,7 @@ class RideService(
         val vehicle = findOwnedVehicle(request.vehicleId, actor.id)
         if (request.paymentMethod !in setOf(PaymentMethod.CASH, PaymentMethod.WALLET)) {
             throw BadRequestException(
-                message = "Chá»‰ há»— trá»£ thanh toÃ¡n CASH hoáº·c WALLET",
+                message = "Chỉ hỗ trợ thanh toán CASH hoặc WALLET",
             )
         }
         rateLimiter.check(RedisKeys.rideQuoteRate(actor.id.toString()), RIDE_QUOTE_LIMIT, RIDE_QUOTE_WINDOW)
@@ -106,7 +106,7 @@ class RideService(
         val savedRoute = rideRoutes.resolve(actor.id, request.vehicleId, vehicle.vehicleType, quoteInput.pickup, quoteInput.dropoff, request.routeQuoteId)
         val quote = quoteProvider.quote(quoteInput.copy(route = savedRoute.drivingRoute()))
         val appliedVoucher = voucherService.calculate(actor, request.voucherCode, quote.estimatedFare, request.paymentMethod, request.voucherId)
-        // Sá»‘ tiá»n khÃ¡ch thá»±c tráº£ Ä‘Æ°á»£c lÃ m trÃ²n 1.000; fare_estimate váº«n giá»¯ giÃ¡ gá»‘c Ä‘á»ƒ Ä‘á»‘i soÃ¡t.
+        // Số tiền khách thực trả được làm tròn 1.000; fare_estimate vẫn giữ giá gốc để đối soát.
         val payableFare = (quote.estimatedFare - (appliedVoucher?.discountAmount ?: 0))
             .coerceAtLeast(0)
             .roundToNearestThousandVnd()
@@ -141,16 +141,16 @@ class RideService(
     @Transactional
     fun cancelRide(actor: AuthUser, rideId: Long, request: CancelRideRequest): RideStatusResponse {
         if (rideId <= 0) {
-            throw BadRequestException(message = "rideId pháº£i lá»›n hÆ¡n 0")
+            throw BadRequestException(message = "rideId phải lớn hơn 0")
         }
         if (request.reason != null && (request.reason.isBlank() || request.reason.length > 255)) {
-            throw BadRequestException(message = "LÃ½ do há»§y chuyáº¿n pháº£i cÃ³ ná»™i dung vÃ  khÃ´ng vÆ°á»£t quÃ¡ 255 kÃ½ tá»±")
+            throw BadRequestException(message = "Lý do hủy chuyến phải có nội dung và không vượt quá 255 ký tự")
         }
         val reason = request.reason?.trim()
         val currentRide = rideRepository.findById(rideId).orElseThrow {
             NotFoundException(ErrorCode.RIDE_NOT_FOUND)
         }
-        // CANCEL cÃ³ nhiá»u tráº¡ng thÃ¡i Ä‘áº§u vÃ o; giá»¯ giÃ¡ trá»‹ trÆ°á»›c khi state machine sá»­a entity.
+        // CANCEL có nhiều trạng thái đầu vào; giữ giá trị trước khi state machine sửa entity.
         val previousStatus = currentRide.status
         val ride = stateMachine.transition(
             RideTransitionCommand(
@@ -166,7 +166,7 @@ class RideService(
 
     private fun requireCustomer(actor: AuthUser) {
         if (actor.role != Role.CUSTOMER) {
-            throw ForbiddenException(message = "Chá»‰ khÃ¡ch hÃ ng má»›i cÃ³ thá»ƒ táº¡o ride")
+            throw ForbiddenException(message = "Chỉ khách hàng mới có thể tạo ride")
         }
     }
 
@@ -174,7 +174,7 @@ class RideService(
         vehicleQueryPort.findOwnedVehicle(vehicleId, customerId)
             ?: throw NotFoundException(
                 ErrorCode.VEHICLE_NOT_FOUND,
-                "KhÃ´ng tÃ¬m tháº¥y xe thuá»™c khÃ¡ch hÃ ng hiá»‡n táº¡i",
+                "Không tìm thấy xe thuộc khách hàng hiện tại",
             )
 
     private fun startSearching(
@@ -196,7 +196,7 @@ class RideService(
         if (raw == null) return null
         val key = raw.trim()
         if (key.isEmpty() || key.length > 128) {
-            throw BadRequestException(message = "Idempotency-Key pháº£i cÃ³ tá»« 1 Ä‘áº¿n 128 kÃ½ tá»±")
+            throw BadRequestException(message = "Idempotency-Key phải có từ 1 đến 128 ký tự")
         }
         return key
     }

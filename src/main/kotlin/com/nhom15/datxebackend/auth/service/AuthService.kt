@@ -13,6 +13,7 @@ import com.nhom15.datxebackend.auth.security.AuthenticatedUserCache
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.common.security.AuthenticatedUserProvider
+import com.nhom15.datxebackend.common.enums.DriverStatus
 import com.nhom15.datxebackend.common.enums.Role
 import com.nhom15.datxebackend.common.enums.UserStatus
 import com.nhom15.datxebackend.common.exception.AppException
@@ -177,6 +178,7 @@ class AuthService(
         phoneNumber = user.phoneNumber,
         status = user.status,
         verificationStatus = user.verificationStatus,
+        onlineVehicleType = user.onlineVehicleType,
     )
 
     private fun verifyToken(idToken: String): FirebaseToken {
@@ -279,6 +281,9 @@ class AuthService(
         phoneNumber = driver.phoneNumber,
         status = driver.status.name,
         verificationStatus = driver.verificationStatus,
+        onlineVehicleType = driver.onlineVehicleType?.takeIf {
+            driver.status == DriverStatus.ONLINE || driver.status == DriverStatus.BUSY
+        },
     )
 
     private fun toAuthUser(admin: Admin) = AuthUser(

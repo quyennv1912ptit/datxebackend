@@ -39,7 +39,7 @@ class SupportPersistenceTests {
         jdbc.execute("CREATE SCHEMA $schema")
         jdbc.execute("SET LOCAL search_path TO $schema")
         Files.list(Path.of("src/main/resources/db/migration")).use { paths ->
-            paths.filter { it.fileName.toString().endsWith(".sql") }.sorted(compareBy { it.fileName.toString().substringBefore("__").drop(1).toInt() }).forEach { jdbc.execute(Files.readString(it)) }
+            paths.filter { it.fileName.toString().endsWith(".sql") }.sorted(compareBy { it.fileName.toString().substringBefore("__").drop(1).toInt() }).forEach { jdbc.execute(Files.readString(it).removePrefix("\uFEFF")) }
         }
         service = SupportService(jdbc, Mockito.mock(RideRepository::class.java), CloudinaryAssetService(Cloudinary(mapOf("cloud_name" to "test-cloud"))))
     }

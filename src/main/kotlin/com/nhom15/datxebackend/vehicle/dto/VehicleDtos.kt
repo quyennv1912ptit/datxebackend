@@ -4,10 +4,22 @@ import com.fasterxml.jackson.annotation.JsonAlias
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.nhom15.datxebackend.common.enums.Transmission
 import com.nhom15.datxebackend.common.enums.VehicleType
+import jakarta.validation.Valid
+import jakarta.validation.constraints.Max
+import com.nhom15.datxebackend.vehicle.catalog.EngineType
+import jakarta.validation.constraints.PositiveOrZero
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.NotNull
 import jakarta.validation.constraints.Positive
 import jakarta.validation.constraints.Size
+
+data class CustomerVehicleSpecifications(
+    val engineType: EngineType? = null,
+    @field:Positive val electricMotorKw: Double? = null,
+    @field:Positive @field:Max(100) val passengerSeats: Int? = null,
+    @field:Positive val designedMassKg: Int? = null,
+    @field:PositiveOrZero val trailerMassKg: Int? = null,
+)
 
 data class CreateVehicleRequest(
     @JsonProperty("plate_number")
@@ -41,6 +53,7 @@ data class CreateVehicleRequest(
 
     @field:Size(max = 50)
     val color: String? = null,
+    @field:Valid val specifications: CustomerVehicleSpecifications? = null,
 )
 
 data class UpdateVehicleRequest(
@@ -75,6 +88,7 @@ data class UpdateVehicleRequest(
 
     @field:Size(max = 50)
     val color: String? = null,
+    @field:Valid val specifications: CustomerVehicleSpecifications? = null,
 )
 
 data class AddVehicleImageRequest(
@@ -106,4 +120,7 @@ data class VehicleResponse(
     val model: String?,
     val color: String?,
     val images: List<VehicleImageResponse> = emptyList(),
+    @JsonProperty("is_default") val isDefault: Boolean = false,
+    val specifications: CustomerVehicleSpecifications? = null,
+    @JsonProperty("specification_source") val specificationSource: String = "CUSTOMER_DECLARED",
 )

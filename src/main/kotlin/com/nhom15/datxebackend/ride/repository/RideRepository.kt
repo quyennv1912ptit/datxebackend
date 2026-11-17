@@ -143,7 +143,8 @@ interface RideRepository : JpaRepository<Ride, Long>, org.springframework.data.j
           and status = 'SEARCHING'
           and search_expires_at > CURRENT_TIMESTAMP
           and exists (select 1 from ride_dispatch_offers o where o.ride_id=rides.id
-              and o.driver_id=:driverId and o.status='OFFERED' and o.expires_at>CURRENT_TIMESTAMP)
+              and o.driver_id=:driverId and o.status='OFFERED' and o.expires_at>CURRENT_TIMESTAMP
+              and o.generation=rides.redispatch_count)
         """,
         nativeQuery = true,
     )

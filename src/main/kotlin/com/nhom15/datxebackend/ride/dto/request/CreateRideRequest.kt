@@ -1,4 +1,4 @@
-﻿package com.nhom15.datxebackend.ride.dto.request
+package com.nhom15.datxebackend.ride.dto.request
 
 import com.fasterxml.jackson.annotation.JsonAlias
 import com.fasterxml.jackson.annotation.JsonProperty

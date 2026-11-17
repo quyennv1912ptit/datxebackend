@@ -1,5 +1,12 @@
 package com.nhom15.datxebackend.ride
 
+import com.nhom15.datxebackend.common.enums.Transmission
+import com.nhom15.datxebackend.common.exception.NotFoundException
+import com.nhom15.datxebackend.ride.repository.RideRepository
+import com.nhom15.datxebackend.vehicle.dto.CreateVehicleRequest
+import com.nhom15.datxebackend.vehicle.dto.UpdateVehicleRequest
+import com.nhom15.datxebackend.vehicle.dto.CustomerVehicleSpecifications
+import com.nhom15.datxebackend.vehicle.service.VehicleService
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.messaging.FirebaseMessaging
@@ -65,15 +72,24 @@ class ScheduledRideBookingPostgresTests {
     @MockitoBean(name = "taskScheduler") lateinit var taskScheduler: ThreadPoolTaskScheduler
     @Autowired lateinit var jdbc: JdbcTemplate
     @Autowired lateinit var rides: RideService
+    @Autowired lateinit var garage: VehicleService
+    @Autowired lateinit var rideRepository: RideRepository
     @Autowired lateinit var scheduler: ScheduledRideScheduler
 
     @Test fun `concurrent booking leaves one schedule and a customer can ride immediately while it waits`() {
         val customerId = jdbc.queryForObject("INSERT INTO customers(firebase_uid) VALUES ('test-customer') RETURNING id", Long::class.java)!!
-        val vehicleId = jdbc.queryForObject(
-            "INSERT INTO vehicles(customer_id, plate_number, transmission_type) VALUES (?, 'TEST-01', 'AUTO') RETURNING id",
-            Long::class.java, customerId,
-        )!!
         val actor = AuthUser(customerId, "test-customer", Role.CUSTOMER, null, null, null, "ACTIVE")
+        val specs = CustomerVehicleSpecifications(passengerSeats = 4, trailerMassKg = 0)
+        val vehicleId = garage.create(actor, CreateVehicleRequest("TEST-01", Transmission.AUTO, VehicleType.CAR,
+            brand = "Synthetic", model = "Original", specifications = specs)).id
+        val spare = garage.create(actor, CreateVehicleRequest("TEST-02", Transmission.MANUAL, VehicleType.CAR)).id
+        garage.setDefault(actor, spare)
+        garage.setDefault(actor, vehicleId)
+        assertEquals(listOf(vehicleId), garage.list(actor).filter { it.isDefault }.map { it.id })
+        val otherId = jdbc.queryForObject("INSERT INTO customers(firebase_uid) VALUES ('test-other') RETURNING id", Long::class.java)!!
+        val other = actor.copy(id = otherId, firebaseUid = "test-other")
+        assertInstanceOf(NotFoundException::class.java, runCatching { garage.setDefault(other, vehicleId) }.exceptionOrNull())
+        assertInstanceOf(NotFoundException::class.java, runCatching { garage.delete(other, vehicleId) }.exceptionOrNull())
         val pickup = GeoPoint(21.03, 105.84)
         val dropoff = GeoPoint(21.04, 105.85)
         val request = CreateRideRequest(
@@ -131,6 +147,25 @@ class ScheduledRideBookingPostgresTests {
         scheduler.processDueRides()
         assertEquals("EXPIRED", status(expired.id))
         assertEquals(0L, jdbc.queryForObject("SELECT count(*) FROM ride_dispatch_outbox WHERE ride_id=?", Long::class.java, expired.id))
+        garage.update(actor, vehicleId, UpdateVehicleRequest("TEST-11", Transmission.MANUAL, VehicleType.CAR,
+            brand = "Synthetic", model = "Renamed"))
+        assertEquals(4, garage.list(actor).first { it.id == vehicleId }.specifications?.passengerSeats)
+        val historic = rideRepository.findById(expired.id).orElseThrow()
+        assertEquals("Original", historic.vehicleBookingSnapshot?.model)
+        assertEquals("car-auto", historic.vehicleBookingSnapshot?.capabilityGroupId)
+        assertEquals("CUSTOMER_DECLARED", historic.vehicleBookingSnapshot?.source)
+        assertEquals("TEST-01", historic.licensePlate)
+        assertEquals(Transmission.AUTO, historic.transmission)
+        check(runCatching {
+            jdbc.update("UPDATE rides SET vehicle_booking_snapshot='{}'::jsonb WHERE id=?", expired.id)
+        }.isFailure)
+        garage.delete(actor, vehicleId)
+        assertEquals(listOf(spare), garage.list(actor).map { it.id })
+        assertEquals(expired.id, rides.createRide(actor, request, "later-schedule").id)
+        check(runCatching { rides.createRide(actor, request, "archive-blocked") }.isFailure)
+        assertEquals(garage.create(actor, CreateVehicleRequest("TEST-11", Transmission.AUTO, VehicleType.CAR)).plateNumber,
+            "TEST-11")
+
     }
 
     private fun status(rideId: Long) = jdbc.queryForObject("SELECT status FROM rides WHERE id=?", String::class.java, rideId)

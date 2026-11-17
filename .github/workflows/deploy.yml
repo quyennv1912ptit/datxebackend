@@ -1,35 +1,51 @@
 name: Deploy to Ubuntu Server
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ptitgo-backend-production
+  cancel-in-progress: false
 
 jobs:
-  deploy:
-    runs-on: self-hosted
-
+  verify-ci:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
     steps:
-      - name: Checkout Source Code
-        uses: actions/checkout@v4
-
-      - name: Create Env and Secret Files
+      - name: Require a successful push CI run for this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # 1. Tạo thư mục secrets
-          mkdir -p secrets
-          
-          cat << 'EOF' > secrets/firebase-service-account.json
-          ${{ secrets.FIREBASE_JSON }}
-          EOF
-          
-          cat << 'EOF' > .env
-          ${{ secrets.ENV_FILE }}
-          EOF
-          
-          echo "CLOUDFLARE_TOKEN=${{ secrets.CLOUDFLARE_TOKEN }}" >> .env
+          gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f branch=main -f event=push -f head_sha="$GITHUB_SHA" -f status=success \
+            --jq '.workflow_runs[] | select(.conclusion == "success") | .head_sha' \
+            | grep -Fx "$GITHUB_SHA"
 
-      - name: Build and Deploy with Docker Compose
-        run: |
-          docker compose down
-          docker compose up -d --build
-          docker image prune -f
+  deploy:
+    needs: verify-ci
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: release-src
+          clean: false
+          persist-credentials: false
+      - name: Build and deploy the verified commit
+        env:
+          FIREBASE_JSON: ${{ secrets.FIREBASE_JSON }}
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+          CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TOKEN }}
+        working-directory: release-src
+        run: bash scripts/deploy-production.sh

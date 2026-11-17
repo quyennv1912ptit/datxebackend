@@ -16,6 +16,18 @@ import java.time.Duration
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(prefix = "app.ekyc", name = ["enabled"], havingValue = "true")
 class EkycConfig {
+    @Value("\${app.ekyc.face-comparison-enabled:false}")
+    var faceComparisonEnabled: Boolean = false
+
+    @Value("\${app.ekyc.max-retries:1}")
+    var maxRetries: Int = 1
+
+    @Value("\${app.ekyc.connect-timeout-ms:5000}")
+    var connectTimeoutMs: Long = 5000
+
+    @Value("\${app.ekyc.read-timeout-ms:45000}")
+    var readTimeoutMs: Long = 45000
+
     @Bean
     fun ekycClient(
         @Value("\${app.ekyc.origin}") origin: String,
@@ -33,19 +45,23 @@ class EkycConfig {
         require(apiKey.length >= 32 && modalKey.startsWith("wk-") && modalSecret.startsWith("ws-")) {
             "Configure the dedicated eKYC API key and Modal proxy credentials"
         }
-        val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5))
-            .followRedirects(HttpClient.Redirect.NEVER).build()
+        val http = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofMillis(connectTimeoutMs.coerceIn(1000L, 15_000L)))
+            .followRedirects(HttpClient.Redirect.NEVER)
+            .build()
         val factory = JdkClientHttpRequestFactory(http)
-        // Allow for Modal scale-from-zero and the upstream per-image worker deadline.
-        factory.setReadTimeout(Duration.ofSeconds(75))
+        // Allow for Modal scale-from-zero and the upstream per-image worker deadline, while keeping timeout bounded.
+        factory.setReadTimeout(Duration.ofMillis(readTimeoutMs.coerceIn(5000L, 75_000L)))
         return EkycClient(
-            RestClient.builder().requestFactory(factory).baseUrl(origin.trimEnd('/'))
+            upstream = RestClient.builder().requestFactory(factory).baseUrl(origin.trimEnd('/'))
                 .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
                 .defaultHeader("X-API-Key", apiKey)
                 .defaultHeader("Modal-Key", modalKey)
                 .defaultHeader("Modal-Secret", modalSecret)
                 .build(),
-            mapper,
+            mapper = mapper,
+            maxRetries = maxRetries.coerceIn(0, 2),
+            faceComparisonEnabled = faceComparisonEnabled,
         )
     }
 }
