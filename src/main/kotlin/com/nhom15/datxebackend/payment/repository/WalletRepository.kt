@@ -15,6 +15,7 @@ interface WalletTransactionRepository : JpaRepository<WalletTransaction, Long> {
     fun history(userId: Long, owner: String, walletType: String?, pageable: org.springframework.data.domain.Pageable): org.springframework.data.domain.Page<WalletTransaction>
     fun findByDriverIdAndRideIdAndLegacyTypeAndStatus(driverId: Long, rideId: Long, legacyType: String, status: WalletStatus): WalletTransaction?
     fun existsByRideIdAndTransactionType(rideId: Long, transactionType: TransactionType): Boolean
+    fun existsByRideIdAndCustomerIdIsNotNullAndTransactionType(rideId: Long, transactionType: TransactionType): Boolean
     fun findByWithdrawalIdAndTransactionType(withdrawalId: Long, transactionType: TransactionType): WalletTransaction?
 }
 

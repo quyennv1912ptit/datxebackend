@@ -92,10 +92,10 @@ class WalletService(
     }
 
     @Transactional
-    fun requireEligibleDriver(driverId: Long, cashFare: Long? = null) {
+    fun requireEligibleDriver(driverId: Long, cashFare: Long? = null, rawFare: Long? = cashFare) {
         val balance = locked(driverId, WalletOwner.DRIVER, WalletType.CREDIT).balance
         if (balance < minimumCredit) throw CreditWalletBelowMinimumException()
-        if (cashFare != null && balance < commission(cashFare)) throw InsufficientCreditBalanceException()
+        if (cashFare != null && balance < commission(cashFare, rawFare ?: cashFare)) throw InsufficientCreditBalanceException()
     }
 
     /**
@@ -162,31 +162,40 @@ class WalletService(
     }
 
     @Transactional
-    fun pendingCashToWallet(rideId: Long, customerId: Long, driverId: Long, fare: Long) {
+    fun pendingCashToWallet(rideId: Long, customerId: Long, driverId: Long, fare: Long, rawFare: Long = fare) {
         requireFare(fare)
         val customer = locked(customerId, WalletOwner.CUSTOMER, WalletType.CUSTOMER)
         val credit = locked(driverId, WalletOwner.DRIVER, WalletType.CREDIT)
         val cash = locked(driverId, WalletOwner.DRIVER, WalletType.CASH)
+        val expectedFee = commission(fare, rawFare)
         val commission = transactions.findByDriverIdAndRideIdAndLegacyTypeAndStatus(
             driverId, rideId, "COMMISSION_FEE", WalletStatus.SUCCESS)
-            ?: throw ConflictException(message = "Chưa có giao dịch chiết khấu để chuyển thanh toán")
-        if (commission.amount > 0 || commission.amount < -fare || commission.walletType != "CREDIT")
+        if (expectedFee > 0 && commission == null) {
+            throw ConflictException(message = "Chưa có giao dịch chiết khấu để chuyển thanh toán")
+        }
+        if (commission != null && (commission.amount > 0 || commission.amount < -fare || commission.walletType != "CREDIT"))
             throw ConflictException(message = "Dữ liệu chiết khấu không khớp chuyến")
-        if (transactions.existsByRideIdAndTransactionType(rideId, TransactionType.RIDE_PAYMENT))
+        if (transactions.findByDriverIdAndRideIdAndLegacyTypeAndStatus(driverId, rideId, "TRIP_EARNING", WalletStatus.SUCCESS) != null) {
+            throw ConflictException(message = "Chuyến đã phát sinh khoản thu nhập ví tài xế; không thể đổi phương thức thanh toán")
+        }
+        if (transactions.existsByRideIdAndCustomerIdIsNotNullAndTransactionType(rideId, TransactionType.RIDE_PAYMENT))
             throw ConflictException(message = "Chuyến đã có giao dịch thanh toán ví")
-        val fee = -commission.amount
-        change(customer, -fare, TransactionType.RIDE_PAYMENT, rideId)
+        val fee = if (commission != null) -commission.amount else 0L
+        if (fare > 0) change(customer, -fare, TransactionType.RIDE_PAYMENT, rideId)
         if (fee > 0) change(credit, fee, TransactionType.REFUND, rideId, description = "Hoàn chiết khấu khi khách đổi sang thanh toán ví")
-        change(cash, fare - fee, TransactionType.RIDE_PAYMENT, rideId)
+        if (fare - fee > 0) change(cash, fare - fee, TransactionType.RIDE_PAYMENT, rideId)
     }
 
     @Transactional
-    fun pendingWalletToCash(rideId: Long, driverId: Long, fare: Long) {
-        if (transactions.existsByRideIdAndTransactionType(rideId, TransactionType.RIDE_PAYMENT) ||
+    fun pendingWalletToCash(rideId: Long, driverId: Long, fare: Long, rawFare: Long = fare) {
+        if (transactions.existsByRideIdAndCustomerIdIsNotNullAndTransactionType(rideId, TransactionType.RIDE_PAYMENT) ||
             transactions.findByDriverIdAndRideIdAndLegacyTypeAndStatus(driverId, rideId, "COMMISSION_FEE", WalletStatus.SUCCESS) != null)
             throw ConflictException(message = "Đã có biến động ví; không thể đổi sang tiền mặt")
         requireFare(fare)
-        change(locked(driverId, WalletOwner.DRIVER, WalletType.CREDIT), -commission(fare), TransactionType.COMMISSION_FEE, rideId)
+        val fee = commission(fare, rawFare)
+        if (fee > 0) {
+            change(locked(driverId, WalletOwner.DRIVER, WalletType.CREDIT), -fee, TransactionType.COMMISSION_FEE, rideId)
+        }
     }
 
     @Transactional

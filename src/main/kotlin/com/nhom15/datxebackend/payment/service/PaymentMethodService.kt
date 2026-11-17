@@ -37,9 +37,9 @@ class PaymentMethodService(private val rides: RideRepository, private val paymen
             throw ConflictException(message = "Phương thức thanh toán đã thay đổi. Vui lòng kiểm tra lại.")
         if (method == expectedMethod) throw BadRequestException(message = "Hãy chọn phương thức khác phương thức hiện tại")
         val driverId = ride.driverId ?: throw ConflictException(message = "Chuyến chưa có tài xế")
-        if (method == PaymentMethod.WALLET) wallets.pendingCashToWallet(rideId, actor.id, driverId, payment.amount)
+        if (method == PaymentMethod.WALLET) wallets.pendingCashToWallet(rideId, actor.id, driverId, payment.amount, ride.fareEstimate)
         else {
-            wallets.pendingWalletToCash(rideId, driverId, payment.amount)
+            wallets.pendingWalletToCash(rideId, driverId, payment.amount, ride.fareEstimate)
             jdbc.update("INSERT INTO ride_wallet_settlements(ride_id) VALUES (?) ON CONFLICT DO NOTHING", rideId)
         }
         val status = if (method == PaymentMethod.WALLET) PaymentStatus.PAID.name else PaymentStatus.PENDING.name

@@ -239,10 +239,9 @@ class RideStateMachine(
         if (verification.synchronizedWorkflow && (
             skills == null || !verification.mayDriveForRide(driver, ride, skills, now = clock.instant())
         )) throw ConflictException(ErrorCode.DRIVER_NOT_VERIFIED)
-        wallets.requireEligibleDriver(driverId,
-            (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).takeIf {
-                ride.paymentMethod == com.nhom15.datxebackend.common.enums.PaymentMethod.CASH
-            })
+        val cashPayable = (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).roundToNearestThousandVnd()
+            .takeIf { ride.paymentMethod == com.nhom15.datxebackend.common.enums.PaymentMethod.CASH }
+        wallets.requireEligibleDriver(driverId, cashPayable, ride.fareEstimate.takeIf { cashPayable != null })
         driver.status = DriverStatus.BUSY
         drivers.save(driver)
         userCache?.evictAfterCommit(driver.firebaseUid)
@@ -296,10 +295,9 @@ class RideStateMachine(
             if (verification.synchronizedWorkflow &&
                 (skills == null || !verification.mayDriveForRide(driver, ride, skills, now = clock.instant()))
             ) throw ConflictException(ErrorCode.DRIVER_NOT_VERIFIED)
-            wallets.requireEligibleDriver(driverId,
-            (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).takeIf {
-                ride.paymentMethod == com.nhom15.datxebackend.common.enums.PaymentMethod.CASH
-            })
+            val cashPayable = (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).roundToNearestThousandVnd()
+            .takeIf { ride.paymentMethod == com.nhom15.datxebackend.common.enums.PaymentMethod.CASH }
+        wallets.requireEligibleDriver(driverId, cashPayable, ride.fareEstimate.takeIf { cashPayable != null })
         driver.status = DriverStatus.BUSY
             drivers.save(driver)
             userCache?.evictAfterCommit(driver.firebaseUid)

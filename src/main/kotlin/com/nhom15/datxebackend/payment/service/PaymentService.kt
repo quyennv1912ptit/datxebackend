@@ -49,10 +49,22 @@ class PaymentService(
             Long::class.javaObjectType, driverId, start, end,
         ) ?: 0L
         val income = jdbcTemplate.queryForObject(
-            """SELECT COALESCE(SUM(CASE WHEN p.method = 'CASH' THEN p.amount + w.amount ELSE w.amount END), 0)
-               FROM payments p JOIN wallet_transactions w ON w.ride_id = p.ride_id AND w.driver_id = p.driver_id
-               WHERE p.driver_id = ? AND p.status = 'PAID' AND p.paid_at >= ? AND p.paid_at < ? AND w.status = 'SUCCESS'
-               AND ((p.method = 'CASH' AND w.type = 'COMMISSION_FEE') OR (p.method = 'WALLET' AND w.type = 'TRIP_EARNING'))""".trimIndent(),
+            """SELECT COALESCE(SUM(
+                   CASE
+                       WHEN p.method = 'WALLET' THEN COALESCE(wt.earning, 0)
+                       WHEN p.method = 'CASH' THEN p.amount + COALESCE(wt.commission, 0) + COALESCE(wt.earning, 0)
+                       ELSE 0
+                   END
+               ), 0)
+               FROM payments p
+               LEFT JOIN LATERAL (
+                   SELECT
+                       SUM(CASE WHEN w.type = 'COMMISSION_FEE' AND w.wallet_type = 'CREDIT' THEN w.amount ELSE 0 END) AS commission,
+                       SUM(CASE WHEN w.type = 'TRIP_EARNING' AND w.wallet_type = 'CASH' THEN w.amount ELSE 0 END) AS earning
+                   FROM wallet_transactions w
+                   WHERE w.ride_id = p.ride_id AND w.driver_id = p.driver_id AND w.status = 'SUCCESS'
+               ) wt ON TRUE
+               WHERE p.driver_id = ? AND p.status = 'PAID' AND p.paid_at >= ? AND p.paid_at < ?""".trimIndent(),
             Long::class.javaObjectType, driverId, start, end,
         ) ?: 0L
         return DriverDailySummary(date, driver.fullName, driver.avatarUrl, trips, income)
@@ -136,13 +148,14 @@ class PaymentService(
         val rawFare = ride.fareEstimate
         val settledMethod = wallets.settle(ride.id, ride.customerId, event.driverId, event.finalFare.amount, ride.paymentMethod, rawFare)
         if (ride.paymentMethod != settledMethod) ride.paymentMethod = settledMethod
-        val paidAt = if (settledMethod == PaymentMethod.WALLET) java.sql.Timestamp.from(Instant.now()) else null
+        val paidNow = settledMethod == PaymentMethod.WALLET || event.finalFare.amount == 0L
+        val paidAt = if (paidNow) java.sql.Timestamp.from(Instant.now()) else null
         jdbcTemplate.update(
             """INSERT INTO payments (ride_id, customer_id, driver_id, amount, method, status, paid_at)
                VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (ride_id) DO UPDATE
                SET status = EXCLUDED.status, method = EXCLUDED.method, paid_at = EXCLUDED.paid_at, updated_at = CURRENT_TIMESTAMP""".trimIndent(),
             event.rideId, event.customerId, event.driverId, event.finalFare.amount, settledMethod.name,
-            if (settledMethod == PaymentMethod.WALLET) PaymentStatus.PAID.name else PaymentStatus.PENDING.name,
+            if (paidNow) PaymentStatus.PAID.name else PaymentStatus.PENDING.name,
             paidAt,
         )
     }
@@ -162,9 +175,11 @@ class PaymentService(
         val payment = loadPayment(rideId) ?: return null
         val cash = payment.method == PaymentMethod.CASH.name
         if (!cash) {
-            val recorded = jdbcTemplate.query(
-                "SELECT amount FROM wallet_transactions WHERE driver_id=? AND ride_id=? AND type='TRIP_EARNING' AND status='SUCCESS'",
-                { row, _ -> row.getLong("amount") }, driverId, rideId).firstOrNull() ?: return null
+            val earning = jdbcTemplate.query(
+                "SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS cnt FROM wallet_transactions WHERE driver_id=? AND ride_id=? AND type='TRIP_EARNING' AND status='SUCCESS'",
+                { row, _ -> row.getLong("total") to row.getLong("cnt") }, driverId, rideId).firstOrNull()
+            if (earning == null || earning.second == 0L) return null
+            val recorded = earning.first
             return com.nhom15.datxebackend.payment.dto.DriverRideEarnings(
                 recorded, (payment.amount - recorded).coerceAtLeast(0), true, payment.status == PaymentStatus.PAID.name)
         }
