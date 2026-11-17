@@ -54,7 +54,7 @@ class AdminFiltersPostgresTests {
         Files.list(Path.of("src/main/resources/db/migration")).use { paths ->
             paths.filter { it.fileName.toString().endsWith(".sql") }
                 .sorted(compareBy { it.fileName.toString().substringBefore("__").drop(1).toInt() })
-                .forEach { jdbc.execute(Files.readString(it)) }
+                .forEach { jdbc.execute(Files.readString(it).removePrefix("\uFEFF")) }
         }
         factory = LocalContainerEntityManagerFactoryBean().apply {
             setDataSource(ds)

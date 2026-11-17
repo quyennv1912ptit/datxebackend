@@ -32,7 +32,7 @@ class DispatchPersistenceTests {
         jdbc.execute("CREATE SCHEMA $schema");jdbc.execute("SET search_path TO $schema")
         Files.list(Path.of("src/main/resources/db/migration")).use { files ->
             files.filter { it.toString().endsWith(".sql") }.sorted(compareBy { it.fileName.toString().substringBefore("__").drop(1).toInt() })
-                .forEach { jdbc.execute(Files.readString(it)) }
+                .forEach { jdbc.execute(Files.readString(it).removePrefix("\uFEFF")) }
         }
         jdbc.update("INSERT INTO customers(id,firebase_uid) VALUES(1,'customer1'),(2,'customer2')")
         jdbc.update("INSERT INTO drivers(id,firebase_uid,phone_number,status) VALUES(7,'driver7','0900000007','ONLINE'),(8,'driver8','0900000008','ONLINE')")

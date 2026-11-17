@@ -50,7 +50,7 @@ class RideEstimateService(
         quoteProvider.requirePricing(vehicle.vehicleType)
         val savedRoute = rideRoutes.resolve(actor.id, request.vehicleId, vehicle.vehicleType, input.pickup, input.dropoff, request.routeQuoteId)
         val quote = quoteProvider.quote(input.copy(route = savedRoute.drivingRoute()))
-        val voucher = voucherService.calculate(actor, request.voucherCode, quote.estimatedFare)
+        val voucher = voucherService.calculate(actor, request.voucherCode, quote.estimatedFare, request.paymentMethod, request.voucherId)
         return RideResponseMapper.estimate(quote, voucher?.discountAmount ?: 0, savedRoute)
     }
 

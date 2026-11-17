@@ -16,6 +16,7 @@ import com.nhom15.datxebackend.payment.dto.WalletTransactionResponse
 import com.nhom15.datxebackend.ride.event.RideCompleted
 import com.nhom15.datxebackend.ride.repository.RideRepository
 import com.nhom15.datxebackend.common.security.AuthUser
+import com.nhom15.datxebackend.voucher.service.PromoBudgetService
 import com.nhom15.datxebackend.payment.dto.CashPaymentConfirmationResponse
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
@@ -32,6 +33,7 @@ class PaymentService(
     private val rideRepository: RideRepository,
     private val wallets: WalletService,
     private val events: org.springframework.context.ApplicationEventPublisher,
+    private val promoBudget: PromoBudgetService? = null,
 ) {
     @Transactional(readOnly = true)
     fun getDriverDailySummary(driverId: Long): DriverDailySummary {
@@ -92,7 +94,6 @@ class PaymentService(
             throw PaymentMethodMismatchException()
         }
         if (payment.status != PaymentStatus.PAID.name) {
-            // Dùng đồng hồ JVM cho paid_at/updated_at, đồng bộ với quyết toán WALLET.
             val paidAt = java.sql.Timestamp.from(Instant.now())
             val changed = jdbcTemplate.update(
                 "UPDATE payments SET status = ?, paid_at = ?, updated_at = ? WHERE ride_id = ? AND status = ? AND method = 'CASH'",
@@ -115,7 +116,6 @@ class PaymentService(
         return (loadPayment(rideId) ?: throw NotFoundException(ErrorCode.PAYMENT_NOT_FOUND)).toConfirmation(rideId)
     }
 
-    /** Persist the payment row in the ride-completion transaction so it cannot be lost after commit. */
     @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT)
     @Transactional(propagation = Propagation.MANDATORY)
     fun onRideCompleted(event: RideCompleted) {
@@ -129,8 +129,12 @@ class PaymentService(
         val acquired = jdbcTemplate.update(
             "INSERT INTO ride_wallet_settlements(ride_id) VALUES (?) ON CONFLICT DO NOTHING", ride.id)
         if (acquired == 0) return
-        // WALLET có thể được quyết toán thành CASH nếu ví khách không đủ tiền.
-        val settledMethod = wallets.settle(ride.id, ride.customerId, event.driverId, event.finalFare.amount, ride.paymentMethod)
+
+        promoBudget?.spend(ride.id)
+
+        // Driver's 80% share is based on the original fare before the voucher.
+        val rawFare = ride.fareEstimate
+        val settledMethod = wallets.settle(ride.id, ride.customerId, event.driverId, event.finalFare.amount, ride.paymentMethod, rawFare)
         if (ride.paymentMethod != settledMethod) ride.paymentMethod = settledMethod
         val paidAt = if (settledMethod == PaymentMethod.WALLET) java.sql.Timestamp.from(Instant.now()) else null
         jdbcTemplate.update(
@@ -156,15 +160,36 @@ class PaymentService(
     @Transactional(readOnly = true)
     fun getDriverRideEarnings(driverId: Long, rideId: Long): com.nhom15.datxebackend.payment.dto.DriverRideEarnings? {
         val payment = loadPayment(rideId) ?: return null
-        val type = if (payment.method == PaymentMethod.CASH.name) "COMMISSION_FEE" else "TRIP_EARNING"
-        val recorded = jdbcTemplate.query(
-            "SELECT amount FROM wallet_transactions WHERE driver_id=? AND ride_id=? AND type=? AND status='SUCCESS'",
-            { row, _ -> row.getLong("amount") }, driverId, rideId, type).firstOrNull() ?: return null
         val cash = payment.method == PaymentMethod.CASH.name
+        if (!cash) {
+            val recorded = jdbcTemplate.query(
+                "SELECT amount FROM wallet_transactions WHERE driver_id=? AND ride_id=? AND type='TRIP_EARNING' AND status='SUCCESS'",
+                { row, _ -> row.getLong("amount") }, driverId, rideId).firstOrNull() ?: return null
+            return com.nhom15.datxebackend.payment.dto.DriverRideEarnings(
+                recorded, (payment.amount - recorded).coerceAtLeast(0), true, payment.status == PaymentStatus.PAID.name)
+        }
+        val commissionRecorded = jdbcTemplate.query(
+            "SELECT amount FROM wallet_transactions WHERE driver_id=? AND ride_id=? AND type='COMMISSION_FEE' AND status='SUCCESS'",
+            { row, _ -> row.getLong("amount") }, driverId, rideId).firstOrNull()
+        val subsidyRecorded = jdbcTemplate.query(
+            "SELECT amount FROM wallet_transactions WHERE driver_id=? AND ride_id=? AND type='TRIP_EARNING' AND wallet_type='CASH' AND status='SUCCESS'",
+            { row, _ -> row.getLong("amount") }, driverId, rideId).firstOrNull()
+        if (commissionRecorded == null && subsidyRecorded == null) {
+            val settled = jdbcTemplate.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM ride_wallet_settlements WHERE ride_id = ?)",
+                Boolean::class.java,
+                rideId,
+            ) == true
+            if (!settled) return null
+        }
+        val commission = commissionRecorded ?: 0L
+        val subsidy = subsidyRecorded ?: 0L
         return com.nhom15.datxebackend.payment.dto.DriverRideEarnings(
-            if (cash) payment.amount + recorded else recorded,
-            if (cash) -recorded else payment.amount - recorded,
-            !cash, payment.status == PaymentStatus.PAID.name)
+            payment.amount + commission + subsidy,
+            -commission,
+            subsidy > 0L,
+            payment.status == PaymentStatus.PAID.name || payment.amount == 0L,
+        )
     }
 
     private fun loadPayment(rideId: Long, forUpdate: Boolean = false): PaymentRow? = jdbcTemplate.query(

@@ -8,7 +8,7 @@ PostgreSQL (`datxe_postgres`) và backend Spring Boot là **nguồn chân lý du
 
 ---
 
-## 2. Cấu trúc dữ liệu & Migration (`V33__identity_lock_and_reverification.sql`)
+## 2. Cấu trúc dữ liệu & Migration (`V39__identity_lock_and_reverification.sql`)
 
 Bảng `driver_verification_applications` bổ sung các cột:
 - `approved_revision bigint`: Revision của quyết định `APPROVED` gần nhất đang làm mốc hiệu lực.
@@ -55,6 +55,6 @@ Migration đồng thời backfill hồ sơ `APPROVED` và snapshot ban đầu ch
 
 ## 5. Kiểm thử tự động
 
-- **Backend (`F:\datxebackend`)**: `DriverVerificationIdentityLockTest.kt` (unit + MVC + end-to-end Flyway `V1..V33` trên PostgreSQL), `DriverVerificationEligibilityTest.kt`, `DriverVerificationWorkflowTest.kt`.
+- **Backend (`F:\datxebackend`)**: `DriverVerificationIdentityLockTest.kt` (unit + MVC + end-to-end Flyway `V1..V39` trên PostgreSQL), `DriverVerificationEligibilityTest.kt`, `DriverVerificationWorkflowTest.kt`.
 - **Driver App (`F:\datxe_rn`)**: `tests/driver-verification.test.cjs`, `tests/material-design.test.cjs`, và TypeScript `typecheck`.
 - **WebAdmin (`F:\goAdmin`)**: `src/test/verification-review.test.tsx` (Vitest) và `pnpm typecheck`.

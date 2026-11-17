@@ -105,7 +105,7 @@ class RideService(
         quoteProvider.requirePricing(vehicle.vehicleType)
         val savedRoute = rideRoutes.resolve(actor.id, request.vehicleId, vehicle.vehicleType, quoteInput.pickup, quoteInput.dropoff, request.routeQuoteId)
         val quote = quoteProvider.quote(quoteInput.copy(route = savedRoute.drivingRoute()))
-        val appliedVoucher = voucherService.calculate(actor, request.voucherCode, quote.estimatedFare)
+        val appliedVoucher = voucherService.calculate(actor, request.voucherCode, quote.estimatedFare, request.paymentMethod, request.voucherId)
         // Số tiền khách thực trả được làm tròn 1.000; fare_estimate vẫn giữ giá gốc để đối soát.
         val payableFare = (quote.estimatedFare - (appliedVoucher?.discountAmount ?: 0))
             .coerceAtLeast(0)
@@ -126,7 +126,7 @@ class RideService(
         if (key != null && requestHash != null) {
             idempotencyRepository.insert(actor.id, key, requestHash, pendingRide.id)
         }
-        appliedVoucher?.let { voucherService.consume(actor.id, it, pendingRide.id) }
+        appliedVoucher?.let { voucherService.consume(actor.id, it, pendingRide.id, request.paymentMethod) }
         stateMachine.recordCreated(pendingRide, actor.id)
 
         val ride = if (request.type == RideType.INSTANT) {
@@ -185,7 +185,7 @@ class RideService(
                 rideId = ride.id,
                 event = RideTransitionEvent.START_SEARCH,
                 actor = customerRideActor(ride.customerId),
-                note = "Bắt đầu tìm tài xế cho ride tức thời",
+                note = "Bắt đầu tìm tài xế cho chuyến đi tức thì",
             ),
         )
 

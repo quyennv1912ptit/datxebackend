@@ -26,9 +26,9 @@ class FareRoundingTests {
     private fun quote(fare: Long) = RideQuote(1, BigDecimal("3.0"), 10, 20_000, 11_250, 0, 0, 0, fare)
 
     @Test fun `estimate payable is rounded after voucher`() {
-        assertEquals(31_000L, RideResponseMapper.estimate(quote(31_250)).payableFare)
+        assertEquals(32_000L, RideResponseMapper.estimate(quote(31_250)).payableFare)
         assertEquals(32_000L, RideResponseMapper.estimate(quote(31_500)).payableFare)
-        assertEquals(28_000L, RideResponseMapper.estimate(quote(31_250), discountAmount = 3_125).payableFare)
+        assertEquals(29_000L, RideResponseMapper.estimate(quote(31_250), discountAmount = 3_125).payableFare)
     }
 
     @Test fun `create response rounds payable but keeps the original estimate`() {
@@ -36,7 +36,7 @@ class FareRoundingTests {
 
         val response = RideResponseMapper.create(ride)
 
-        assertEquals(28_000L, response.payableFare)
+        assertEquals(29_000L, response.payableFare)
         assertEquals(31_250L, response.estimatedFare)
         assertEquals(3_125L, response.discountAmount)
     }

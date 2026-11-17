@@ -86,6 +86,10 @@ class DriverOnboardingService @org.springframework.beans.factory.annotation.Auto
             expiresAt = request.expiresAt,
         )
 
+        if (documentType == "PORTRAIT" || documentType == "SELFIE") {
+            driver.avatarUrl = request.secureUrl.trim()
+            driver.avatarPublicId = publicId
+        }
         if (documentType == licenseDocumentType) {
             driver.licenseNumber = request.documentNumber?.trim()?.takeIf(String::isNotEmpty)
             driver.licenseExpiryDate = request.expiresAt

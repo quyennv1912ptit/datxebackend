@@ -56,6 +56,8 @@ data class RideDetailResponse(
     val cancelledAt: Instant? = null,
     val cancelledByRole: RideActorRole? = null,
     val discountAmount: Long? = null,
+    val payableFare: Long = estimatedFare,
+    val driverExpectedEarning: Long = 0,
     val unreadChatCount: Long = 0,
     val pickupNote: String? = null,
     val route: com.nhom15.datxebackend.routing.model.SavedRideRoute? = null,
