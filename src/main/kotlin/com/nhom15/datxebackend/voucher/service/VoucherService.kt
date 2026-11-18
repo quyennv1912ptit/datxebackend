@@ -106,13 +106,16 @@ class VoucherService(
                 rs.getTimestamp("valid_to").toInstant(),rs.getString("allowed_payment_method"),rs.getLong("forecast_reserve_per_use")) },
             campaignId,
         ).firstOrNull() ?: throw BadRequestException(ErrorCode.VOUCHER_INVALID,"Chiến dịch không còn khả dụng")
-        val claimed = jdbcTemplate.update(
+        val claimed = jdbcTemplate.query(
             """UPDATE vouchers SET campaign_claim_count=campaign_claim_count+1
                WHERE id=? AND active AND valid_from<=CURRENT_TIMESTAMP AND valid_to>CURRENT_TIMESTAMP
                  AND campaign_claim_count<usage_limit
                  AND campaign_budget_limit-COALESCE((SELECT held_amount+spent_amount FROM voucher_campaign_budget WHERE campaign_id=?),0)>=forecast_reserve_per_use
-                 AND NOT EXISTS(SELECT 1 FROM vouchers c WHERE c.campaign_id=? AND c.owner_customer_id=?) RETURNING campaign_claim_count""".trimIndent(), Int::class.java, campaignId, campaignId, campaignId, actor.id)
-        val claimSeq = claimed ?:  throw BadRequestException(ErrorCode.VOUCHER_INVALID,"Chiến dịch đã hết suất hoặc ngân sách không còn đủ")
+                 AND NOT EXISTS(SELECT 1 FROM vouchers c WHERE c.campaign_id=? AND c.owner_customer_id=?) RETURNING campaign_claim_count""".trimIndent(),
+            { rs, _ -> rs.getInt(1) },
+            campaignId, campaignId, campaignId, actor.id,
+        ).firstOrNull()
+        val claimSeq = claimed ?: throw BadRequestException(ErrorCode.VOUCHER_INVALID, "Chiến dịch đã hết suất hoặc ngân sách không còn đủ")
         val id = jdbcTemplate.queryForObject(
             """INSERT INTO vouchers(code,discount_type,value,max_discount,minimum_order_amount,usage_count,usage_limit,valid_from,valid_to,active,owner_customer_id,source,milestone,allowed_payment_method,forecast_reserve_per_use,description,campaign_id,claim_sequence) SELECT NULL,discount_type,value,max_discount,minimum_order_amount,0,1,valid_from,valid_to,TRUE,?,'SYSTEM_REWARD',0,allowed_payment_method,forecast_reserve_per_use,description,id,? FROM vouchers WHERE id=? RETURNING id""".trimIndent(), Long::class.java, actor.id, claimSeq, campaignId,
         ) ?: throw BadRequestException(ErrorCode.VOUCHER_INVALID)
