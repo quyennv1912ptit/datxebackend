@@ -316,14 +316,19 @@ class DriverVerificationWorkflowService @Autowired constructor(
             runCatching { mapper.writeValueAsString(loadSubmissionSnapshot(row.id, rev)["confirmed"]) }.getOrNull()
         }
         val nextRevision = expectedRevision + 1L
+        val clearUnapprovedHold = row.approvedRevision == null
         jdbc.update(
             """UPDATE driver_verification_applications
                SET status = 'DRAFT', revision = ?, confirmed_fields = COALESCE(confirmed_fields, ?),
                    confirmation_current = false, decision_reason = NULL, requested_changes = NULL,
+                   identity_hold = CASE WHEN ? THEN false ELSE identity_hold END,
+                   identity_hold_reason = CASE WHEN ? THEN NULL ELSE identity_hold_reason END,
                    updated_at = CURRENT_TIMESTAMP
                WHERE id = ?""",
             nextRevision,
             SqlParameterValue(Types.VARCHAR, approvedConfirmed),
+            clearUnapprovedHold,
+            clearUnapprovedHold,
             row.id,
         )
         // Deliberately do NOT update driver_verification_projection or drivers here so verified drivers retain existing valid ride eligibility during draft/update.
@@ -339,7 +344,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
     ): Map<String, Any?> {
         val row = requireAccessibleApp(applicationId, actor, review = false, forUpdate = true)
         checkRevision(row, expectedRevision, editable = false)
-        if (row.status != "DRAFT" || row.approvedRevision == null || row.approvedSubmissionRevision == null) {
+        if (row.status != "DRAFT" || row.approvedRevision == null || row.approvedSubmissionRevision == null || row.identityHold) {
             throw VerificationWorkflowException(409, "INVALID_TRANSITION", "Chỉ có thể hủy cập nhật khi đang ở bản nháp của hồ sơ đã duyệt.")
         }
         val approvedSnapshot = loadSubmissionSnapshot(row.id, row.approvedSubmissionRevision)
