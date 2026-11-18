@@ -31,6 +31,24 @@ class VoucherService(
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
+    private companion object {
+        const val VOUCHER_SELECT = """
+            SELECT v.id, v.code,
+                   c.code AS campaign_code,
+                   COALESCE(NULLIF(TRIM(v.campaign_title), ''), NULLIF(TRIM(c.campaign_title), '')) AS campaign_title,
+                   COALESCE(NULLIF(TRIM(v.description), ''), NULLIF(TRIM(c.description), '')) AS description,
+                   v.milestone,
+                   v.claim_sequence,
+                   c.usage_limit AS campaign_claim_limit,
+                   v.discount_type, v.value, v.max_discount,
+                   v.minimum_order_amount, v.usage_count, v.usage_limit,
+                   v.valid_from, v.valid_to, v.owner_customer_id,
+                   v.source, v.allowed_payment_method
+            FROM vouchers v
+            LEFT JOIN vouchers c ON c.id = v.campaign_id
+        """
+    }
+
     @Transactional(readOnly = true)
     fun listAvailable(actor: AuthUser): List<VoucherResponse> {
         requireCustomer(actor)
@@ -39,11 +57,7 @@ class VoucherService(
 
         return jdbcTemplate.query(
             """
-            SELECT v.id, v.code, v.discount_type, v.value, v.max_discount,
-                   v.minimum_order_amount, v.usage_count, v.usage_limit,
-                   v.valid_from, v.valid_to, v.owner_customer_id,
-                   v.source, v.allowed_payment_method
-            FROM vouchers v
+            $VOUCHER_SELECT
             WHERE v.active = TRUE
               AND v.valid_from <= CURRENT_TIMESTAMP
               AND v.valid_to > CURRENT_TIMESTAMP
@@ -117,11 +131,11 @@ class VoucherService(
         ).firstOrNull()
         val claimSeq = claimed ?: throw BadRequestException(ErrorCode.VOUCHER_INVALID, "Chiến dịch đã hết suất hoặc ngân sách không còn đủ")
         val id = jdbcTemplate.queryForObject(
-            """INSERT INTO vouchers(code,discount_type,value,max_discount,minimum_order_amount,usage_count,usage_limit,valid_from,valid_to,active,owner_customer_id,source,milestone,allowed_payment_method,forecast_reserve_per_use,description,campaign_id,claim_sequence) SELECT NULL,discount_type,value,max_discount,minimum_order_amount,0,1,valid_from,valid_to,TRUE,?,'SYSTEM_REWARD',0,allowed_payment_method,forecast_reserve_per_use,description,id,? FROM vouchers WHERE id=? RETURNING id""".trimIndent(), Long::class.java, actor.id, claimSeq, campaignId,
+            """INSERT INTO vouchers(code,discount_type,value,max_discount,minimum_order_amount,usage_count,usage_limit,valid_from,valid_to,active,owner_customer_id,source,milestone,allowed_payment_method,forecast_reserve_per_use,description,campaign_id,claim_sequence,campaign_title) SELECT NULL,discount_type,value,max_discount,minimum_order_amount,0,1,valid_from,valid_to,TRUE,?,'SYSTEM_REWARD',0,allowed_payment_method,forecast_reserve_per_use,description,id,?,campaign_title FROM vouchers WHERE id=? RETURNING id""".trimIndent(), Long::class.java, actor.id, claimSeq, campaignId,
         ) ?: throw BadRequestException(ErrorCode.VOUCHER_INVALID)
         val response = jdbcTemplate.queryForObject(
-            """SELECT id,code,discount_type,value,max_discount,minimum_order_amount,usage_count,usage_limit,valid_from,valid_to,source,owner_customer_id,allowed_payment_method
-               FROM vouchers WHERE id=?""".trimIndent(),
+            """$VOUCHER_SELECT
+               WHERE v.id=?""".trimIndent(),
             { rs, _ -> toVoucher(rs).toResponse() }, id,
         ) ?: throw BadRequestException(ErrorCode.VOUCHER_INVALID)
         return response
@@ -319,11 +333,7 @@ class VoucherService(
     private fun loadPublic(code: String, customerId: Long): VoucherRow? =
         jdbcTemplate.query(
             """
-            SELECT v.id, v.code, v.discount_type, v.value, v.max_discount,
-                   v.minimum_order_amount, v.usage_count, v.usage_limit,
-                   v.valid_from, v.valid_to, v.owner_customer_id,
-                   v.source, v.allowed_payment_method
-            FROM vouchers v
+            $VOUCHER_SELECT
             WHERE UPPER(v.code) = ?
               AND v.source = 'PUBLIC_CODE'
               AND v.owner_customer_id IS NULL
@@ -347,11 +357,7 @@ class VoucherService(
     private fun loadPersonal(voucherId: Long, customerId: Long): VoucherRow? =
         jdbcTemplate.query(
             """
-            SELECT v.id, v.code, v.discount_type, v.value, v.max_discount,
-                   v.minimum_order_amount, v.usage_count, v.usage_limit,
-                   v.valid_from, v.valid_to, v.owner_customer_id,
-                   v.source, v.allowed_payment_method
-            FROM vouchers v
+            $VOUCHER_SELECT
             WHERE v.id = ?
               AND v.source = 'SYSTEM_REWARD'
               AND v.owner_customer_id = ?
@@ -376,6 +382,12 @@ class VoucherService(
     private fun toVoucher(row: ResultSet) = VoucherRow(
         id = row.getLong("id"),
         code = row.getString("code"),
+        campaignCode = row.getString("campaign_code"),
+        campaignTitle = row.getString("campaign_title"),
+        description = row.getString("description"),
+        milestone = row.getObject("milestone", Int::class.javaObjectType) ?: 0,
+        claimSequence = row.getObject("claim_sequence", Int::class.javaObjectType),
+        campaignClaimLimit = row.getObject("campaign_claim_limit", Int::class.javaObjectType),
         discountType = row.getString("discount_type"),
         value = row.getLong("value"),
         maxDiscount = row.getObject("max_discount", Long::class.javaObjectType),
@@ -398,6 +410,12 @@ class VoucherService(
     private data class VoucherRow(
         val id: Long,
         val code: String?,
+        val campaignCode: String?,
+        val campaignTitle: String?,
+        val description: String?,
+        val milestone: Int,
+        val claimSequence: Int?,
+        val campaignClaimLimit: Int?,
         val discountType: String,
         val value: Long,
         val maxDiscount: Long?,
@@ -413,6 +431,12 @@ class VoucherService(
         fun toResponse() = VoucherResponse(
             id = id,
             code = code,
+            campaignCode = campaignCode,
+            campaignTitle = campaignTitle,
+            description = description,
+            milestone = milestone,
+            claimSequence = claimSequence,
+            campaignClaimLimit = campaignClaimLimit,
             discountType = discountType,
             value = value,
             maxDiscount = maxDiscount,

@@ -498,5 +498,30 @@ class DriverVerificationIdentityLockTest {
         }
         assertEquals("VERIFICATION_ACTIVATION_BLOCKED", blockedDup.errorCode)
         assertFalse(eligibility.mayGoOnline(d2, VehicleType.MOTORCYCLE, skills))
+
+        // Rejected initial application (never approved) can start a fresh draft via reverify and resubmit
+        val rejectedInitial = workflow.decision(
+            admin,
+            appId2,
+            VerificationDecisionRequest(rev2, "REJECTED", reason = "Giấy tờ trùng tài khoản khác"),
+        )
+        rev2 = (rejectedInitial["revision"] as Number).toLong()
+        assertEquals("REJECTED", rejectedInitial["status"])
+        assertNull(rejectedInitial["approvedRevision"])
+
+        val reopened2 = workflow.reverify(actor2, appId2, rev2)
+        rev2 = (reopened2["revision"] as Number).toLong()
+        assertEquals("DRAFT", reopened2["status"])
+        assertEquals(false, reopened2["identityHold"])
+
+        val validD2Details = initialDetails + mapOf(
+            "cccd_id" to "999206000002",
+            "cccd_name" to "Khác",
+            "gplx_name" to "Khác",
+            "gplx_number" to "250256000002",
+        )
+        rev2 = (workflow.confirmFields(actor2, appId2, rev2, validD2Details)["revision"] as Number).toLong()
+        val resubmitted2 = workflow.submit(actor2, appId2, "sub-d2-retry", rev2, null, null)
+        assertEquals("SUBMITTED", resubmitted2["status"])
     }
 }
