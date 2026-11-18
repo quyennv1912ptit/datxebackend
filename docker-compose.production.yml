@@ -3,7 +3,7 @@ services:
     image: ${DATXE_BACKEND_IMAGE:?set release image}
     user: "${DATXE_DEPLOY_UID:?set deploy UID}:${DATXE_DEPLOY_GID:?set deploy GID}"
     environment:
-      SPRING_PROFILES_ACTIVE: production
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-production}
       APP_VERIFICATION_REQUIRE_PROTECTED_STORAGE: "true"
       DATXE_VERIFICATION_STORAGE_DIR: /var/lib/ptitgo/verification
       CLOUDFLARE_TOKEN: ""
