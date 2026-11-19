@@ -23,11 +23,11 @@ import java.util.Optional
 import java.util.Properties
 import java.util.UUID
 
-/** Kiểm thử nâng cấp Flyway V1..V33 -> V34..V39 trên dữ liệu tổng hợp và tương tác các tính năng tích hợp. */
+/** Kiểm thử nâng cấp Flyway V1..V33 -> V34..V41 trên dữ liệu tổng hợp và tương tác các tính năng tích hợp. */
 @EnabledIfEnvironmentVariable(named = "TEST_DB_URL", matches = ".+")
 class IntegrationReleaseRegressionPostgresTests {
     @Test
-    fun `upgrades from origin V33 schema to V39 preserving existing rows and supporting integrated features`() {
+    fun `upgrades from origin V33 schema to V41 preserving existing rows and supporting integrated features`() {
         val schema = "rel_upgrade_" + UUID.randomUUID().toString().replace("-", "")
         val ds = DriverManagerDataSource(
             System.getenv("TEST_DB_URL"),
@@ -85,19 +85,21 @@ class IntegrationReleaseRegressionPostgresTests {
                    VALUES (601, 401, 'CUSTOMER_TO_DRIVER', 201, 101, 2, 'Bình luận cần ẩn', TRUE)""",
             )
 
-            // 3. Chạy nâng cấp Flyway lên phiên bản mới nhất V34..V39
+            // 3. Chạy nâng cấp Flyway lên phiên bản mới nhất V34..V41
             val result = Flyway.configure()
                 .dataSource(ds)
                 .schemas(schema)
                 .load()
                 .migrate()
 
-            assertTrue(result.migrationsExecuted >= 6, "Phải chạy tối thiểu 6 migration mới V34..V39")
+            assertTrue(result.migrationsExecuted >= 8, "Phải chạy tối thiểu 8 migration mới V34..V41")
             val appliedVersions = jdbc.queryForList(
                 "SELECT version FROM flyway_schema_history WHERE success = TRUE ORDER BY installed_rank",
                 String::class.java,
             )
-            assertEquals("39", appliedVersions.last())
+            assertTrue(appliedVersions.contains("39"))
+            assertTrue(appliedVersions.contains("40"))
+            assertEquals("41", appliedVersions.last())
 
             // 4. Dữ liệu avatar_url, rating moderation và voucher campaign được bảo toàn nguyên vẹn
             assertEquals(
