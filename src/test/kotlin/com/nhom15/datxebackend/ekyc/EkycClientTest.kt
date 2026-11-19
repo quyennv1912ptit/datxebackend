@@ -104,6 +104,26 @@ class EkycClientTest {
     }
 
     @Test
+    fun `stops retrying once the bounded total deadline is reached`() {
+        val localBuilder = RestClient.builder().baseUrl("https://fixture.modal.run")
+        val localMock = MockRestServiceServer.bindTo(localBuilder).build()
+        val strictClient = EkycClient(
+            upstream = localBuilder.build(),
+            mapper = JsonMapper.builder().build(),
+            maxRetries = 2,
+            faceComparisonEnabled = false,
+            totalDeadlineMs = 100L,
+        )
+        localMock.expect(requestTo("https://fixture.modal.run/ekyc/documents/cccd_front/extract"))
+            .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE))
+        val err = assertFailsWith<AppException> {
+            strictClient.extract(EkycDocumentSlot.CCCD_FRONT, MediaType.IMAGE_JPEG, byteArrayOf(4, 5, 6).inputStream())
+        }
+        assertEquals(ErrorCode.EKYC_BUSY, err.errorCode)
+        localMock.verify()
+    }
+
+    @Test
     fun `keeps face evaluation off when faceComparisonEnabled is false`() {
         val result = client.evaluateFace(mapOf("selfie" to byteArrayOf(1, 2, 3)), qualityOnly = true)
         assertEquals("NOT_EVALUATED", result.path("mode").asString())
