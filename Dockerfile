@@ -1,9 +1,10 @@
 FROM eclipse-temurin:21-jdk AS build
 WORKDIR /workspace
+ENV GRADLE_OPTS="-Djava.net.preferIPv4Stack=true"
 
 COPY gradlew settings.gradle.kts build.gradle.kts ./
 COPY gradle gradle
-RUN chmod +x gradlew
+RUN chmod +x gradlew && ./gradlew --version --no-daemon
 
 COPY src src
 RUN ./gradlew bootJar -x test --no-daemon
