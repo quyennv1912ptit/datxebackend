@@ -12,6 +12,7 @@ import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.driver.repository.DriverSkillRepository
 import com.nhom15.datxebackend.ekyc.EkycClient
 import com.nhom15.datxebackend.ekyc.EkycDocumentSlot
+import com.nhom15.datxebackend.ekyc.EkycOcrMode
 import com.nhom15.datxebackend.notification.api.NotificationPort
 import com.nhom15.datxebackend.notification.api.Recipient
 import com.nhom15.datxebackend.notification.dto.DriverAccountNotificationPayload
@@ -44,6 +45,7 @@ import java.util.UUID
 
 private val EDITABLE_STATES = setOf("DRAFT", "NEEDS_MORE_INFO")
 private val REVERIFY_SOURCE_STATES = setOf("APPROVED", "REJECTED")
+private val REQUIRED_EXTRACTION_SLOTS = listOf("cccd_front", "cccd_back", "gplx_front", "gplx_back")
 private val TRANSITIONS = mapOf(
     "SUBMITTED" to setOf("UNDER_REVIEW"),
     "UNDER_REVIEW" to setOf("NEEDS_MORE_INFO", "APPROVED", "REJECTED"),
@@ -142,6 +144,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
         val qualityJson: String,
         val proposalJson: String?,
         val capturedRevision: Long,
+        val firstSubmittedRevision: Long? = null,
     )
 
     private sealed interface ExtractStageA {
@@ -150,6 +153,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
             val applicationId: UUID,
             val expectedRevision: Long,
             val capture: CaptureRow,
+            val ocrMode: EkycOcrMode = EkycOcrMode.FULL,
         ) : ExtractStageA
     }
 
@@ -549,14 +553,20 @@ class DriverVerificationWorkflowService @Autowired constructor(
             val row = requireAccessibleApp(applicationId, actor, review = false, forUpdate = true)
             checkRevision(row, expectedRevision, editable = true)
             enforceRequestedSlot(row, slot)
-            val capRow = loadActiveCaptures(row.id)[slot]
+            val activeCaps = loadActiveCaptures(row.id)
+            val capRow = activeCaps[slot]
                 ?: throw VerificationWorkflowException(404, "NOT_FOUND", "Chưa tải ảnh cho mặt giấy tờ này.")
             if (!capRow.proposalJson.isNullOrBlank()) {
                 val cachedResponse = withWarnings(row, buildWorkingDocument(row)).toMutableMap()
                 cachedResponse["proposal"] = mapper.readTree(capRow.proposalJson)
                 ExtractStageA.Cached(cachedResponse)
             } else {
-                ExtractStageA.Pending(row.id, expectedRevision, capRow)
+                val ocrMode = if (slot == "cccd_back" && canUseClassifyOnlyCccdBack(row, activeCaps)) {
+                    EkycOcrMode.CLASSIFY_ONLY
+                } else {
+                    EkycOcrMode.FULL
+                }
+                ExtractStageA.Pending(row.id, expectedRevision, capRow, ocrMode)
             }
         }
         if (stageA is ExtractStageA.Cached) return stageA.response
@@ -568,7 +578,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
         val bytes = storage.read(capRow.storageKey, capRow.byteSize, capRow.sha256)
         val mediaType = MediaType.parseMediaType(capRow.mimeType)
         val proposalNode = try {
-            ekycClient.extract(ekycSlot, mediaType, ByteArrayInputStream(bytes))
+            ekycClient.extract(ekycSlot, mediaType, ByteArrayInputStream(bytes), pending.ocrMode)
         } catch (ex: AppException) {
             val msg = ex.message ?: ex.errorCode.defaultMessage
             val mapped = when (ex.errorCode) {
@@ -576,6 +586,24 @@ class DriverVerificationWorkflowService @Autowired constructor(
                 ErrorCode.EKYC_INVALID_IMAGE -> VerificationWorkflowException(400, "INVALID_IMAGE", msg)
                 ErrorCode.EKYC_IMAGE_TOO_LARGE -> VerificationWorkflowException(413, "IMAGE_TOO_LARGE", msg)
                 else -> VerificationWorkflowException(503, "ENGINE_BUSY", msg)
+            }
+            if (ex.errorCode in setOf(ErrorCode.EKYC_TIMEOUT, ErrorCode.EKYC_BUSY, ErrorCode.EKYC_UNAVAILABLE)) {
+                runCatching {
+                    inTransaction {
+                        audit(
+                            pending.applicationId,
+                            pending.expectedRevision,
+                            actor,
+                            "EXTRACT_FAILED",
+                            mapOf(
+                                "slot" to slot,
+                                "captureId" to capRow.id.toString(),
+                                "errorCode" to mapped.errorCode,
+                            ),
+                            review = false,
+                        )
+                    }
+                }
             }
             throw mapped
         }
@@ -597,7 +625,13 @@ class DriverVerificationWorkflowService @Autowired constructor(
                 qrNode.put("revision", nextRevision)
                 qrNode.put("source", "QR_IMAGE")
                 val qrStatus = qrNode.path("status").asString("")
-                qrNode.put("boundToCapture", qrStatus in setOf("DECODED_VALID", "CONFLICT"))
+                val qrWarnings = (0 until qrNode.path("warnings").size())
+                    .map { qrNode.path("warnings").get(it).asString("") }
+                qrNode.put(
+                    "boundToCapture",
+                    qrStatus == "DECODED_VALID" ||
+                        (qrStatus == "CONFLICT" && "MULTIPLE_DISTINCT_QR_IDENTITIES" !in qrWarnings),
+                )
             }
 
             val proposalJson = mapper.writeValueAsString(proposalNode)
@@ -920,6 +954,24 @@ class DriverVerificationWorkflowService @Autowired constructor(
                 val oldId = (prevCaps[slot] as? Map<*, *>)?.get("id")
                 if (curId == null || curId == oldId) {
                     throw VerificationWorkflowException(400, "FIELD_MISSING", "Cần chụp hoặc tải lại ảnh được yêu cầu bổ sung.")
+                }
+            }
+        }
+
+        if (ekycClient != null) {
+            val activeCaptures = loadActiveCaptures(row.id)
+            val failedExtractCaptureIds = loadFailedExtractCaptureIds(row.id)
+            for (slot in REQUIRED_EXTRACTION_SLOTS) {
+                val cap = activeCaptures[slot] ?: continue
+                if (cap.firstSubmittedRevision == null &&
+                    cap.proposalJson.isNullOrBlank() &&
+                    cap.id.toString() !in failedExtractCaptureIds
+                ) {
+                    throw VerificationWorkflowException(
+                        400,
+                        "EXTRACTION_REQUIRED",
+                        "Cần thực hiện kiểm tra tự động cho ảnh giấy tờ trước khi nộp hồ sơ.",
+                    )
                 }
             }
         }
@@ -1714,6 +1766,43 @@ class DriverVerificationWorkflowService @Autowired constructor(
         )
     }
 
+    @Suppress("UNCHECKED_CAST")
+    private fun canUseClassifyOnlyCccdBack(row: ApplicationRow, activeCaps: Map<String, CaptureRow>): Boolean {
+        val targets = requestedChanges(row)
+        val targetedCaptures = (targets?.get("captures") as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+        if ("cccd_back" in targetedCaptures) return false
+        val frontJson = activeCaps["cccd_front"]?.proposalJson?.takeIf { it.isNotBlank() } ?: return false
+        val front = runCatching { readMap(frontJson) }.getOrNull() ?: return false
+        if (front["ocrStatus"] != "OCR_READ") return false
+        val warnings = (front["warnings"] as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+        if ("DOCUMENT_SLOT_MISMATCH" in warnings) return false
+        val topConflicts = (front["conflictFields"] as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+        if (topConflicts.isNotEmpty()) return false
+        val candidates = (front["candidates"] as? List<*>)?.mapNotNull { it as? Map<String, Any?> }.orEmpty()
+        if (candidates.any { it["conflict"] == true }) return false
+        val qr = front["qr"] as? Map<String, Any?> ?: return false
+        if (qr["status"] != "DECODED_VALID") return false
+        if (qr["crossValidationStatus"] != "MATCHED") return false
+        val qrConflicts = (qr["conflictFields"] as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+        if (qrConflicts.isNotEmpty()) return false
+        val fields = qr["fields"] as? Map<String, Any?> ?: return false
+        val requiredKeys = listOf("id_number", "full_name", "dob", "issue_date")
+        if (requiredKeys.any { key -> (fields[key] as? String)?.trim().isNullOrEmpty() }) return false
+        val qrId = (fields["id_number"] as? String)?.trim()
+        if (row.lockedCccdId != null && qrId != row.lockedCccdId) return false
+        return true
+    }
+
+    private fun loadFailedExtractCaptureIds(applicationId: UUID): Set<String> =
+        jdbc.query(
+            """SELECT metadata_json FROM driver_verification_audit
+               WHERE application_id = ? AND action = 'EXTRACT_FAILED'""",
+            { rs, _ -> rs.getString("metadata_json") },
+            applicationId,
+        ).mapNotNull { raw ->
+            runCatching { readMap(raw)["captureId"] as? String }.getOrNull()
+        }.toSet()
+
     private fun loadActiveCaptures(applicationId: UUID): Map<String, CaptureRow> =
         jdbc.query(
             """SELECT * FROM driver_verification_captures
@@ -2111,5 +2200,6 @@ class DriverVerificationWorkflowService @Autowired constructor(
         qualityJson = getString("quality_json"),
         proposalJson = getString("proposal_json"),
         capturedRevision = getLong("captured_revision"),
+        firstSubmittedRevision = getObject("first_submitted_revision", Long::class.javaObjectType),
     )
 }

@@ -34,6 +34,7 @@ import java.time.Duration
 import java.util.Optional
 import java.util.Properties
 import java.util.UUID
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -64,6 +65,8 @@ class VerificationConcurrencyPostgresTest {
     private lateinit var actor: AuthUser
     private var modalHandler = AtomicReference<(String) -> String>({ _ -> defaultExtractionBody("cccd_front") })
     private val modalCallCount = AtomicInteger(0)
+    private val modalStatus = AtomicInteger(200)
+    private val modalRequests = CopyOnWriteArrayList<String>()
 
     @BeforeEach
     fun setUp() {
@@ -101,15 +104,20 @@ class VerificationConcurrencyPostgresTest {
         `when`(driverRepo.findByFirebaseUid(actor.firebaseUid)).thenReturn(Optional.empty())
 
         modalCallCount.set(0)
+        modalStatus.set(200)
+        modalRequests.clear()
         server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.executor = Executors.newCachedThreadPool()
         server.createContext("/ekyc/documents/") { exchange ->
             modalCallCount.incrementAndGet()
+            val fullPath = exchange.requestURI.path + (exchange.requestURI.rawQuery?.let { "?$it" } ?: "")
+            modalRequests.add(fullPath)
             val slot = exchange.requestURI.path.split("/").dropLast(1).lastOrNull() ?: "cccd_front"
             exchange.requestBody.readAllBytes()
+            val status = modalStatus.get()
             val payload = modalHandler.get().invoke(slot).toByteArray(StandardCharsets.UTF_8)
             exchange.responseHeaders.add("Content-Type", "application/json")
-            exchange.sendResponseHeaders(200, payload.size.toLong())
+            exchange.sendResponseHeaders(status, payload.size.toLong())
             exchange.responseBody.use { it.write(payload) }
         }
         server.start()
@@ -314,6 +322,261 @@ class VerificationConcurrencyPostgresTest {
         assertEquals(2L, second["revision"])
         assertEquals(1, modalCallCount.get(), "Second call must reuse persisted proposal_json")
         assertNotNull(second["proposal"])
+    }
+
+    @Test
+    fun `qr replay is rejected, ocr mismatch raises QR_OCR_CONFLICT, and identity lock violation blocks activation`() {
+        val service = buildService()
+        val created = service.create(actor)
+        val appId = UUID.fromString(created["id"] as String)
+
+        // Seed identity lock for this account with ID ending 9999
+        jdbc.update(
+            "UPDATE driver_verification_applications SET locked_cccd_id = ?, locked_full_name = ? WHERE id = ?",
+            "046096009999",
+            "NGUYỄN VĂN KHÓA",
+            appId,
+        )
+
+        // Upload cccd_front and extract OCR showing 001095001111
+        service.replaceCapture(actor, appId, "cccd_front", 0L, "image/png", validPngBytes(64, 40, Color.WHITE))
+        modalHandler.set {
+            """{"success":true,"data":{"slot":"cccd_front","qrStatus":"NOT_FOUND","ocrStatus":"OCR_READ","warnings":[],"candidates":[{"fieldKey":"id_number","candidateValue":"001095001111","source":"OCR","sourceDocument":"CCCD","sourceSide":"FRONT","parseStatus":"parsed","validationStatus":"valid","conflict":false}]}}"""
+        }
+        val afterOcr = service.extractSlot(actor, appId, "cccd_front", 1L)
+        assertEquals(2L, afterOcr["revision"])
+
+        // Live QR has 001095002222 -> conflicts with OCR (001095001111) AND violates locked CCCD (046096009999)
+        val qrRes = service.submitQrLiveScan(
+            actor = actor,
+            applicationId = appId,
+            body = QrScanBody(
+                revision = 2L,
+                rawPayload = "001095002222||NGUYỄN VĂN KHÓA|01011995|Nam|HN|01052021",
+                documentSide = "FRONT",
+                documentType = "CCCD",
+            ),
+        )
+        assertEquals(3L, qrRes["revision"])
+        val warnings = (qrRes["verificationWarnings"] as List<*>).filterIsInstance<VerificationWarningDto>()
+        val codes = warnings.map { it.code }.toSet()
+        assertTrue("QR_OCR_CONFLICT" in codes)
+        assertTrue("LOCKED_CCCD_ID_CHANGED" in codes)
+        assertTrue(warnings.any { it.code == "LOCKED_CCCD_ID_CHANGED" && it.blocksActivation })
+
+        // Replaying stale revision 2 must fail closed with 409 REVISION_CONFLICT
+        val replayErr = assertFailsWith<VerificationWorkflowException> {
+            service.submitQrLiveScan(
+                actor = actor,
+                applicationId = appId,
+                body = QrScanBody(
+                    revision = 2L,
+                    rawPayload = "001095002222||NGUYỄN VĂN KHÓA|01011995|Nam|HN|01052021",
+                    documentSide = "FRONT",
+                    documentType = "CCCD",
+                ),
+            )
+        }
+        assertEquals(409, replayErr.httpStatus)
+        assertEquals("REVISION_CONFLICT", replayErr.errorCode)
+    }
+
+    @Test
+    fun `cccd_back regression matrix preserves DOCUMENT_SLOT_MISMATCH, backend OCR mode policy, and EXTRACTION_REQUIRED guard`() {
+        val service = buildService()
+        val admin = AuthUser(202L, "synthetic-rel-admin", Role.ADMIN, "Admin", null, null, "ACTIVE")
+        val created = service.create(actor)
+        val appId = UUID.fromString(created["id"] as String)
+        var rev = 0L
+
+        val validFrontResponse = """{"success":true,"data":{"slot":"cccd_front","qrStatus":"QR_FOUND_SUPPORTED","ocrStatus":"OCR_READ","warnings":[],"qr":{"status":"DECODED_VALID","source":"QR_IMAGE","documentSide":"FRONT","cardVariant":"CCCD_2021","fields":{"id_number":"046096003093","full_name":"NGUYỄN VĂN MẪU","dob":"1996-01-01","issue_date":"2021-05-01"},"missingFields":[],"conflictFields":[],"warnings":[],"crossValidationStatus":"MATCHED"},"candidates":[{"fieldKey":"id_number","candidateValue":"046096003093","source":"QR","sourceDocument":"CCCD","sourceSide":"FRONT","parseStatus":"parsed","validationStatus":"valid","conflict":false},{"fieldKey":"full_name","candidateValue":"NGUYỄN VĂN MẪU","source":"OCR","sourceDocument":"CCCD","sourceSide":"FRONT","parseStatus":"parsed","validationStatus":"valid","conflict":false}]}}"""
+        val cleanDetails = mapOf(
+            "cccd_name" to "NGUYỄN VĂN MẪU",
+            "cccd_id" to "046096003093",
+            "cccd_dob" to "1996-01-01",
+            "cccd_expiry_date" to "2036-01-01",
+            "cccd_gender" to "MALE",
+            "gplx_number" to "790123456789",
+            "gplx_name" to "NGUYỄN VĂN MẪU",
+            "gplx_dob" to "1996-01-01",
+            "gplx_classes" to listOf("A1"),
+            "no_expiry" to true,
+            "expiry_date" to null,
+        )
+
+        // Regression 6: Incomplete dossier (missing cccd_back capture) fails closed on submit().
+        for (slot in listOf("cccd_front", "gplx_front", "gplx_back", "selfie")) {
+            val res = service.replaceCapture(actor, appId, slot, rev, "image/png", validPngBytes(64, 40, Color.GRAY))
+            rev = (res["revision"] as Number).toLong()
+        }
+        val missingDetailWarnings = (service.detail(actor, appId)["verificationWarnings"] as List<*>).filterIsInstance<VerificationWarningDto>()
+        assertTrue(missingDetailWarnings.any { it.code == "DOCUMENT_REQUIRED" && it.slot == "cccd_back" && it.blocksSubmission })
+        rev = (service.confirmFields(actor, appId, rev, cleanDetails)["revision"] as Number).toLong()
+        val incompleteErr = assertFailsWith<VerificationWorkflowException> {
+            service.submit(actor, appId, "sub-incomplete", rev, "face-comparison-v1", rev)
+        }
+        assertEquals(400, incompleteErr.httpStatus)
+        assertEquals("FIELD_MISSING", incompleteErr.errorCode)
+
+        // Regression 7a: Upload cccd_back, confirm, then deliberately skip extraction -> 400 EXTRACTION_REQUIRED.
+        rev = (service.replaceCapture(actor, appId, "cccd_back", rev, "image/png", validPngBytes(64, 40, Color.LIGHT_GRAY))["revision"] as Number).toLong()
+        rev = (service.confirmFields(actor, appId, rev, cleanDetails)["revision"] as Number).toLong()
+        val skippedErr = assertFailsWith<VerificationWorkflowException> {
+            service.submit(actor, appId, "sub-no-extract", rev, "face-comparison-v1", rev)
+        }
+        assertEquals(400, skippedErr.httpStatus)
+        assertEquals("EXTRACTION_REQUIRED", skippedErr.errorCode)
+
+        // Multi-QR conflict response must persist boundToCapture=false and raise CRITICAL QR_OCR_CONFLICT.
+        modalHandler.set { slot ->
+            when (slot) {
+                "cccd_front" -> """{"success":true,"data":{"slot":"cccd_front","qrStatus":"QR_DECODE_FAILED","ocrStatus":"OCR_READ","warnings":["MULTIPLE_DISTINCT_QR_IDENTITIES"],"conflictFields":["id_number","full_name"],"qr":{"status":"CONFLICT","source":"QR_IMAGE","documentSide":"FRONT","fields":{},"missingFields":[],"conflictFields":["id_number","full_name"],"warnings":["MULTIPLE_DISTINCT_QR_IDENTITIES"],"crossValidationStatus":"CONFLICT","boundToCapture":false},"candidates":[{"fieldKey":"id_number","candidateValue":"001095001111","source":"OCR","sourceDocument":"CCCD","sourceSide":"FRONT","parseStatus":"parsed","validationStatus":"valid","conflict":false}]}}"""
+                else -> """{"success":true,"data":{"slot":"$slot","qrStatus":"NOT_FOUND","ocrStatus":"OCR_UNSUPPORTED","warnings":[],"candidates":[]}}"""
+            }
+        }
+        val multiQrOut = service.extractSlot(actor, appId, "cccd_front", rev)
+        rev = (multiQrOut["revision"] as Number).toLong()
+        val frontQr = (multiQrOut["proposal"] as tools.jackson.databind.JsonNode).path("qr")
+        assertEquals(false, frontQr.path("boundToCapture").asBoolean())
+        val multiWarnings = (multiQrOut["verificationWarnings"] as List<*>).filterIsInstance<VerificationWarningDto>()
+        assertTrue(multiWarnings.any { it.code == "QR_OCR_CONFLICT" && it.severity == "CRITICAL" && it.slot == "cccd_front" })
+
+        // Extract valid front, gplx_front, gplx_back.
+        rev = (service.replaceCapture(actor, appId, "cccd_front", rev, "image/png", validPngBytes(72, 48, Color.GREEN))["revision"] as Number).toLong()
+        modalHandler.set { slot ->
+            when (slot) {
+                "cccd_front" -> validFrontResponse
+                "gplx_front" -> """{"success":true,"data":{"slot":"gplx_front","qrStatus":"NOT_FOUND","ocrStatus":"OCR_READ","warnings":[],"candidates":[{"fieldKey":"id_number","candidateValue":"790123456789","source":"OCR","sourceDocument":"GPLX","sourceSide":"FRONT","parseStatus":"parsed","validationStatus":"valid","conflict":false},{"fieldKey":"full_name","candidateValue":"NGUYỄN VĂN MẪU","source":"OCR","sourceDocument":"GPLX","sourceSide":"FRONT","parseStatus":"parsed","validationStatus":"valid","conflict":false},{"fieldKey":"dob","candidateValue":"1996-01-01","source":"OCR","sourceDocument":"GPLX","sourceSide":"FRONT","parseStatus":"parsed","validationStatus":"valid","conflict":false},{"fieldKey":"vehicle_class","candidateValue":["A1"],"source":"OCR","sourceDocument":"GPLX","sourceSide":"FRONT","parseStatus":"parsed","validationStatus":"valid","conflict":false},{"fieldKey":"expiry","candidateValue":{"no_expiry":true,"expiry_date":null},"source":"OCR","sourceDocument":"GPLX","sourceSide":"FRONT","parseStatus":"parsed","validationStatus":"valid","conflict":false}]}}"""
+                "gplx_back" -> """{"success":true,"data":{"slot":"gplx_back","qrStatus":"NOT_FOUND","ocrStatus":"OCR_UNSUPPORTED","warnings":[],"candidates":[]}}"""
+                else -> """{"success":true,"data":{"slot":"cccd_back","qrStatus":"NOT_FOUND","ocrStatus":"SKIPPED","warnings":["DOCUMENT_SLOT_MISMATCH"],"candidates":[]}}"""
+            }
+        }
+        rev = (service.extractSlot(actor, appId, "cccd_front", rev)["revision"] as Number).toLong()
+        rev = (service.extractSlot(actor, appId, "gplx_front", rev)["revision"] as Number).toLong()
+        rev = (service.extractSlot(actor, appId, "gplx_back", rev)["revision"] as Number).toLong()
+
+        // Regression 2: Valid front QR + wrong document type (GPLX) uploaded as cccd_back -> CRITICAL DOCUMENT_SLOT_MISMATCH.
+        modalRequests.clear()
+        val wrongDocOut = service.extractSlot(actor, appId, "cccd_back", rev)
+        rev = (wrongDocOut["revision"] as Number).toLong()
+        assertTrue(modalRequests.any { it.endsWith("/cccd_back/extract?ocr_mode=classify_only") })
+        val wrongDocWarnings = (wrongDocOut["verificationWarnings"] as List<*>).filterIsInstance<VerificationWarningDto>()
+        assertTrue(wrongDocWarnings.any { it.code == "DOCUMENT_SLOT_MISMATCH" && it.severity == "CRITICAL" && it.slot == "cccd_back" })
+
+        // Regression 3: Valid front QR + accidentally re-uploaded cccd_front in cccd_back -> CRITICAL DOCUMENT_SLOT_MISMATCH.
+        rev = (service.replaceCapture(actor, appId, "cccd_back", rev, "image/png", validPngBytes(72, 48, Color.ORANGE))["revision"] as Number).toLong()
+        modalHandler.set {
+            """{"success":true,"data":{"slot":"cccd_back","qrStatus":"QR_FOUND_SUPPORTED","ocrStatus":"OCR_NO_FIELDS","warnings":["DOCUMENT_SLOT_MISMATCH"],"qr":{"status":"DECODED_VALID","source":"QR_IMAGE","documentSide":"BACK","fields":{"id_number":"046096003093","full_name":"NGUYỄN VĂN MẪU","dob":"1996-01-01","issue_date":"2021-05-01"},"missingFields":[],"conflictFields":[],"warnings":[]},"candidates":[]}}"""
+        }
+        val dupFrontOut = service.extractSlot(actor, appId, "cccd_back", rev)
+        rev = (dupFrontOut["revision"] as Number).toLong()
+        val dupFrontWarnings = (dupFrontOut["verificationWarnings"] as List<*>).filterIsInstance<VerificationWarningDto>()
+        assertTrue(dupFrontWarnings.any { it.code == "DOCUMENT_SLOT_MISMATCH" && it.severity == "CRITICAL" && it.slot == "cccd_back" })
+
+        // Regression 4: cccd_back contains QR belonging to ANOTHER person -> CRITICAL QR_OCR_CONFLICT + BLOCKING LOCKED_CCCD_ID_CHANGED.
+        rev = (service.replaceCapture(actor, appId, "cccd_back", rev, "image/png", validPngBytes(72, 48, Color.MAGENTA))["revision"] as Number).toLong()
+        modalHandler.set {
+            """{"success":true,"data":{"slot":"cccd_back","qrStatus":"QR_FOUND_SUPPORTED","ocrStatus":"SKIPPED","warnings":[],"qr":{"status":"DECODED_VALID","source":"QR_IMAGE","documentSide":"BACK","fields":{"id_number":"099099009999","full_name":"TRẦN NGƯỜI KHÁC","dob":"1990-02-02","issue_date":"2024-08-15"},"missingFields":[],"conflictFields":[],"warnings":[]},"candidates":[{"fieldKey":"issue_date","candidateValue":"2024-08-15","source":"QR","sourceDocument":"CCCD","sourceSide":"BACK","parseStatus":"parsed","validationStatus":"valid","conflict":false}]}}"""
+        }
+        val otherPersonOut = service.extractSlot(actor, appId, "cccd_back", rev)
+        rev = (otherPersonOut["revision"] as Number).toLong()
+        val otherWarnings = (otherPersonOut["verificationWarnings"] as List<*>).filterIsInstance<VerificationWarningDto>()
+        assertTrue(otherWarnings.any { it.code == "QR_OCR_CONFLICT" && it.severity == "CRITICAL" && it.slot == "cccd_back" })
+
+        // Regression 5: Replace cccd_back mid-extraction -> concurrent replace succeeds immediately, stalled extraction fails 409.
+        val stalledStart = CountDownLatch(1)
+        val releaseStall = CountDownLatch(1)
+        modalHandler.set {
+            stalledStart.countDown()
+            releaseStall.await(10, TimeUnit.SECONDS)
+            """{"success":true,"data":{"slot":"cccd_back","qrStatus":"NOT_FOUND","ocrStatus":"SKIPPED","warnings":[],"candidates":[]}}"""
+        }
+        rev = (service.replaceCapture(actor, appId, "cccd_back", rev, "image/png", validPngBytes(72, 48, Color.PINK))["revision"] as Number).toLong()
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val stalledRev = rev
+            val stalledFuture = executor.submit<Result<Map<String, Any?>>> {
+                runCatching { service.extractSlot(actor, appId, "cccd_back", stalledRev) }
+            }
+            assertTrue(stalledStart.await(5, TimeUnit.SECONDS))
+            val replacedLive = service.replaceCapture(actor, appId, "cccd_back", rev, "image/png", validPngBytes(72, 48, Color.BLUE))
+            rev = (replacedLive["revision"] as Number).toLong()
+            releaseStall.countDown()
+            val stalledErr = stalledFuture.get(10, TimeUnit.SECONDS).exceptionOrNull() as? VerificationWorkflowException
+            assertNotNull(stalledErr)
+            assertEquals(409, stalledErr.httpStatus)
+            assertEquals("REVISION_CONFLICT", stalledErr.errorCode)
+        } finally {
+            releaseStall.countDown()
+            executor.shutdownNow()
+        }
+
+        // Regression 7b: Genuine transient Modal 503 failure records EXTRACT_FAILED so manual fallback submit() stays allowed.
+        rev = (service.confirmFields(actor, appId, rev, cleanDetails)["revision"] as Number).toLong()
+        modalStatus.set(503)
+        val outageErr = assertFailsWith<VerificationWorkflowException> {
+            service.extractSlot(actor, appId, "cccd_back", rev)
+        }
+        assertEquals(503, outageErr.httpStatus)
+        modalStatus.set(200)
+        val fallbackSubmitted = service.submit(actor, appId, "sub-manual-fallback", rev, "face-comparison-v1", rev)
+        rev = (fallbackSubmitted["revision"] as Number).toLong()
+        assertEquals("SUBMITTED", fallbackSubmitted["status"])
+
+        // Regression 8 + Regression 1: Admin requests NEEDS_MORE_INFO recapture of cccd_back -> must use ocr_mode=full (never classify_only).
+        rev = (service.decision(admin, appId, VerificationDecisionRequest(rev, "UNDER_REVIEW"))["revision"] as Number).toLong()
+        rev = (service.decision(
+            admin,
+            appId,
+            VerificationDecisionRequest(rev, "NEEDS_MORE_INFO", reason = "Mặt sau chưa rõ", captures = listOf("cccd_back")),
+        )["revision"] as Number).toLong()
+        rev = (service.replaceCapture(actor, appId, "cccd_back", rev, "image/png", validPngBytes(76, 52, Color.CYAN))["revision"] as Number).toLong()
+        rev = (service.confirmFields(actor, appId, rev, cleanDetails)["revision"] as Number).toLong()
+
+        // Trying to resubmit without extracting newly re-uploaded cccd_back must fail 400 EXTRACTION_REQUIRED.
+        val resubSkipErr = assertFailsWith<VerificationWorkflowException> {
+            service.submit(actor, appId, "sub-resub-skip", rev, "face-comparison-v1", rev)
+        }
+        assertEquals(400, resubSkipErr.httpStatus)
+        assertEquals("EXTRACTION_REQUIRED", resubSkipErr.errorCode)
+
+        // Calling extractSlot("cccd_back") under NEEDS_MORE_INFO targeting cccd_back forces FULL mode!
+        modalRequests.clear()
+        modalHandler.set {
+            """{"success":true,"data":{"slot":"cccd_back","qrStatus":"NOT_FOUND","ocrStatus":"OCR_READ","warnings":[],"candidates":[{"fieldKey":"issue_date","candidateValue":"2021-05-01","source":"OCR","sourceDocument":"CCCD","sourceSide":"BACK","parseStatus":"parsed","validationStatus":"valid","conflict":false}]}}"""
+        }
+        val fullBackOut = service.extractSlot(actor, appId, "cccd_back", rev)
+        rev = (fullBackOut["revision"] as Number).toLong()
+        assertTrue(modalRequests.contains("/ekyc/documents/cccd_back/extract"), "Admin-targeted cccd_back must send full mode, not classify_only")
+        assertTrue(modalRequests.none { it.contains("classify_only") })
+        val resubmitted = service.submit(actor, appId, "sub-resub-ok", rev, "face-comparison-v1", rev)
+        rev = (resubmitted["revision"] as Number).toLong()
+        assertEquals("SUBMITTED", resubmitted["status"])
+
+        // Final Regression 1 check: Clean first-time dossier -> backend chooses ?ocr_mode=classify_only -> OCR_SKIPPED/SKIPPED -> SUBMITTED.
+        val actorClean = AuthUser(303L, "synthetic-clean-driver", Role.DRIVER, "Clean Driver", null, "+84900000303", "OFFLINE")
+        val cleanAppId = UUID.fromString(service.create(actorClean)["id"] as String)
+        var cleanRev = 0L
+        for (slot in DriverVerificationWarnings.REQUIRED_SLOTS) {
+            cleanRev = (service.replaceCapture(actorClean, cleanAppId, slot, cleanRev, "image/png", validPngBytes(72, 48, Color.GREEN))["revision"] as Number).toLong()
+        }
+        modalHandler.set { slot ->
+            when (slot) {
+                "cccd_front" -> validFrontResponse
+                "cccd_back" -> """{"success":true,"data":{"slot":"cccd_back","qrStatus":"NOT_FOUND","ocrStatus":"SKIPPED","warnings":[],"candidates":[]}}"""
+                "gplx_front" -> """{"success":true,"data":{"slot":"gplx_front","qrStatus":"NOT_FOUND","ocrStatus":"OCR_READ","warnings":[],"candidates":[{"fieldKey":"id_number","candidateValue":"790123456789","source":"OCR","sourceDocument":"GPLX","sourceSide":"FRONT","parseStatus":"parsed","validationStatus":"valid","conflict":false},{"fieldKey":"full_name","candidateValue":"NGUYỄN VĂN MẪU","source":"OCR","sourceDocument":"GPLX","sourceSide":"FRONT","parseStatus":"parsed","validationStatus":"valid","conflict":false},{"fieldKey":"dob","candidateValue":"1996-01-01","source":"OCR","sourceDocument":"GPLX","sourceSide":"FRONT","parseStatus":"parsed","validationStatus":"valid","conflict":false},{"fieldKey":"vehicle_class","candidateValue":["A1"],"source":"OCR","sourceDocument":"GPLX","sourceSide":"FRONT","parseStatus":"parsed","validationStatus":"valid","conflict":false},{"fieldKey":"expiry","candidateValue":{"no_expiry":true,"expiry_date":null},"source":"OCR","sourceDocument":"GPLX","sourceSide":"FRONT","parseStatus":"parsed","validationStatus":"valid","conflict":false}]}}"""
+                else -> """{"success":true,"data":{"slot":"$slot","qrStatus":"NOT_FOUND","ocrStatus":"OCR_UNSUPPORTED","warnings":[],"candidates":[]}}"""
+            }
+        }
+        for (slot in listOf("cccd_front", "cccd_back", "gplx_front", "gplx_back")) {
+            cleanRev = (service.extractSlot(actorClean, cleanAppId, slot, cleanRev)["revision"] as Number).toLong()
+        }
+        assertTrue(modalRequests.any { it.endsWith("/cccd_back/extract?ocr_mode=classify_only") })
+        cleanRev = (service.confirmFields(actorClean, cleanAppId, cleanRev, cleanDetails)["revision"] as Number).toLong()
+        val cleanSubmit = service.submit(actorClean, cleanAppId, "sub-clean-1", cleanRev, "face-comparison-v1", cleanRev)
+        assertEquals("SUBMITTED", cleanSubmit["status"])
+        val finalWarnings = (service.detail(actorClean, cleanAppId)["verificationWarnings"] as List<*>).filterIsInstance<VerificationWarningDto>()
+        assertTrue(finalWarnings.none { it.code in setOf("DOCUMENT_SLOT_MISMATCH", "OCR_INCOMPLETE") && it.slot == "cccd_back" })
     }
 
     private fun defaultExtractionBody(slot: String): String =
