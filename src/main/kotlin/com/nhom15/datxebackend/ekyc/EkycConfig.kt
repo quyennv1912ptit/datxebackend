@@ -25,11 +25,11 @@ class EkycConfig {
     @Value("\${app.ekyc.connect-timeout-ms:5000}")
     var connectTimeoutMs: Long = 5000
 
-    @Value("\${app.ekyc.read-timeout-ms:50000}")
-    var readTimeoutMs: Long = 50000
+    @Value("\${app.ekyc.read-timeout-ms:65000}")
+    var readTimeoutMs: Long = 65_000
 
-    @Value("\${app.ekyc.total-deadline-ms:60000}")
-    var totalDeadlineMs: Long = 60000
+    @Value("\${app.ekyc.total-deadline-ms:75000}")
+    var totalDeadlineMs: Long = 75_000
 
     @Bean
     fun ekycClient(
@@ -48,13 +48,17 @@ class EkycConfig {
         require(apiKey.length >= 32 && modalKey.startsWith("wk-") && modalSecret.startsWith("ws-")) {
             "Configure the dedicated eKYC API key and Modal proxy credentials"
         }
+        val effectiveConnectTimeoutMs = connectTimeoutMs.coerceIn(1_000L, 15_000L)
+        val effectiveTotalDeadlineMs = totalDeadlineMs.coerceIn(10_000L, 90_000L)
+        val effectiveReadTimeoutMs = minOf(readTimeoutMs.coerceIn(5_000L, 90_000L), effectiveTotalDeadlineMs)
+        val effectiveAttemptTimeoutMs = minOf(effectiveTotalDeadlineMs, effectiveReadTimeoutMs + effectiveConnectTimeoutMs)
         val http = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofMillis(connectTimeoutMs.coerceIn(1000L, 15_000L)))
+            .connectTimeout(Duration.ofMillis(effectiveConnectTimeoutMs))
             .followRedirects(HttpClient.Redirect.NEVER)
             .build()
         val factory = JdkClientHttpRequestFactory(http)
         // Allow for Modal scale-from-zero and the upstream per-image worker deadline, while keeping timeout bounded.
-        factory.setReadTimeout(Duration.ofMillis(readTimeoutMs.coerceIn(5000L, 75_000L)))
+        factory.setReadTimeout(Duration.ofMillis(effectiveReadTimeoutMs))
         return EkycClient(
             upstream = RestClient.builder().requestFactory(factory).baseUrl(origin.trimEnd('/'))
                 .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
@@ -65,7 +69,8 @@ class EkycConfig {
             mapper = mapper,
             maxRetries = maxRetries.coerceIn(0, 2),
             faceComparisonEnabled = faceComparisonEnabled,
-            totalDeadlineMs = totalDeadlineMs.coerceIn(10_000L, 80_000L),
+            totalDeadlineMs = effectiveTotalDeadlineMs,
+            attemptTimeoutMs = effectiveAttemptTimeoutMs,
         )
     }
 }

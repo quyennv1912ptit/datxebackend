@@ -48,6 +48,7 @@ object DriverVerificationWarnings {
         "IMAGE_TOO_SMALL" to "Ảnh có độ phân giải thấp.",
         "CARD_CROPPED" to "Có thể ảnh đã cắt mất một phần thẻ.",
         "CARD_NOT_FOUND" to "Chưa xác định được vùng thẻ.",
+        "DOCUMENT_SLOT_MISMATCH" to "Ảnh có thể sai loại giấy tờ hoặc sai mặt.",
         "OCR_INCOMPLETE" to "Lượt đọc chữ chưa lấy đủ thông tin.",
         "QR_OCR_CONFLICT" to "Thông tin trích xuất từ các nguồn chưa khớp.",
         "QR_OCR_NAME_DIACRITIC_MISMATCH" to "Họ tên giữa mã QR và ảnh chữ đọc được chỉ khác dấu tiếng Việt.",
@@ -243,6 +244,10 @@ object DriverVerificationWarnings {
 
             val rWarnings = result["warnings"] as? List<*> ?: emptyList<Any?>()
             for (raw in rWarnings) {
+                if (raw == "DOCUMENT_SLOT_MISMATCH") {
+                    add("DOCUMENT_SLOT_MISMATCH", "OCR", slot = slot, severity = "CRITICAL")
+                    continue
+                }
                 val mapped = when (raw) {
                     "DETECTOR_NO_BOX", "DETECTOR_CARD_NOT_FOUND" -> "CARD_NOT_FOUND"
                     else -> raw as? String
@@ -284,6 +289,17 @@ object DriverVerificationWarnings {
                 }
                 val qrObj = result["qr"] as? Map<String, Any?>
                 val qrStatus = qrObj?.get("status") as? String
+                val qrWarnings = (qrObj?.get("warnings") as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
+                if (qrStatus == "CONFLICT" && "MULTIPLE_DISTINCT_QR_IDENTITIES" in qrWarnings) {
+                    add(
+                        "QR_OCR_CONFLICT",
+                        "QR_OCR",
+                        slot = slot,
+                        doc = doc,
+                        severity = "CRITICAL",
+                        message = "Phát hiện nhiều mã QR mang danh tính khác nhau trong cùng một ảnh.",
+                    )
+                }
                 if (qrObj != null && qrStatus in setOf("DECODED_VALID", "CONFLICT")) {
                     val qrFields = qrObj["fields"] as? Map<String, Any?>
                     if (!qrFields.isNullOrEmpty()) {
@@ -405,6 +421,41 @@ object DriverVerificationWarnings {
             val qrId = (qrFields["id_number"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
             if (qrDoc == "CCCD" && identityContext?.lockedCccdId != null && qrId != null && qrId != identityContext.lockedCccdId) {
                 add("LOCKED_CCCD_ID_CHANGED", "IDENTITY_LOCK", slot = qrSlot, field = "cccd_id", severity = "BLOCKING", block = true)
+            }
+        }
+
+        for (docType in listOf("CCCD", "GPLX")) {
+            val docObs = qrObservations.filter { it.doc == docType }
+            for (i in docObs.indices) {
+                for (j in (i + 1) until docObs.size) {
+                    val left = docObs[i]
+                    val right = docObs[j]
+                    val pairSummary = CccdQrParser.compareQrAndOcr(left.fields, right.fields)
+                    val targetSlot = if (right.slot.endsWith("_back")) right.slot else left.slot
+                    for (key in pairSummary.conflictFields) {
+                        val mappedField = FIELD_NAMES[docType]?.get(key) ?: key
+                        if (key in pairSummary.diacriticMismatchFields) {
+                            add(
+                                "QR_OCR_NAME_DIACRITIC_MISMATCH",
+                                "QR_OCR",
+                                slot = targetSlot,
+                                doc = docType,
+                                field = mappedField,
+                                severity = "WARNING",
+                            )
+                        } else {
+                            val sev = if (key in setOf("id_number", "dob", "full_name")) "CRITICAL" else "WARNING"
+                            add(
+                                "QR_OCR_CONFLICT",
+                                "QR_OCR",
+                                slot = targetSlot,
+                                doc = docType,
+                                field = mappedField,
+                                severity = sev,
+                            )
+                        }
+                    }
+                }
             }
         }
 

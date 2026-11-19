@@ -30,19 +30,31 @@ enum class EkycDocumentSlot(val wireName: String) {
     GPLX_BACK("gplx_back"),
 }
 
+enum class EkycOcrMode(val wireName: String) {
+    FULL("full"),
+    CLASSIFY_ONLY("classify_only"),
+}
+
 class EkycClient(
     private val upstream: RestClient,
     private val mapper: ObjectMapper,
     private val maxRetries: Int = 1,
     val faceComparisonEnabled: Boolean = false,
-    private val totalDeadlineMs: Long = 60_000L,
+    internal val totalDeadlineMs: Long = 75_000L,
+    internal val attemptTimeoutMs: Long = 0L,
+    private val clockNanos: () -> Long = System::nanoTime,
 ) {
     private val permits = Semaphore(2)
     private val extractionCache = ConcurrentHashMap<String, CachedExtraction>()
 
     private data class CachedExtraction(val data: JsonNode, val expiresAtMs: Long)
 
-    fun extract(slot: EkycDocumentSlot, mediaType: MediaType, input: InputStream): JsonNode {
+    fun extract(
+        slot: EkycDocumentSlot,
+        mediaType: MediaType,
+        input: InputStream,
+        ocrMode: EkycOcrMode = EkycOcrMode.FULL,
+    ): JsonNode {
         val image = try {
             input.readNBytes(MAX_IMAGE_BYTES + 1)
         } catch (_: IOException) {
@@ -52,7 +64,7 @@ class EkycClient(
         if (image.isEmpty()) throw AppException(ErrorCode.EKYC_INVALID_IMAGE)
 
         val digest = sha256Hex(image)
-        val cacheKey = "${slot.wireName}:$digest"
+        val cacheKey = "${slot.wireName}:${ocrMode.wireName}:$digest"
         val now = System.currentTimeMillis()
         extractionCache[cacheKey]?.let { cached ->
             if (cached.expiresAtMs > now) {
@@ -64,7 +76,16 @@ class EkycClient(
         if (!permits.tryAcquire()) throw AppException(ErrorCode.EKYC_BUSY)
         try {
             val result = executeWithRetry {
-                upstream.post().uri("/ekyc/documents/{slot}/extract", slot.wireName)
+                val requestSpec = if (ocrMode == EkycOcrMode.FULL) {
+                    upstream.post().uri("/ekyc/documents/{slot}/extract", slot.wireName)
+                } else {
+                    upstream.post().uri(
+                        "/ekyc/documents/{slot}/extract?ocr_mode={ocrMode}",
+                        slot.wireName,
+                        ocrMode.wireName,
+                    )
+                }
+                requestSpec
                     .contentType(mediaType).body(image)
                     .exchange { _, response ->
                         val status = response.statusCode
@@ -179,7 +200,7 @@ class EkycClient(
 
     private fun <T> executeWithRetry(call: () -> T): T {
         val attempts = maxRetries.coerceIn(0, 2) + 1
-        val startedNanos = System.nanoTime()
+        val startedNanos = clockNanos()
         var lastError: AppException? = null
         for (attempt in 1..attempts) {
             try {
@@ -198,8 +219,9 @@ class EkycClient(
             }
             if (attempt < attempts) {
                 val backoffMs = 250L * attempt
-                val elapsedMs = (System.nanoTime() - startedNanos) / 1_000_000L
-                if (elapsedMs + backoffMs >= totalDeadlineMs) {
+                val elapsedMs = (clockNanos() - startedNanos) / 1_000_000L
+                val requiredForRetryMs = backoffMs + attemptTimeoutMs.coerceAtLeast(0L)
+                if (elapsedMs + backoffMs >= totalDeadlineMs || elapsedMs + requiredForRetryMs > totalDeadlineMs) {
                     break
                 }
                 try {
