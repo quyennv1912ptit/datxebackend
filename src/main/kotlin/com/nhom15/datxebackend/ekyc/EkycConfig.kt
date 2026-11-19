@@ -25,8 +25,11 @@ class EkycConfig {
     @Value("\${app.ekyc.connect-timeout-ms:5000}")
     var connectTimeoutMs: Long = 5000
 
-    @Value("\${app.ekyc.read-timeout-ms:45000}")
-    var readTimeoutMs: Long = 45000
+    @Value("\${app.ekyc.read-timeout-ms:50000}")
+    var readTimeoutMs: Long = 50000
+
+    @Value("\${app.ekyc.total-deadline-ms:60000}")
+    var totalDeadlineMs: Long = 60000
 
     @Bean
     fun ekycClient(
@@ -62,6 +65,7 @@ class EkycConfig {
             mapper = mapper,
             maxRetries = maxRetries.coerceIn(0, 2),
             faceComparisonEnabled = faceComparisonEnabled,
+            totalDeadlineMs = totalDeadlineMs.coerceIn(10_000L, 80_000L),
         )
     }
 }

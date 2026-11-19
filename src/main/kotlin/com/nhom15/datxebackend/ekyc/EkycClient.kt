@@ -35,6 +35,7 @@ class EkycClient(
     private val mapper: ObjectMapper,
     private val maxRetries: Int = 1,
     val faceComparisonEnabled: Boolean = false,
+    private val totalDeadlineMs: Long = 60_000L,
 ) {
     private val permits = Semaphore(2)
     private val extractionCache = ConcurrentHashMap<String, CachedExtraction>()
@@ -178,6 +179,7 @@ class EkycClient(
 
     private fun <T> executeWithRetry(call: () -> T): T {
         val attempts = maxRetries.coerceIn(0, 2) + 1
+        val startedNanos = System.nanoTime()
         var lastError: AppException? = null
         for (attempt in 1..attempts) {
             try {
@@ -195,8 +197,13 @@ class EkycClient(
                 lastError = AppException(ErrorCode.EKYC_UNAVAILABLE)
             }
             if (attempt < attempts) {
+                val backoffMs = 250L * attempt
+                val elapsedMs = (System.nanoTime() - startedNanos) / 1_000_000L
+                if (elapsedMs + backoffMs >= totalDeadlineMs) {
+                    break
+                }
                 try {
-                    Thread.sleep(250L * attempt)
+                    Thread.sleep(backoffMs)
                 } catch (_: InterruptedException) {
                     Thread.currentThread().interrupt()
                     break

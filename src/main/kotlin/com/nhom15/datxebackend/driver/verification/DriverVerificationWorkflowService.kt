@@ -23,9 +23,11 @@ import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.core.SqlParameterValue
 import org.springframework.stereotype.Service
+import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
+import org.springframework.transaction.support.TransactionTemplate
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import tools.jackson.databind.node.ObjectNode
@@ -95,8 +97,10 @@ class DriverVerificationWorkflowService @Autowired constructor(
     private val notificationPort: NotificationPort? = null,
     @Value("\${app.verification.uploads-per-minute:12}") private val uploadsPerMinute: Int = 12,
     @Value("\${app.verification.lookup-hmac-key:\${app.verification.encryption-key:}}") lookupHmacKey: String = "",
+    transactionManager: PlatformTransactionManager? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
+    private val txTemplate: TransactionTemplate? = transactionManager?.let(::TransactionTemplate)
     private val lookupHmacSecret: ByteArray = lookupHmacKey.trim().takeIf { it.isNotEmpty() }?.let { raw ->
         MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(StandardCharsets.UTF_8))
     } ?: ByteArray(32).also { SecureRandom().nextBytes(it) }
@@ -139,6 +143,18 @@ class DriverVerificationWorkflowService @Autowired constructor(
         val proposalJson: String?,
         val capturedRevision: Long,
     )
+
+    private sealed interface ExtractStageA {
+        data class Cached(val response: Map<String, Any?>) : ExtractStageA
+        data class Pending(
+            val applicationId: UUID,
+            val expectedRevision: Long,
+            val capture: CaptureRow,
+        ) : ExtractStageA
+    }
+
+    private inline fun <T : Any> inTransaction(crossinline block: () -> T): T =
+        txTemplate?.execute { block() } ?: block()
 
     fun me(actor: AuthUser): Map<String, Any?> {
         val result = linkedMapOf<String, Any?>(
@@ -516,7 +532,6 @@ class DriverVerificationWorkflowService @Autowired constructor(
         return capRow.mimeType to bytes
     }
 
-    @Transactional
     fun extractSlot(
         actor: AuthUser,
         applicationId: UUID,
@@ -525,17 +540,35 @@ class DriverVerificationWorkflowService @Autowired constructor(
     ): Map<String, Any?> {
         val ekycSlot = EkycDocumentSlot.entries.firstOrNull { it.wireName == slot }
             ?: throw VerificationWorkflowException(400, "INVALID_REQUEST", "Mặt giấy tờ không hỗ trợ trích xuất.")
-        val row = requireAccessibleApp(applicationId, actor, review = false, forUpdate = true)
-        checkRevision(row, expectedRevision, editable = true)
-        enforceRequestedSlot(row, slot)
-        val capRow = loadActiveCaptures(row.id)[slot]
-            ?: throw VerificationWorkflowException(404, "NOT_FOUND", "Chưa tải ảnh cho mặt giấy tờ này.")
+        if (ekycClient == null) {
+            throw VerificationWorkflowException(503, "ENGINE_BUSY", "Dịch vụ đọc giấy tờ tự động chưa sẵn sàng. Bạn vẫn có thể nhập tay.")
+        }
+
+        // Stage A: Validate ownership/revision/capture inside a short transaction and release row lock before HTTP I/O.
+        val stageA = inTransaction {
+            val row = requireAccessibleApp(applicationId, actor, review = false, forUpdate = true)
+            checkRevision(row, expectedRevision, editable = true)
+            enforceRequestedSlot(row, slot)
+            val capRow = loadActiveCaptures(row.id)[slot]
+                ?: throw VerificationWorkflowException(404, "NOT_FOUND", "Chưa tải ảnh cho mặt giấy tờ này.")
+            if (!capRow.proposalJson.isNullOrBlank()) {
+                val cachedResponse = withWarnings(row, buildWorkingDocument(row)).toMutableMap()
+                cachedResponse["proposal"] = mapper.readTree(capRow.proposalJson)
+                ExtractStageA.Cached(cachedResponse)
+            } else {
+                ExtractStageA.Pending(row.id, expectedRevision, capRow)
+            }
+        }
+        if (stageA is ExtractStageA.Cached) return stageA.response
+
+        val pending = stageA as ExtractStageA.Pending
+        val capRow = pending.capture
+
+        // Stage B: Read capture bytes and call Modal strictly outside any DB transaction or PostgreSQL lock.
         val bytes = storage.read(capRow.storageKey, capRow.byteSize, capRow.sha256)
-        val client = ekycClient
-            ?: throw VerificationWorkflowException(503, "ENGINE_BUSY", "Dịch vụ đọc giấy tờ tự động chưa sẵn sàng. Bạn vẫn có thể nhập tay.")
         val mediaType = MediaType.parseMediaType(capRow.mimeType)
         val proposalNode = try {
-            client.extract(ekycSlot, mediaType, ByteArrayInputStream(bytes))
+            ekycClient.extract(ekycSlot, mediaType, ByteArrayInputStream(bytes))
         } catch (ex: AppException) {
             val msg = ex.message ?: ex.errorCode.defaultMessage
             val mapped = when (ex.errorCode) {
@@ -547,34 +580,45 @@ class DriverVerificationWorkflowService @Autowired constructor(
             throw mapped
         }
 
-        val nextRevision = expectedRevision + 1L
-        val qrNode = proposalNode.path("qr")
-        if (qrNode is ObjectNode) {
-            qrNode.put("attachmentId", capRow.id.toString())
-            qrNode.put("revision", nextRevision)
-            qrNode.put("source", "QR_IMAGE")
-            val qrStatus = qrNode.path("status").asString("")
-            qrNode.put("boundToCapture", qrStatus in setOf("DECODED_VALID", "CONFLICT"))
-        }
+        // Stage C: Re-acquire row lock briefly, fail closed on concurrent changes, and persist extraction atomically.
+        return inTransaction {
+            val row = requireAccessibleApp(pending.applicationId, actor, review = false, forUpdate = true)
+            checkRevision(row, pending.expectedRevision, editable = true)
+            enforceRequestedSlot(row, slot)
+            val activeCap = loadActiveCaptures(row.id)[slot]
+            if (activeCap == null || activeCap.id != capRow.id || activeCap.sha256 != capRow.sha256) {
+                throw VerificationWorkflowException(409, "REVISION_CONFLICT", "Ảnh giấy tờ đã thay đổi trong lúc xử lý, hãy làm mới trạng thái.")
+            }
 
-        val proposalJson = mapper.writeValueAsString(proposalNode)
-        jdbc.update(
-            "UPDATE driver_verification_captures SET proposal_json = ? WHERE id = ?",
-            proposalJson,
-            capRow.id,
-        )
-        jdbc.update(
-            "UPDATE driver_verification_applications SET revision = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            nextRevision,
-            row.id,
-        )
-        val refreshed = requireById(row.id)
-        syncQrCccdIdHmac(refreshed, buildWorkingDocument(refreshed))
-        audit(row.id, nextRevision, actor, "EXTRACT", mapOf("slot" to slot), review = false)
-        val updated = requireById(row.id)
-        val result = withWarnings(updated, buildWorkingDocument(updated)).toMutableMap()
-        result["proposal"] = proposalNode
-        return result
+            val nextRevision = pending.expectedRevision + 1L
+            val qrNode = proposalNode.path("qr")
+            if (qrNode is ObjectNode) {
+                qrNode.put("attachmentId", capRow.id.toString())
+                qrNode.put("revision", nextRevision)
+                qrNode.put("source", "QR_IMAGE")
+                val qrStatus = qrNode.path("status").asString("")
+                qrNode.put("boundToCapture", qrStatus in setOf("DECODED_VALID", "CONFLICT"))
+            }
+
+            val proposalJson = mapper.writeValueAsString(proposalNode)
+            jdbc.update(
+                "UPDATE driver_verification_captures SET proposal_json = ? WHERE id = ?",
+                proposalJson,
+                capRow.id,
+            )
+            jdbc.update(
+                "UPDATE driver_verification_applications SET revision = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                nextRevision,
+                row.id,
+            )
+            val refreshed = requireById(row.id)
+            syncQrCccdIdHmac(refreshed, buildWorkingDocument(refreshed))
+            audit(row.id, nextRevision, actor, "EXTRACT", mapOf("slot" to slot), review = false)
+            val updated = requireById(row.id)
+            val result = withWarnings(updated, buildWorkingDocument(updated)).toMutableMap()
+            result["proposal"] = proposalNode
+            result
+        }
     }
 
     @Transactional
@@ -779,7 +823,6 @@ class DriverVerificationWorkflowService @Autowired constructor(
         return withWarnings(updated, buildWorkingDocument(updated))
     }
 
-    @Transactional
     fun faceQuality(
         actor: AuthUser,
         applicationId: UUID,
@@ -789,9 +832,13 @@ class DriverVerificationWorkflowService @Autowired constructor(
         if (faceConsentVersion != FACE_CONSENT_VERSION) {
             throw VerificationWorkflowException(400, "INVALID_REQUEST", "Phiên bản đồng ý không hợp lệ.")
         }
-        val row = requireAccessibleApp(applicationId, actor, review = false, forUpdate = false)
-        checkRevision(row, expectedRevision, editable = true)
-        if (ekycClient?.faceComparisonEnabled != true) {
+        val faceEnabled = ekycClient?.faceComparisonEnabled == true
+        val activeCaps = inTransaction {
+            val row = requireAccessibleApp(applicationId, actor, review = false, forUpdate = false)
+            checkRevision(row, expectedRevision, editable = true)
+            if (faceEnabled) loadActiveCaptures(row.id) else emptyMap()
+        }
+        if (!faceEnabled) {
             val warnings = DriverVerificationWarnings.build(emptyMap(), expectedRevision)
                 .filter { it.evidenceSource == "FACE_COMPARISON" }
             return mapOf(
@@ -800,7 +847,6 @@ class DriverVerificationWorkflowService @Autowired constructor(
                 "verificationWarnings" to warnings,
             )
         }
-        val activeCaps = loadActiveCaptures(row.id)
         val images = linkedMapOf<String, ByteArray>()
         for (slot in DriverVerificationWarnings.FACE_SLOTS) {
             val cap = activeCaps[slot] ?: continue
