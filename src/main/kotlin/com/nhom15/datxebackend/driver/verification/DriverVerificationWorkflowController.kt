@@ -23,6 +23,14 @@ import java.util.UUID
 
 data class RevisionBody(val revision: Long)
 
+data class QrScanBody(
+    val revision: Long,
+    val rawPayload: String,
+    val documentSide: String? = null,
+    val documentType: String? = null,
+    val attachmentId: UUID? = null,
+)
+
 data class ConfirmationBody(
     val revision: Long,
     val details: Map<String, Any?>,
@@ -143,6 +151,17 @@ class DriverVerificationWorkflowController(
         @PathVariable slot: String,
         @RequestBody body: RevisionBody,
     ): Map<String, Any?> = ok(service.extractSlot(actor, applicationId, slot, body.revision))
+
+    @PostMapping(
+        "/ekyc/driver-verification/v1/applications/{applicationId}/qr-scan",
+        "/api/driver/verification/v1/applications/{applicationId}/qr-scan",
+    )
+    @PreAuthorize("hasRole('DRIVER')")
+    fun qrScan(
+        @CurrentUser actor: AuthUser,
+        @PathVariable applicationId: UUID,
+        @RequestBody body: QrScanBody,
+    ): Map<String, Any?> = ok(service.submitQrLiveScan(actor, applicationId, body))
 
     @PutMapping(
         "/ekyc/driver-verification/v1/applications/{applicationId}/confirmation",

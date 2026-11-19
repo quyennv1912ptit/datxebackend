@@ -304,7 +304,7 @@ class DriverVerificationIdentityLockTest {
         val appId1 = UUID.fromString(created1["id"] as String)
         var rev = (created1["revision"] as Number).toLong()
         val imgBytes = testPng(Color.WHITE)
-        for (slot in listOf("cccd_front", "cccd_back", "gplx_front", "selfie")) {
+        for (slot in listOf("cccd_front", "cccd_back", "gplx_front", "gplx_back", "selfie")) {
             val res = workflow.replaceCapture(actor1, appId1, slot, rev, "image/png", imgBytes)
             rev = (res["revision"] as Number).toLong()
         }
@@ -467,7 +467,7 @@ class DriverVerificationIdentityLockTest {
         val created2 = workflow.create(actor2)
         val appId2 = UUID.fromString(created2["id"] as String)
         var rev2 = (created2["revision"] as Number).toLong()
-        for (slot in listOf("cccd_front", "cccd_back", "gplx_front", "selfie")) {
+        for (slot in listOf("cccd_front", "cccd_back", "gplx_front", "gplx_back", "selfie")) {
             rev2 = (workflow.replaceCapture(actor2, appId2, slot, rev2, "image/png", imgBytes)["revision"] as Number).toLong()
         }
         val dupRes = workflow.confirmFields(actor2, appId2, rev2, initialDetails + ("gplx_number" to "250256099999"))

@@ -31,7 +31,7 @@ data class VerificationWarningDto(
 
 object DriverVerificationWarnings {
     val ALL_SLOTS = setOf("cccd_front", "cccd_back", "gplx_front", "gplx_back", "selfie")
-    val REQUIRED_SLOTS = listOf("cccd_front", "cccd_back", "gplx_front", "selfie")
+    val REQUIRED_SLOTS = listOf("cccd_front", "cccd_back", "gplx_front", "gplx_back", "selfie")
     val FACE_SLOTS = setOf("cccd_front", "gplx_front", "selfie")
 
     val LICENSE_CLASSES = setOf(
@@ -50,6 +50,9 @@ object DriverVerificationWarnings {
         "CARD_NOT_FOUND" to "Chưa xác định được vùng thẻ.",
         "OCR_INCOMPLETE" to "Lượt đọc chữ chưa lấy đủ thông tin.",
         "QR_OCR_CONFLICT" to "Thông tin trích xuất từ các nguồn chưa khớp.",
+        "QR_OCR_NAME_DIACRITIC_MISMATCH" to "Họ tên giữa mã QR và ảnh chữ đọc được chỉ khác dấu tiếng Việt.",
+        "QR_OCR_INSUFFICIENT_EVIDENCE" to "Chưa đủ dữ liệu OCR để đối chiếu với mã QR.",
+        "QR_LIVE_SCAN_UNBOUND" to "Mã QR quét trực tiếp chưa chứng minh thuộc ảnh giấy tờ đã tải lên.",
         "NAME_DIACRITIC_MISMATCH" to "Họ tên giữa hai giấy tờ khác dấu.",
         "NAME_MISMATCH" to "Họ tên giữa hai giấy tờ khác nhau.",
         "DOB_MISMATCH" to "Ngày sinh giữa hai giấy tờ khác nhau.",
@@ -98,6 +101,8 @@ object DriverVerificationWarnings {
             "dob" to "cccd_dob",
             "gender" to "cccd_gender",
             "expiry" to "cccd_expiry_date",
+            "issue_date" to "cccd_issue_date",
+            "address" to "cccd_address",
         ),
         "GPLX" to mapOf(
             "id_number" to "gplx_number",
@@ -217,6 +222,15 @@ object DriverVerificationWarnings {
         var cccdOcrExpiry: LocalDate? = null
         var cccdOcrNoExpiry = false
         var cccdOcrAttempted = false
+        val cccdOcrFields = linkedMapOf<String, Any?>()
+        val gplxOcrFields = linkedMapOf<String, Any?>()
+        data class QrObservation(
+            val doc: String,
+            val slot: String,
+            val fields: Map<String, Any?>,
+            val source: String,
+        )
+        val qrObservations = mutableListOf<QrObservation>()
 
         val proposals = payload["proposals"] as? Map<String, Any?> ?: emptyMap()
         for ((slot, propObj) in proposals) {
@@ -256,6 +270,43 @@ object DriverVerificationWarnings {
             }
 
             val doc = slot.substringBefore('_').uppercase()
+            if (slot in setOf("cccd_front", "cccd_back", "gplx_front", "gplx_back")) {
+                val ocrBucket = if (doc == "GPLX") gplxOcrFields else cccdOcrFields
+                for (cand in candidates) {
+                    if (cand["source"] == "OCR" && cand["parseStatus"] == "parsed" &&
+                        cand["validationStatus"] == "valid" && cand["candidateValue"] != null
+                    ) {
+                        val key = cand["fieldKey"] as? String
+                        if (!key.isNullOrBlank()) {
+                            ocrBucket.putIfAbsent(key, cand["candidateValue"])
+                        }
+                    }
+                }
+                val qrObj = result["qr"] as? Map<String, Any?>
+                val qrStatus = qrObj?.get("status") as? String
+                if (qrObj != null && qrStatus in setOf("DECODED_VALID", "CONFLICT")) {
+                    val qrFields = qrObj["fields"] as? Map<String, Any?>
+                    if (!qrFields.isNullOrEmpty()) {
+                        qrObservations += QrObservation(doc, slot, qrFields, (qrObj["source"] as? String) ?: "QR_IMAGE")
+                    }
+                } else {
+                    val slotQrFields = linkedMapOf<String, Any?>()
+                    for (cand in candidates) {
+                        if (cand["source"] == "QR" && cand["parseStatus"] == "parsed" &&
+                            cand["validationStatus"] == "valid" && cand["candidateValue"] != null
+                        ) {
+                            val key = cand["fieldKey"] as? String
+                            if (!key.isNullOrBlank()) {
+                                slotQrFields[key] = cand["candidateValue"]
+                            }
+                        }
+                    }
+                    if (slotQrFields.isNotEmpty()) {
+                        qrObservations += QrObservation(doc, slot, slotQrFields, "QR_IMAGE")
+                    }
+                }
+            }
+
             val conflictFields = result["conflictFields"] as? List<*> ?: emptyList<Any?>()
             for (rawKey in conflictFields) {
                 val key = rawKey as? String ?: continue
@@ -264,6 +315,17 @@ object DriverVerificationWarnings {
                 }.map { it["source"] as String }.toSet()
                 val mappedField = FIELD_NAMES[doc]?.get(key)
                 if (sources.containsAll(setOf("QR", "OCR"))) {
+                    if (key == "full_name" && slot in setOf("cccd_front", "cccd_back", "gplx_front", "gplx_back")) {
+                        val qrName = candidates.firstOrNull {
+                            it["fieldKey"] == "full_name" && it["source"] == "QR" && it["candidateValue"] != null
+                        }?.get("candidateValue") as? String
+                        val ocrName = candidates.firstOrNull {
+                            it["fieldKey"] == "full_name" && it["source"] == "OCR" && it["candidateValue"] != null
+                        }?.get("candidateValue") as? String
+                        if (nameComparison(qrName, ocrName) == "DIACRITIC_MISMATCH") {
+                            continue
+                        }
+                    }
                     add("QR_OCR_CONFLICT", "QR_OCR", slot = slot, field = mappedField)
                 } else if ("OCR" in sources) {
                     add("OCR_INCOMPLETE", "OCR", slot = slot, field = mappedField)
@@ -304,6 +366,45 @@ object DriverVerificationWarnings {
                         }
                     }
                 }
+            }
+        }
+
+        for ((liveDoc, liveKey) in listOf("CCCD" to "qrLiveScan", "GPLX" to "gplxQrLiveScan")) {
+            val liveQr = payload[liveKey] as? Map<String, Any?>
+            if (liveQr != null && (liveQr["status"] as? String) in setOf("DECODED_VALID", "CONFLICT")) {
+                val liveSlot = if (liveDoc == "GPLX") {
+                    if (liveQr["documentSide"] == "FRONT") "gplx_front" else "gplx_back"
+                } else {
+                    if (liveQr["documentSide"] == "BACK") "cccd_back" else "cccd_front"
+                }
+                val liveFields = liveQr["fields"] as? Map<String, Any?>
+                if (!liveFields.isNullOrEmpty()) {
+                    qrObservations += QrObservation(liveDoc, liveSlot, liveFields, "QR_LIVE_SCAN")
+                }
+                if (liveQr["boundToCapture"] != true) {
+                    add("QR_LIVE_SCAN_UNBOUND", "QR_OCR", slot = liveSlot, doc = liveDoc, severity = "INFO")
+                }
+            }
+        }
+
+        for ((qrDoc, qrSlot, qrFields, _) in qrObservations) {
+            val ocrPool = if (qrDoc == "GPLX") gplxOcrFields else cccdOcrFields
+            val summary = CccdQrParser.compareQrAndOcr(qrFields, ocrPool)
+            for (key in summary.conflictFields) {
+                val mappedField = FIELD_NAMES[qrDoc]?.get(key) ?: key
+                if (key in summary.diacriticMismatchFields) {
+                    add("QR_OCR_NAME_DIACRITIC_MISMATCH", "QR_OCR", slot = qrSlot, doc = qrDoc, field = mappedField, severity = "WARNING")
+                } else {
+                    val sev = if (key in setOf("id_number", "dob", "full_name")) "CRITICAL" else "WARNING"
+                    add("QR_OCR_CONFLICT", "QR_OCR", slot = qrSlot, doc = qrDoc, field = mappedField, severity = sev)
+                }
+            }
+            if (summary.status == "INSUFFICIENT_EVIDENCE") {
+                add("QR_OCR_INSUFFICIENT_EVIDENCE", "QR_OCR", slot = qrSlot, doc = qrDoc, severity = "INFO")
+            }
+            val qrId = (qrFields["id_number"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+            if (qrDoc == "CCCD" && identityContext?.lockedCccdId != null && qrId != null && qrId != identityContext.lockedCccdId) {
+                add("LOCKED_CCCD_ID_CHANGED", "IDENTITY_LOCK", slot = qrSlot, field = "cccd_id", severity = "BLOCKING", block = true)
             }
         }
 

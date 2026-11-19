@@ -28,7 +28,11 @@ import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
+import tools.jackson.databind.node.ObjectNode
 import java.io.ByteArrayInputStream
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.sql.ResultSet
 import java.sql.Timestamp
 import java.sql.Types
@@ -90,8 +94,12 @@ class DriverVerificationWorkflowService @Autowired constructor(
     private val locationService: LocationService? = null,
     private val notificationPort: NotificationPort? = null,
     @Value("\${app.verification.uploads-per-minute:12}") private val uploadsPerMinute: Int = 12,
+    @Value("\${app.verification.lookup-hmac-key:\${app.verification.encryption-key:}}") lookupHmacKey: String = "",
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
+    private val lookupHmacSecret: ByteArray = lookupHmacKey.trim().takeIf { it.isNotEmpty() }?.let { raw ->
+        MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(StandardCharsets.UTF_8))
+    } ?: ByteArray(32).also { SecureRandom().nextBytes(it) }
 
     private data class ApplicationRow(
         val id: UUID,
@@ -115,6 +123,8 @@ class DriverVerificationWorkflowService @Autowired constructor(
         val verifiedGplxNumber: String? = null,
         val identityHold: Boolean = false,
         val identityHoldReason: String? = null,
+        val qrLiveScanJson: String? = null,
+        val gplxQrLiveScanJson: String? = null,
     )
 
     private data class CaptureRow(
@@ -264,7 +274,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
             payload = warningSourceDoc,
             revision = warningRevision,
             faceStatuses = snapshotFaceStatuses,
-            identityContext = buildIdentityContext(row, warningConfirmed),
+            identityContext = buildIdentityContext(row, warningConfirmed, warningSourceDoc),
         )
         data["eligibilityStatus"] = buildEligibilitySummary(row)
 
@@ -321,6 +331,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
             """UPDATE driver_verification_applications
                SET status = 'DRAFT', revision = ?, confirmed_fields = COALESCE(confirmed_fields, ?),
                    confirmation_current = false, decision_reason = NULL, requested_changes = NULL,
+                   qr_live_scan_json = NULL, gplx_qr_live_scan_json = NULL,
                    identity_hold = CASE WHEN ? THEN false ELSE identity_hold END,
                    identity_hold_reason = CASE WHEN ? THEN NULL ELSE identity_hold_reason END,
                    updated_at = CURRENT_TIMESTAMP
@@ -370,6 +381,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
             """UPDATE driver_verification_applications
                SET status = 'APPROVED', revision = ?, submission_revision = ?,
                    confirmed_fields = ?, confirmation_current = true,
+                   qr_live_scan_json = NULL, gplx_qr_live_scan_json = NULL,
                    requested_changes = NULL, updated_at = CURRENT_TIMESTAMP
                WHERE id = ?""",
             nextRevision,
@@ -439,13 +451,22 @@ class DriverVerificationWorkflowService @Autowired constructor(
         }
 
         val nextRevision = expectedRevision + 1L
+        val cccdLiveCleared = shouldClearQrLiveScan(row.qrLiveScanJson, slot, previous?.id, "cccd")
+        val gplxLiveCleared = shouldClearQrLiveScan(row.gplxQrLiveScanJson, slot, previous?.id, "gplx")
         jdbc.update(
             """UPDATE driver_verification_applications
-               SET revision = ?, confirmation_current = false, updated_at = CURRENT_TIMESTAMP
+               SET revision = ?, confirmation_current = false,
+                   qr_live_scan_json = CASE WHEN ? THEN NULL ELSE qr_live_scan_json END,
+                   gplx_qr_live_scan_json = CASE WHEN ? THEN NULL ELSE gplx_qr_live_scan_json END,
+                   updated_at = CURRENT_TIMESTAMP
                WHERE id = ?""",
             nextRevision,
+            cccdLiveCleared,
+            gplxLiveCleared,
             row.id,
         )
+        val refreshed = requireById(row.id)
+        syncQrCccdIdHmac(refreshed, buildWorkingDocument(refreshed))
         audit(
             row.id,
             nextRevision,
@@ -526,22 +547,190 @@ class DriverVerificationWorkflowService @Autowired constructor(
             throw mapped
         }
 
+        val nextRevision = expectedRevision + 1L
+        val qrNode = proposalNode.path("qr")
+        if (qrNode is ObjectNode) {
+            qrNode.put("attachmentId", capRow.id.toString())
+            qrNode.put("revision", nextRevision)
+            qrNode.put("source", "QR_IMAGE")
+            val qrStatus = qrNode.path("status").asString("")
+            qrNode.put("boundToCapture", qrStatus in setOf("DECODED_VALID", "CONFLICT"))
+        }
+
         val proposalJson = mapper.writeValueAsString(proposalNode)
         jdbc.update(
             "UPDATE driver_verification_captures SET proposal_json = ? WHERE id = ?",
             proposalJson,
             capRow.id,
         )
-        val nextRevision = expectedRevision + 1L
         jdbc.update(
             "UPDATE driver_verification_applications SET revision = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             nextRevision,
             row.id,
         )
+        val refreshed = requireById(row.id)
+        syncQrCccdIdHmac(refreshed, buildWorkingDocument(refreshed))
         audit(row.id, nextRevision, actor, "EXTRACT", mapOf("slot" to slot), review = false)
         val updated = requireById(row.id)
         val result = withWarnings(updated, buildWorkingDocument(updated)).toMutableMap()
         result["proposal"] = proposalNode
+        return result
+    }
+
+    @Transactional
+    fun submitQrLiveScan(
+        actor: AuthUser,
+        applicationId: UUID,
+        body: QrScanBody,
+    ): Map<String, Any?> {
+        val rawPayload = body.rawPayload.trim()
+        if (rawPayload.isEmpty() || rawPayload.length > 1024) {
+            throw VerificationWorkflowException(400, "INVALID_REQUEST", "Chuỗi mã QR không hợp lệ.")
+        }
+        val documentSide = (body.documentSide ?: "UNKNOWN").trim().uppercase()
+        if (documentSide !in setOf("FRONT", "BACK", "UNKNOWN")) {
+            throw VerificationWorkflowException(400, "INVALID_REQUEST", "Mặt giấy tờ không hợp lệ.")
+        }
+
+        val row = requireAccessibleApp(applicationId, actor, review = false, forUpdate = true)
+        checkRevision(row, body.revision, editable = true)
+
+        val documentType = (body.documentType ?: "CCCD").trim().uppercase()
+        if (documentType !in setOf("CCCD", "GPLX")) {
+            throw VerificationWorkflowException(400, "INVALID_REQUEST", "Loại giấy tờ QR không hợp lệ.")
+        }
+        val docPrefix = documentType.lowercase()
+        val slotsPair = listOf("${docPrefix}_front", "${docPrefix}_back")
+        val targetSlot = when (documentSide) {
+            "FRONT" -> "${docPrefix}_front"
+            "BACK" -> "${docPrefix}_back"
+            else -> null
+        }
+        val targets = requestedChanges(row)
+        if (targets != null) {
+            val allowed = (targets["captures"] as? List<*>)?.mapNotNull { it as? String }?.toSet() ?: emptySet()
+            if (targetSlot != null && targetSlot !in allowed) {
+                throw VerificationWorkflowException(403, "FORBIDDEN", "Không được phép cập nhật QR cho mục này.")
+            }
+            if (targetSlot == null && allowed.intersect(slotsPair.toSet()).isEmpty()) {
+                throw VerificationWorkflowException(403, "FORBIDDEN", "Không được phép cập nhật QR cho mục này.")
+            }
+        }
+
+        val activeCaptures = loadActiveCaptures(row.id)
+        val boundAttachmentId: String? = if (body.attachmentId != null) {
+            val reqId = body.attachmentId
+            val valid = if (targetSlot != null) {
+                activeCaptures[targetSlot]?.id == reqId
+            } else {
+                activeCaptures[slotsPair[0]]?.id == reqId || activeCaptures[slotsPair[1]]?.id == reqId
+            }
+            if (!valid) {
+                throw VerificationWorkflowException(409, "REVISION_CONFLICT", "Ảnh giấy tờ hiện hành đã thay đổi hoặc không hợp lệ.")
+            }
+            reqId.toString()
+        } else if (targetSlot != null) {
+            activeCaptures[targetSlot]?.id?.toString()
+        } else {
+            val fallbackCap = if (documentType == "GPLX") {
+                activeCaptures[slotsPair[1]] ?: activeCaptures[slotsPair[0]]
+            } else {
+                activeCaptures[slotsPair[0]] ?: activeCaptures[slotsPair[1]]
+            }
+            fallbackCap?.id?.toString()
+        }
+
+        val defaultSlot = if (documentType == "GPLX") "gplx_back" else "cccd_front"
+        val parsed = CccdQrParser.parse(rawPayload, slot = targetSlot ?: defaultSlot)
+        if (parsed.status != CccdQrStatus.DECODED_VALID) {
+            val qrRejected = linkedMapOf<String, Any?>(
+                "status" to parsed.status.name,
+                "source" to "QR_LIVE_SCAN",
+                "documentSide" to documentSide,
+                "cardVariant" to if (documentType == "GPLX") "GPLX_PET" else null,
+                "fields" to emptyMap<String, Any?>(),
+                "missingFields" to emptyList<String>(),
+                "conflictFields" to emptyList<String>(),
+                "warnings" to parsed.warnings,
+                "crossValidationStatus" to "NOT_APPLICABLE",
+                "attachmentId" to boundAttachmentId,
+                "revision" to row.revision,
+                "boundToCapture" to false,
+            )
+            val result = withWarnings(row, buildWorkingDocument(row)).toMutableMap()
+            result["qr"] = qrRejected
+            return result
+        }
+
+        val ocrFields = collectActiveOcrFields(activeCaptures, slotsPair)
+        val summary = CccdQrParser.compareQrAndOcr(parsed.fields, ocrFields)
+        val qrStatus = if (summary.conflictFields.isNotEmpty()) CccdQrStatus.CONFLICT.name else CccdQrStatus.DECODED_VALID.name
+        val warningsList = parsed.warnings.toMutableList()
+        if (summary.diacriticMismatchFields.isNotEmpty() && "QR_OCR_NAME_DIACRITIC_MISMATCH" !in warningsList) {
+            warningsList += "QR_OCR_NAME_DIACRITIC_MISMATCH"
+        }
+        if (summary.conflictFields.any { it !in summary.diacriticMismatchFields } && "QR_OCR_MISMATCH" !in warningsList) {
+            warningsList += "QR_OCR_MISMATCH"
+        }
+        if (summary.status == "INSUFFICIENT_EVIDENCE") {
+            warningsList += "QR_OCR_INSUFFICIENT_EVIDENCE"
+        }
+
+        val nextRevision = body.revision + 1L
+        val qrEntry = linkedMapOf<String, Any?>(
+            "status" to qrStatus,
+            "source" to "QR_LIVE_SCAN",
+            "documentSide" to documentSide,
+            "cardVariant" to if (documentType == "GPLX") "GPLX_PET" else null,
+            "fields" to parsed.fields,
+            "missingFields" to parsed.missingFields,
+            "conflictFields" to summary.conflictFields,
+            "warnings" to warningsList,
+            "crossValidationStatus" to summary.status,
+            "attachmentId" to boundAttachmentId,
+            "revision" to nextRevision,
+            "boundToCapture" to false,
+        )
+        val qrJson = mapper.writeValueAsString(qrEntry)
+        if (documentType == "GPLX") {
+            jdbc.update(
+                """UPDATE driver_verification_applications
+                   SET revision = ?, gplx_qr_live_scan_json = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                nextRevision,
+                qrJson,
+                row.id,
+            )
+        } else {
+            jdbc.update(
+                """UPDATE driver_verification_applications
+                   SET revision = ?, qr_live_scan_json = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                nextRevision,
+                qrJson,
+                row.id,
+            )
+            val refreshed = requireById(row.id)
+            syncQrCccdIdHmac(refreshed, buildWorkingDocument(refreshed))
+        }
+        audit(
+            row.id,
+            nextRevision,
+            actor,
+            "QR_LIVE_SCAN",
+            mapOf(
+                "source" to "QR_LIVE_SCAN",
+                "documentType" to documentType,
+                "documentSide" to documentSide,
+                "attachmentId" to boundAttachmentId,
+                "status" to qrStatus,
+                "hasConflicts" to summary.conflictFields.isNotEmpty(),
+            ),
+            review = false,
+        )
+        val updated = requireById(row.id)
+        val result = withWarnings(updated, buildWorkingDocument(updated)).toMutableMap()
+        result["qr"] = qrEntry
         return result
     }
 
@@ -571,14 +760,18 @@ class DriverVerificationWorkflowService @Autowired constructor(
         enforceLockedIdentity(row, validated)
 
         val nextRevision = expectedRevision + 1L
+        val cccdIdHmac = (validated["cccd_id"] as? String)?.trim()?.takeIf { it.matches(Regex("^[0-9]{12}$")) }
+            ?.let { CccdQrParser.computeLookupHmac(it, lookupHmacSecret) }
         jdbc.update(
             """UPDATE driver_verification_applications
                SET revision = ?, confirmed_fields = ?, confirmed_at = CURRENT_TIMESTAMP,
-                   confirmed_revision = ?, confirmation_current = true, updated_at = CURRENT_TIMESTAMP
+                   confirmed_revision = ?, confirmation_current = true,
+                   cccd_id_hmac = ?, updated_at = CURRENT_TIMESTAMP
                WHERE id = ?""",
             nextRevision,
             mapper.writeValueAsString(validated),
             nextRevision,
+            SqlParameterValue(Types.VARCHAR, cccdIdHmac),
             row.id,
         )
         audit(row.id, nextRevision, actor, "CONFIRM_FIELDS", mapOf("changedFields" to changed), review = false)
@@ -685,7 +878,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
             }
         }
 
-        val identityCtx = buildIdentityContext(row, confirmed)
+        val identityCtx = buildIdentityContext(row, confirmed, workingDoc)
         val structuredWarnings = DriverVerificationWarnings.build(
             payload = workingDoc,
             revision = expectedRevision,
@@ -730,6 +923,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
             "warningAcknowledgement" to acknowledgement,
             "identityHold" to applyIdentityHold,
         )
+        workingDoc["qrLiveScan"]?.let { snapshot["qrLiveScan"] = it }
         if (consentObj != null) snapshot["faceConsent"] = consentObj
 
         jdbc.update(
@@ -980,7 +1174,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
                 payload = snapshot,
                 revision = request.revision,
                 faceStatuses = snapshotFaceStatuses,
-                identityContext = buildIdentityContext(row, confirmed),
+                identityContext = buildIdentityContext(row, confirmed, snapshot),
             )
             val blockers = warnings.filter { it.blocksActivation }
             val hardBlockers = blockers.filter { it.code in NON_OVERRIDABLE_BLOCKER_CODES }
@@ -1383,11 +1577,94 @@ class DriverVerificationWorkflowService @Autowired constructor(
                 )
             }
         }
-        return linkedMapOf(
+        val doc = linkedMapOf<String, Any?>(
             "captures" to captures,
             "proposals" to proposals,
             "confirmed" to row.confirmedFieldsJson?.let(::readMap),
             "confirmationCurrent" to row.confirmationCurrent,
+        )
+        if (!row.qrLiveScanJson.isNullOrBlank()) {
+            doc["qrLiveScan"] = readMap(row.qrLiveScanJson)
+        }
+        if (!row.gplxQrLiveScanJson.isNullOrBlank()) {
+            doc["gplxQrLiveScan"] = readMap(row.gplxQrLiveScanJson)
+        }
+        return doc
+    }
+
+    private fun shouldClearQrLiveScan(
+        qrLiveScanJson: String?,
+        slot: String,
+        oldCaptureId: UUID?,
+        docPrefix: String,
+    ): Boolean {
+        val frontSlot = "${docPrefix}_front"
+        val backSlot = "${docPrefix}_back"
+        if (qrLiveScanJson.isNullOrBlank() || slot !in setOf(frontSlot, backSlot)) return false
+        val live = runCatching { readMap(qrLiveScanJson) }.getOrNull() ?: return false
+        val boundId = live["attachmentId"] as? String
+        if (oldCaptureId != null && boundId == oldCaptureId.toString()) return true
+        val side = if (slot == frontSlot) "FRONT" else "BACK"
+        val docSide = live["documentSide"] as? String
+        return docSide == null || docSide == side || docSide == "UNKNOWN"
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun collectActiveOcrFields(
+        activeCaptures: Map<String, CaptureRow>,
+        slotsPair: List<String>,
+    ): Map<String, Any?> {
+        val ocrFields = linkedMapOf<String, Any?>()
+        for (slot in slotsPair) {
+            val rawProposal = activeCaptures[slot]?.proposalJson ?: continue
+            val result = runCatching { readMap(rawProposal) }.getOrNull() ?: continue
+            val candidates = (result["candidates"] as? List<*>)?.mapNotNull { it as? Map<String, Any?> } ?: continue
+            for (cand in candidates) {
+                if (cand["source"] == "OCR" && cand["parseStatus"] == "parsed" &&
+                    cand["validationStatus"] == "valid" && cand["candidateValue"] != null
+                ) {
+                    val key = cand["fieldKey"] as? String
+                    if (!key.isNullOrBlank()) {
+                        ocrFields.putIfAbsent(key, cand["candidateValue"])
+                    }
+                }
+            }
+        }
+        return ocrFields
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun extractQrCccdId(doc: Map<String, Any?>?): String? {
+        if (doc == null) return null
+        val captures = doc["captures"] as? Map<String, Any?> ?: emptyMap()
+        val proposals = doc["proposals"] as? Map<String, Any?> ?: emptyMap()
+        for (slot in listOf("cccd_front", "cccd_back")) {
+            val prop = proposals[slot] as? Map<String, Any?> ?: continue
+            val curId = (captures[slot] as? Map<*, *>)?.get("id") as? String
+            if (curId != null && prop["captureId"] != curId) continue
+            val qr = (prop["result"] as? Map<String, Any?>)?.get("qr") as? Map<String, Any?> ?: continue
+            if ((qr["status"] as? String) in setOf("DECODED_VALID", "CONFLICT")) {
+                val fields = qr["fields"] as? Map<String, Any?> ?: continue
+                val id = (fields["id_number"] as? String)?.trim()?.takeIf { it.matches(Regex("^[0-9]{12}$")) }
+                if (id != null) return id
+            }
+        }
+        val live = doc["qrLiveScan"] as? Map<String, Any?>
+        if (live != null && (live["status"] as? String) in setOf("DECODED_VALID", "CONFLICT")) {
+            val fields = live["fields"] as? Map<String, Any?>
+            val id = (fields?.get("id_number") as? String)?.trim()?.takeIf { it.matches(Regex("^[0-9]{12}$")) }
+            if (id != null) return id
+        }
+        return null
+    }
+
+    private fun syncQrCccdIdHmac(row: ApplicationRow, doc: Map<String, Any?>) {
+        val qrId = extractQrCccdId(doc)
+        val hmac = qrId?.let { CccdQrParser.computeLookupHmac(it, lookupHmacSecret) }
+        jdbc.update(
+            "UPDATE driver_verification_applications SET qr_cccd_id_hmac = ? WHERE id = ?",
+            SqlParameterValue(Types.VARCHAR, hmac),
+            row.id,
         )
     }
 
@@ -1527,8 +1804,10 @@ class DriverVerificationWorkflowService @Autowired constructor(
     private fun buildIdentityContext(
         row: ApplicationRow,
         confirmed: Map<String, Any?>?,
+        doc: Map<String, Any?>? = null,
     ): IdentityVerificationContext {
         val cccdId = (confirmed?.get("cccd_id") as? String)?.trim()
+            ?: extractQrCccdId(doc)
         val gplxNum = (confirmed?.get("gplx_number") as? String)?.trim()
         @Suppress("UNCHECKED_CAST")
         val prevConfirmed = row.approvedSubmissionRevision?.let { rev ->
@@ -1547,23 +1826,34 @@ class DriverVerificationWorkflowService @Autowired constructor(
 
     private fun hasDuplicateCccdAcrossAccounts(ownerUid: String, cccdId: String?): Boolean {
         val clean = cccdId?.trim()?.takeIf { it.isNotEmpty() } ?: return false
+        val cccdHmac = CccdQrParser.computeLookupHmac(clean, lookupHmacSecret)
         val appDup = runCatching {
             jdbc.query(
-                """SELECT locked_cccd_id, status, confirmed_fields
+                """SELECT locked_cccd_id, status, confirmed_fields, cccd_id_hmac, qr_cccd_id_hmac
                    FROM driver_verification_applications
                    WHERE owner_uid <> ?
-                     AND (locked_cccd_id = ? OR status IN ('APPROVED', 'SUBMITTED', 'UNDER_REVIEW', 'NEEDS_MORE_INFO'))""",
+                     AND (locked_cccd_id = ?
+                          OR cccd_id_hmac = ?
+                          OR qr_cccd_id_hmac = ?
+                          OR status IN ('APPROVED', 'SUBMITTED', 'UNDER_REVIEW', 'NEEDS_MORE_INFO'))""",
                 { rs, _ ->
-                    Triple(
+                    listOf(
                         rs.getString("locked_cccd_id"),
-                        rs.getString("status"),
                         rs.getString("confirmed_fields"),
+                        rs.getString("cccd_id_hmac"),
+                        rs.getString("qr_cccd_id_hmac"),
                     )
                 },
                 ownerUid,
                 clean,
-            ).any { (lockedId, _, confirmedJson) ->
-                if (lockedId == clean) return@any true
+                cccdHmac,
+                cccdHmac,
+            ).any { values ->
+                val lockedId = values[0]
+                val confirmedJson = values[1]
+                val storedHmac = values[2]
+                val storedQrHmac = values[3]
+                if (lockedId == clean || storedHmac == cccdHmac || storedQrHmac == cccdHmac) return@any true
                 if (confirmedJson.isNullOrBlank()) return@any false
                 (readMap(confirmedJson)["cccd_id"] as? String)?.trim() == clean
             }
@@ -1688,7 +1978,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
         result["verificationWarnings"] = DriverVerificationWarnings.build(
             payload = doc,
             revision = row.revision,
-            identityContext = buildIdentityContext(row, confirmed),
+            identityContext = buildIdentityContext(row, confirmed, doc),
         )
         return result
     }
@@ -1760,6 +2050,8 @@ class DriverVerificationWorkflowService @Autowired constructor(
         verifiedGplxNumber = getString("verified_gplx_number"),
         identityHold = getBoolean("identity_hold"),
         identityHoldReason = getString("identity_hold_reason"),
+        qrLiveScanJson = runCatching { getString("qr_live_scan_json") }.getOrNull(),
+        gplxQrLiveScanJson = runCatching { getString("gplx_qr_live_scan_json") }.getOrNull(),
     )
 
     private fun ResultSet.toCaptureRow() = CaptureRow(
