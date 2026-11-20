@@ -1018,6 +1018,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
             "identityHold" to applyIdentityHold,
         )
         workingDoc["qrLiveScan"]?.let { snapshot["qrLiveScan"] = it }
+        workingDoc["gplxQrLiveScan"]?.let { snapshot["gplxQrLiveScan"] = it }
         if (consentObj != null) snapshot["faceConsent"] = consentObj
 
         jdbc.update(
@@ -2059,6 +2060,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
 
     private fun withWarnings(row: ApplicationRow, doc: Map<String, Any?>): Map<String, Any?> {
         val result = metadata(row).toMutableMap()
+        result["document"] = doc
         @Suppress("UNCHECKED_CAST")
         val confirmed = doc["confirmed"] as? Map<String, Any?>
         result["verificationWarnings"] = DriverVerificationWarnings.build(
