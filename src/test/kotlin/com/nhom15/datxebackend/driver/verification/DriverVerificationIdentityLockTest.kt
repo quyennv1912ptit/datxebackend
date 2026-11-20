@@ -342,7 +342,6 @@ class DriverVerificationIdentityLockTest {
                 status = "APPROVED",
                 capabilityReview = CapabilityReview(
                     policyVersion = LicenseEligibilityPolicy.VERSION,
-                    submissionRevision = rev - 1,
                     issuedOn = LocalDate.of(2024, 1, 1),
                     restriction = LicenseRestriction.VERIFIED_NONE,
                     selectedGroupIds = listOf("moto-50-125", "moto-electric-4-11"),
