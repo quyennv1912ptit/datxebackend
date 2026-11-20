@@ -15,19 +15,80 @@ import java.util.Optional
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import com.nhom15.datxebackend.common.enums.Role
+import com.nhom15.datxebackend.common.enums.VehicleType
 import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.driver.entity.Driver
 import com.nhom15.datxebackend.driver.repository.DriverRepository
+import com.nhom15.datxebackend.driver.service.DriverOnboardingService
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 @EnabledIfEnvironmentVariable(named = "VERIFICATION_SYNC_TEST_DB", matches = ".+")
 class VerificationProjectionPostgresTest {
+    @Test
+    fun `native approval and capability preferences survive a missing sync checkpoint`() {
+        val source = DriverManagerDataSource(
+            System.getenv("VERIFICATION_SYNC_TEST_DB"), "sync_test", System.getenv("VERIFICATION_SYNC_TEST_PASSWORD"),
+        )
+        Flyway.configure().dataSource(source).load().migrate()
+        val jdbc = JdbcTemplate(source)
+        val mapper = JsonMapper.builder().findAndAddModules().build()
+        val direct = VerificationProjectionRepository(jdbc, mapper, requireSyncCheckpoint = false)
+        val synced = VerificationProjectionRepository(jdbc, mapper, requireSyncCheckpoint = true)
+        TransactionTemplate(DataSourceTransactionManager(source)).executeWithoutResult { transaction ->
+            transaction.setRollbackOnly()
+            val owner = "native-without-sync-checkpoint"
+            val app = UUID.randomUUID()
+            val id = jdbc.queryForObject(
+                "INSERT INTO drivers(firebase_uid,phone_number,verification_status) VALUES (?,?,'APPROVED') RETURNING id",
+                Long::class.java, owner, "+84900009999",
+            )!!
+            direct.upsertDirectProjection(
+                owner, app, 8, VerificationStatus.APPROVED,
+                listOf(LicenseEntitlement("A1", LicenseValidity.NO_EXPIRY, null)),
+                LocalDate.of(2035, 1, 1),
+                CapabilityReview(LicenseEligibilityPolicy.VERSION, 7, LocalDate.of(2024, 1, 1),
+                    LicenseRestriction.VERIFIED_NONE, selectedGroupIds = listOf("moto-50-125")),
+            )
+            jdbc.update("""INSERT INTO driver_verification_projection
+                (owner_uid,application_id,revision,status,entitlements,synced_workflow)
+                VALUES (?, ?, 8, 'APPROVED', '[]', true)""", "external-without-checkpoint", UUID.randomUUID())
+            jdbc.update("DELETE FROM verification_sync_checkpoint")
+
+            for (repository in listOf(direct, synced)) {
+                assertEquals(VerificationStatus.APPROVED, repository.current(owner)?.status)
+                assertEquals(8L, repository.forApplication(app)?.revision)
+                assertNull(repository.current("external-without-checkpoint"))
+            }
+
+            val driver = Driver().apply { this.id = id; firebaseUid = owner; verificationStatus = "APPROVED" }
+            val drivers = mock(DriverRepository::class.java)
+            `when`(drivers.findById(id)).thenReturn(Optional.of(driver))
+            `when`(drivers.findByIdForUpdate(id)).thenReturn(Optional.of(driver))
+            val eligibility = DriverVerificationEligibility(direct, null)
+            val capabilities = DriverCapabilityService(drivers, direct, eligibility)
+            val actor = AuthUser(id, owner, Role.DRIVER, null, null, null, "OFFLINE")
+            assertEquals("APPROVED", eligibility.displayedStatus(driver))
+            assertEquals("APPROVED", DriverOnboardingService(drivers, eligibility).verification(actor).verificationStatus)
+            val state = capabilities.forDriver(actor)
+            assertEquals(8L, state.approvalRevision)
+            assertNull(state.groups.single { it.groupId == "moto-50-125" }.reasonCode)
+            assertEquals("CAPABILITY_NOT_APPROVED", state.groups.single { it.groupId == "car-auto" }.reasonCode)
+            val enabled = capabilities.update(actor, "moto-50-125", CapabilityPreferenceRequest(8, 0, true))
+            assertEquals(true, enabled.groups.single { it.groupId == "moto-50-125" }.effective)
+            assertEquals(setOf("moto-50-125"), direct.current(owner)?.enabledGroups)
+            assertTrue(eligibility.mayGoOnline(driver, VehicleType.MOTORCYCLE))
+            assertFalse(eligibility.mayGoOnline(driver, VehicleType.CAR))
+        }
+    }
+
     @Test
     fun `checkpoint retry replay and stale revisions remain fail closed`() {
         val source = DriverManagerDataSource(

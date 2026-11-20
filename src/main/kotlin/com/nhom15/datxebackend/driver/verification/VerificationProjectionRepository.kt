@@ -189,7 +189,10 @@ class VerificationProjectionRepository @Autowired constructor(
 
     private fun find(column: String, value: Any): DriverVerificationProjection? {
         val provenanceClause = if (requireSyncCheckpoint) {
-            "(p.native_workflow OR (p.synced_workflow AND c.caught_up_at > clock_timestamp() - interval '10 seconds'))"
+            """(p.native_workflow OR (p.synced_workflow AND EXISTS (
+                SELECT 1 FROM verification_sync_checkpoint c
+                WHERE c.singleton AND c.caught_up_at > clock_timestamp() - interval '10 seconds'
+            )))"""
         } else {
             "p.native_workflow"
         }
@@ -197,7 +200,6 @@ class VerificationProjectionRepository @Autowired constructor(
             """SELECT p.status, p.revision, p.entitlements, p.cccd_expires_on, p.approved_capabilities,
                       prefs.version, prefs.enabled_groups
                FROM driver_verification_projection p
-               CROSS JOIN verification_sync_checkpoint c
                LEFT JOIN drivers d ON d.firebase_uid=p.owner_uid
                LEFT JOIN driver_capability_preferences prefs ON prefs.driver_id=d.id AND prefs.approval_revision=p.revision
                WHERE $column=? AND $provenanceClause""",
