@@ -56,6 +56,29 @@ class RideRatingService(
         return DriverReviews(average, total, distribution, recent)
     }
 
+    /** Đánh giá mà khách hàng của một chuyến nhận được từ các tài xế; chỉ tài xế được gán chuyến mới xem được. */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    fun customerReviewsForRide(actor: AuthUser, rideId: Long): DriverReviews {
+        val ride = rideRepository.findById(rideId).orElseThrow { NotFoundException(ErrorCode.RIDE_NOT_FOUND) }
+        if (ride.driverId != actor.id) throw NotFoundException(ErrorCode.RIDE_NOT_FOUND)
+        val customerId = ride.customerId
+        val distribution = jdbcTemplate.query(
+            """SELECT stars, COUNT(*) AS total FROM ratings
+               WHERE ratee_id = ? AND direction = 'DRIVER_TO_CUSTOMER' AND is_hidden = false GROUP BY stars""",
+            { rs, _ -> rs.getInt("stars") to rs.getLong("total") }, customerId,
+        ).toMap()
+        val total = distribution.values.sum()
+        val average = if (total == 0L) null else distribution.entries.sumOf { (stars, count) -> stars * count }.toDouble() / total
+        val recent = jdbcTemplate.query(
+            """SELECT id, stars, comment, created_at FROM ratings
+               WHERE ratee_id = ? AND direction = 'DRIVER_TO_CUSTOMER' AND is_hidden = false
+               ORDER BY created_at DESC, id DESC LIMIT 10""",
+            { rs, _ -> DriverReview(rs.getLong("id"), rs.getInt("stars"), rs.getString("comment"), rs.getTimestamp("created_at").toInstant()) },
+            customerId,
+        )
+        return DriverReviews(average, total, distribution, recent)
+    }
+
     @Transactional
     fun rate(
         actor: AuthUser,
@@ -199,22 +222,21 @@ class RideRatingService(
             throw NotFoundException(ErrorCode.USER_NOT_FOUND)
         }
 
-                val cleanComment = request.comment?.trim()?.takeIf(String::isNotEmpty)
-        val recipient = if (target.direction == "CUSTOMER_TO_DRIVER") {
-            Recipient.Driver(target.rateeId)
-        } else {
-            Recipient.Customer(target.rateeId)
-        }
-        runCatching {
-            notifications.send(
-                recipient,
-                RatingReceivedNotificationPayload(
-                    rideId = rideId,
-                    stars = request.stars,
-                    comment = cleanComment,
-                    tags = tags,
-                ),
-            )
+        val cleanComment = request.comment?.trim()?.takeIf(String::isNotEmpty)
+        // App tài xế không hiển thị thông báo "đánh giá mới": chỉ phát thông báo cho khách hàng.
+        // Đánh giá CUSTOMER_TO_DRIVER vẫn được lưu và xem trong hồ sơ tài xế qua /driver/ratings/received.
+        if (target.direction == "DRIVER_TO_CUSTOMER") {
+            runCatching {
+                notifications.send(
+                    Recipient.Customer(target.rateeId),
+                    RatingReceivedNotificationPayload(
+                        rideId = rideId,
+                        stars = request.stars,
+                        comment = cleanComment,
+                        tags = tags,
+                    ),
+                )
+            }
         }
 
         return RideRatingResponse(

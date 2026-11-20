@@ -25,6 +25,11 @@ class RideRatingController(
     @PreAuthorize("hasRole('DRIVER')")
     fun myReviews(@CurrentUser actor: AuthUser) = ApiResponse.ok(ratingService.driverReviews(actor.id))
 
+    @GetMapping("/api/driver/rides/{id}/customer-reviews")
+    @PreAuthorize("hasRole('DRIVER')")
+    fun customerReviews(@CurrentUser actor: AuthUser, @PathVariable id: Long) =
+        ApiResponse.ok(ratingService.customerReviewsForRide(actor, id))
+
     @PostMapping(
         "/api/customer/rides/{id}/rating",
         "/api/driver/rides/{id}/rating",

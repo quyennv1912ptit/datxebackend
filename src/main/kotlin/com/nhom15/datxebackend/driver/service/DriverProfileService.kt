@@ -1,8 +1,10 @@
 package com.nhom15.datxebackend.driver.service
 
 import com.nhom15.datxebackend.auth.security.AuthenticatedUserCache
+import com.nhom15.datxebackend.common.enums.Role
 import com.nhom15.datxebackend.common.exception.AppException
 import com.nhom15.datxebackend.driver.dto.DriverIdentityResponse
+import com.nhom15.datxebackend.driver.dto.UpdateDriverAvatarRequest
 import com.nhom15.datxebackend.driver.dto.UpdateDriverIdentityRequest
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -12,6 +14,7 @@ import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.exception.BadRequestException
 import com.nhom15.datxebackend.common.exception.NotFoundException
 import com.nhom15.datxebackend.driver.dto.DriverProfileResponse
+import com.nhom15.datxebackend.uploads.CloudinaryAssetService
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -19,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional
 class DriverProfileService(
     private val driverRepository: DriverRepository,
     private val authenticatedUserCache: AuthenticatedUserCache,
+    private val cloudinaryAssetService: CloudinaryAssetService,
 ) {
     @Transactional(readOnly = true)
     fun get(driverId: Long): DriverProfileResponse = response(getDriver(driverId))
@@ -40,6 +44,26 @@ class DriverProfileService(
             }
         })
         return DriverIdentityResponse(driver.fullName, driver.email, driver.bankName, driver.bankAccountNumber)
+    }
+
+    @Transactional
+    fun updateAvatar(driverId: Long, request: UpdateDriverAvatarRequest): DriverProfileResponse {
+        cloudinaryAssetService.validateOwnedImage(
+            Role.DRIVER,
+            driverId,
+            request.secureUrl,
+            request.publicId,
+        )
+        val driver = driverRepository.findByIdForUpdate(driverId).orElseThrow {
+            NotFoundException(ErrorCode.USER_NOT_FOUND)
+        }
+        if (driver.deletedAt != null) throw AppException(ErrorCode.ACCOUNT_LOCKED)
+        val oldPublicId = driver.avatarPublicId
+        driver.avatarUrl = request.secureUrl.trim()
+        driver.avatarPublicId = request.publicId.trim()
+        val saved = driverRepository.save(driver)
+        if (oldPublicId != saved.avatarPublicId) cloudinaryAssetService.deleteAfterCommit(oldPublicId)
+        return response(saved)
     }
 
     private fun response(driver: Driver): DriverProfileResponse {
