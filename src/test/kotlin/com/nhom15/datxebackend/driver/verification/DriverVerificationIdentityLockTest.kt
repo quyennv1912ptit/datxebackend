@@ -303,6 +303,12 @@ class DriverVerificationIdentityLockTest {
         for (slot in listOf("cccd_front", "cccd_back", "gplx_front", "gplx_back", "selfie")) {
             val res = workflow.replaceCapture(actor1, appId1, slot, rev, "image/png", imgBytes)
             rev = (res["revision"] as Number).toLong()
+            val captureState = (res["document"] as Map<*, *>)["captures"] as Map<*, *>
+            assertTrue(captureState.containsKey(slot))
+            val warnings = res["verificationWarnings"] as List<*>
+            assertFalse(warnings.any {
+                it is VerificationWarningDto && it.code == "DOCUMENT_REQUIRED" && it.slot == slot
+            })
         }
         assertTrue(workflow.readCaptureBytes(actor1, appId1, "selfie", false, null).second.contentEquals(imgBytes))
         assertEquals("NOT_FOUND", assertFailsWith<VerificationWorkflowException> {
@@ -515,8 +521,18 @@ class DriverVerificationIdentityLockTest {
             "gplx_name" to "Khác",
             "gplx_number" to "250256000002",
         )
+        val savedGplxQr = mapOf("status" to "DECODED_VALID", "documentSide" to "BACK", "boundToCapture" to true)
+        jdbc.update(
+            "UPDATE driver_verification_applications SET gplx_qr_live_scan_json = ? WHERE id = ?",
+            mapper.writeValueAsString(savedGplxQr), appId2,
+        )
         rev2 = (workflow.confirmFields(actor2, appId2, rev2, validD2Details)["revision"] as Number).toLong()
         val resubmitted2 = workflow.submit(actor2, appId2, "sub-d2-retry", rev2, null, null)
         assertEquals("SUBMITTED", resubmitted2["status"])
+        val snapshot = jdbc.queryForObject(
+            "SELECT snapshot_json FROM driver_verification_submissions WHERE application_id = ? AND revision = ?",
+            String::class.java, appId2, resubmitted2["revision"],
+        )!!
+        assertEquals(savedGplxQr, mapper.readValue(snapshot, Map::class.java)["gplxQrLiveScan"])
     }
 }
