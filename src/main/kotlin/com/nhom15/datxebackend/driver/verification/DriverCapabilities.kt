@@ -9,7 +9,8 @@ import java.util.UUID
 
 data class CapabilityReview(
     val policyVersion: String,
-    val submissionRevision: Long,
+    // Approval requests omit this value. The service binds it to the stored submission before granting capabilities.
+    val submissionRevision: Long = 0,
     val issuedOn: LocalDate,
     val restriction: LicenseRestriction,
     val restrictionCode: String? = null,
