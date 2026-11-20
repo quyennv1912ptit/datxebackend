@@ -7,7 +7,6 @@ import com.nhom15.datxebackend.common.exception.AppException
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.common.websocket.PayloadType
 import com.nhom15.datxebackend.driver.entity.Driver
-import com.nhom15.datxebackend.driver.repository.DriverDocumentRepository
 import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.driver.repository.DriverSkillRepository
 import com.nhom15.datxebackend.ekyc.EkycClient
@@ -92,7 +91,6 @@ class DriverVerificationWorkflowService @Autowired constructor(
     private val storage: DriverVerificationStorageService,
     private val projection: VerificationProjectionRepository,
     private val driverRepository: DriverRepository,
-    private val documentRepository: DriverDocumentRepository? = null,
     private val skillRepository: DriverSkillRepository? = null,
     private val ekycClient: EkycClient? = null,
     private val locationService: LocationService? = null,
@@ -178,15 +176,12 @@ class DriverVerificationWorkflowService @Autowired constructor(
 
         val id = UUID.randomUUID()
         val now = Instant.now()
-        val prefill = buildLegacyConfirmedPrefill(actor)
-        val prefillJson = prefill?.let { mapper.writeValueAsString(it) }
         jdbc.update(
             """INSERT INTO driver_verification_applications
-               (id, owner_uid, status, revision, confirmed_fields, confirmation_current, created_at, updated_at)
-               VALUES (?, ?, 'DRAFT', 0, ?, false, ?, ?)""",
+               (id, owner_uid, status, revision, created_at, updated_at)
+               VALUES (?, ?, 'DRAFT', 0, ?, ?)""",
             id,
             actor.firebaseUid,
-            SqlParameterValue(Types.VARCHAR, prefillJson),
             Timestamp.from(now),
             Timestamp.from(now),
         )
@@ -223,7 +218,8 @@ class DriverVerificationWorkflowService @Autowired constructor(
         snapshotRevision: Long? = null,
         review: Boolean = false,
     ): Map<String, Any?> {
-        val row = requireAccessibleApp(applicationId, actor, review = review, forUpdate = false)
+        val row = requireAccessibleApp(applicationId, actor, review = review, forUpdate = false, allowUnsubmittedReview = snapshotRevision == null)
+        if (review && row.submissionRevision == null) return metadata(row, includeRawCccdId = false)
         return buildDetailResponse(row, snapshotRevision = snapshotRevision, review = review)
     }
 
@@ -1114,7 +1110,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
         return result
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     fun reviewQueue(
         actor: AuthUser,
         status: String?,
@@ -1125,24 +1121,29 @@ class DriverVerificationWorkflowService @Autowired constructor(
         requireAdmin(actor)
         val whereParts = mutableListOf<String>()
         val args = mutableListOf<Any>()
-        if (status != null) {
-            whereParts += "a.status = ?"
-            args += status
+        when (status) {
+            "PENDING_REVIEW" -> whereParts += "a.status IN ('SUBMITTED', 'UNDER_REVIEW')"
+            null -> Unit
+            else -> {
+                whereParts += "a.status = ?"
+                args += status
+            }
         }
         if (applicationId != null) {
             whereParts += "a.id = ?"
             args += applicationId
         }
         val whereSql = if (whereParts.isEmpty()) "" else "WHERE ${whereParts.joinToString(" AND ")}"
-        args += limit + 1
-        args += offset
+        val fromSql = """FROM driver_verification_applications a
+                         JOIN driver_verification_submissions s
+                           ON s.application_id = a.id AND s.revision = a.submission_revision
+                         LEFT JOIN drivers d ON d.firebase_uid = a.owner_uid AND d.deleted_at IS NULL
+                         $whereSql"""
+        val total = jdbc.queryForObject("SELECT count(*) $fromSql", Long::class.java, *args.toTypedArray()) ?: 0L
         val rows = jdbc.query(
             """SELECT a.id, a.status, a.revision, a.submission_revision, a.submitted_at,
-                      a.resubmission_count, s.snapshot_json
-               FROM driver_verification_applications a
-               JOIN driver_verification_submissions s
-                 ON s.application_id = a.id AND s.revision = a.submission_revision
-               $whereSql
+                      a.resubmission_count, s.snapshot_json, d.id AS driver_id, d.full_name, d.phone_number
+               $fromSql
                ORDER BY CASE WHEN a.status IN ('SUBMITTED', 'UNDER_REVIEW') THEN 0 ELSE 1 END,
                         a.submitted_at ASC, a.id
                LIMIT ? OFFSET ?""",
@@ -1155,15 +1156,19 @@ class DriverVerificationWorkflowService @Autowired constructor(
                     "revision" to rs.getLong("revision"),
                     "submissionRevision" to rs.getLong("submission_revision"),
                     "submittedAt" to rs.getTimestamp("submitted_at").toInstant().toString(),
+                    "driverId" to rs.getObject("driver_id", Long::class.javaObjectType),
+                    "driverName" to rs.getString("full_name"),
+                    "driverPhone" to rs.getString("phone_number"),
                     "warningCount" to wCount,
                     "resubmissionCount" to rs.getInt("resubmission_count"),
                 )
             },
-            *args.toTypedArray(),
+            *(args + listOf(limit, offset)).toTypedArray(),
         )
         return mapOf(
-            "items" to rows.take(limit),
-            "hasMore" to (rows.size > limit),
+            "items" to rows,
+            "totalElements" to total,
+            "hasMore" to (offset.toLong() + rows.size < total),
         )
     }
 
@@ -1417,6 +1422,9 @@ class DriverVerificationWorkflowService @Autowired constructor(
         submissionRevision: Long?,
         takeDriverOffline: Boolean = false,
     ) {
+        val lockedDriver = driverRepository.findByFirebaseUid(ownerUid).orElse(null)?.let {
+            driverRepository.findByIdForUpdate(it.id).orElse(null)
+        }
         val entitlements = buildEntitlements(confirmed)
         val cccdExpiresOn = DriverVerificationWarnings.parseDate(confirmed["cccd_expiry_date"])
         projection.upsertDirectProjection(
@@ -1429,8 +1437,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
             capabilityReview = capabilityReview,
         )
 
-        val driver = driverRepository.findByFirebaseUid(ownerUid).orElse(null) ?: return
-        val lockedDriver = driverRepository.findByIdForUpdate(driver.id).orElse(driver)
+        if (lockedDriver == null) return
         var notifyStatus: String? = null
         when (status) {
             VerificationStatus.APPROVED -> {
@@ -1546,35 +1553,6 @@ class DriverVerificationWorkflowService @Autowired constructor(
                 else -> LicenseEntitlement(cls, LicenseValidity.UNKNOWN, null)
             }
         }
-    }
-
-    private fun buildLegacyConfirmedPrefill(actor: AuthUser): Map<String, Any?>? {
-        val driver = driverRepository.findByFirebaseUid(actor.firebaseUid).orElse(null) ?: return null
-        val docs = documentRepository?.findCurrentForDriver(driver.id).orEmpty()
-        val cccdDoc = docs.firstOrNull { it.documentType == "CCCD" }
-        val licenseDoc = docs.firstOrNull { it.documentType == "DRIVER_LICENSE" }
-        val result = linkedMapOf<String, Any?>()
-        driver.fullName?.trim()?.takeIf { it.isNotEmpty() }?.let {
-            result["cccd_name"] = it
-            result["gplx_name"] = it
-        }
-        cccdDoc?.documentNumber?.trim()?.takeIf { it.matches(Regex("^[0-9]{12}$")) }?.let {
-            result["cccd_id"] = it
-        }
-        val licenseNum = (licenseDoc?.documentNumber ?: driver.licenseNumber)?.trim()?.takeIf { it.isNotEmpty() }
-        if (licenseNum != null) result["gplx_number"] = licenseNum
-        driver.licenseClass?.trim()?.uppercase()?.takeIf { it.isNotEmpty() }?.let {
-            result["gplx_classes"] = listOf(it)
-        }
-        val expiry = licenseDoc?.expiresAt ?: driver.licenseExpiryDate
-        if (expiry != null) {
-            result["no_expiry"] = false
-            result["expiry_date"] = expiry.toString()
-        } else if (driver.licenseClass?.uppercase() in setOf("A1", "A2", "A3", "A", "B1")) {
-            result["no_expiry"] = true
-            result["expiry_date"] = null
-        }
-        return result.takeIf { it.isNotEmpty() }
     }
 
     private fun validateAndCanonicalizeDetails(
@@ -1850,6 +1828,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
         actor: AuthUser,
         review: Boolean,
         forUpdate: Boolean,
+        allowUnsubmittedReview: Boolean = false,
     ): ApplicationRow {
         if (review) requireAdmin(actor)
         val sql = "SELECT * FROM driver_verification_applications WHERE id = ?" + if (forUpdate) " FOR UPDATE" else ""
@@ -1858,7 +1837,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
         if (!review && row.ownerUid != actor.firebaseUid) {
             throw VerificationWorkflowException(404, "NOT_FOUND", "Không tìm thấy hồ sơ xác minh.")
         }
-        if (review && row.submissionRevision == null) {
+        if (review && row.submissionRevision == null && !allowUnsubmittedReview) {
             throw VerificationWorkflowException(404, "NOT_FOUND", "Hồ sơ chưa được nộp.")
         }
         return row
@@ -1993,21 +1972,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
                 (readMap(confirmedJson)["cccd_id"] as? String)?.trim() == clean
             }
         }.getOrDefault(false)
-        if (appDup) return true
-
-        return runCatching {
-            val legacyCount = jdbc.queryForObject(
-                """SELECT COUNT(*) FROM driver_documents doc
-                   JOIN drivers d ON d.id = doc.driver_id
-                   WHERE d.firebase_uid <> ? AND d.deleted_at IS NULL
-                     AND doc.is_current = true AND doc.verification_status = 'APPROVED'
-                     AND doc.document_type = 'CCCD' AND TRIM(doc.document_number) = ?""",
-                Long::class.java,
-                ownerUid,
-                clean,
-            ) ?: 0L
-            legacyCount > 0L
-        }.getOrDefault(false)
+        return appDup
     }
 
     private fun hasDuplicateGplxAcrossAccounts(ownerUid: String, gplxNumber: String?): Boolean {
@@ -2033,21 +1998,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
                 (readMap(confirmedJson)["gplx_number"] as? String)?.trim()?.uppercase() == clean
             }
         }.getOrDefault(false)
-        if (appDup) return true
-
-        return runCatching {
-            val legacyCount = jdbc.queryForObject(
-                """SELECT COUNT(*) FROM driver_documents doc
-                   JOIN drivers d ON d.id = doc.driver_id
-                   WHERE d.firebase_uid <> ? AND d.deleted_at IS NULL
-                     AND doc.is_current = true AND doc.verification_status = 'APPROVED'
-                     AND doc.document_type = 'DRIVER_LICENSE' AND UPPER(TRIM(doc.document_number)) = ?""",
-                Long::class.java,
-                ownerUid,
-                clean,
-            ) ?: 0L
-            legacyCount > 0L
-        }.getOrDefault(false)
+        return appDup
     }
 
     private fun buildEligibilitySummary(row: ApplicationRow): Map<String, Any?> {

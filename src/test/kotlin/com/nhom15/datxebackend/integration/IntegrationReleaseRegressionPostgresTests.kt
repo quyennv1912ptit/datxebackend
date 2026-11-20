@@ -23,11 +23,11 @@ import java.util.Optional
 import java.util.Properties
 import java.util.UUID
 
-/** Kiểm thử nâng cấp Flyway V1..V33 -> V34..V41 trên dữ liệu tổng hợp và tương tác các tính năng tích hợp. */
+/** Kiểm thử nâng cấp Flyway V1..V33 -> V34..V42 trên dữ liệu tổng hợp và tương tác các tính năng tích hợp. */
 @EnabledIfEnvironmentVariable(named = "TEST_DB_URL", matches = ".+")
 class IntegrationReleaseRegressionPostgresTests {
     @Test
-    fun `upgrades from origin V33 schema to V41 preserving existing rows and supporting integrated features`() {
+    fun `upgrades from origin V33 schema to V42 preserving existing rows and supporting integrated features`() {
         val schema = "rel_upgrade_" + UUID.randomUUID().toString().replace("-", "")
         val ds = DriverManagerDataSource(
             System.getenv("TEST_DB_URL"),
@@ -85,21 +85,21 @@ class IntegrationReleaseRegressionPostgresTests {
                    VALUES (601, 401, 'CUSTOMER_TO_DRIVER', 201, 101, 2, 'Bình luận cần ẩn', TRUE)""",
             )
 
-            // 3. Chạy nâng cấp Flyway lên phiên bản mới nhất V34..V41
+            // 3. Chạy nâng cấp Flyway lên phiên bản mới nhất V34..V42
             val result = Flyway.configure()
                 .dataSource(ds)
                 .schemas(schema)
                 .load()
                 .migrate()
 
-            assertTrue(result.migrationsExecuted >= 8, "Phải chạy tối thiểu 8 migration mới V34..V41")
+            assertTrue(result.migrationsExecuted >= 9, "Phải chạy tối thiểu 9 migration mới V34..V42")
             val appliedVersions = jdbc.queryForList(
                 "SELECT version FROM flyway_schema_history WHERE success = TRUE ORDER BY installed_rank",
                 String::class.java,
             )
             assertTrue(appliedVersions.contains("39"))
             assertTrue(appliedVersions.contains("40"))
-            assertEquals("41", appliedVersions.last())
+            assertEquals("42", appliedVersions.last())
 
             // 4. Dữ liệu avatar_url, rating moderation và voucher campaign được bảo toàn nguyên vẹn
             assertEquals(
@@ -115,17 +115,17 @@ class IntegrationReleaseRegressionPostgresTests {
                 jdbc.queryForObject("SELECT is_hidden FROM ratings WHERE id = 601", Boolean::class.java),
             )
 
-            // 5. Legacy APPROVED driver được backfill sạch sang identity lock + capability projection
+            // 5. Legacy APPROVED driver cần xác minh lại sau khi hoàn tất chuỗi migration
             val appStatus = jdbc.queryForObject(
                 "SELECT status FROM driver_verification_applications WHERE owner_uid = 'upg-d1'",
                 String::class.java,
             )
-            assertEquals("APPROVED", appStatus)
+            assertEquals("DRAFT", appStatus)
             val projCount = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM driver_verification_projection WHERE owner_uid = 'upg-d1' AND status = 'APPROVED'",
+                "SELECT COUNT(*) FROM driver_verification_projection WHERE owner_uid = 'upg-d1' AND (native_workflow OR synced_workflow)",
                 Int::class.java,
             )
-            assertEquals(1, projCount)
+            assertEquals(0, projCount)
 
             // 6. Kiểm tra đồng thời hai API rating: ẩn danh + hasRatedDriver (cả khi đánh giá đã bị ẩn)
             val notified = mutableListOf<NotificationPayload>()

@@ -15,7 +15,6 @@ object CloudinaryFolders {
 
     fun forActor(role: Role, id: Long): String = "app_dat_xe/${role.name.lowercase()}/$id"
 
-    fun driverDocuments(driverId: Long): String = "datxe/driver-documents/$driverId"
 
     fun chat(rideId: Long): String = "datxe/chat/$rideId"
 

@@ -319,7 +319,7 @@ object DispatchScripts {
         local current = redis.call('GET', 'driver:' .. d .. ':current_ride') or ''
         if current ~= ARGV[2] then return 0 end
         redis.call('DEL', 'driver:' .. d .. ':current_ride')
-        if redis.call('EXISTS', 'driver:alive:' .. d) == 1 then
+        if ARGV[3] == 'ONLINE' and redis.call('EXISTS', 'driver:alive:' .. d) == 1 then
             redis.call('SET', 'driver:' .. d .. ':status', 'ONLINE')
             local lat = redis.call('HGET', 'driver:' .. d .. ':location', 'lat')
             local lng = redis.call('HGET', 'driver:' .. d .. ':location', 'lng')

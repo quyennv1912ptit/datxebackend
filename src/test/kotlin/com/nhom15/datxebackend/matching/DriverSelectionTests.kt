@@ -7,7 +7,7 @@ import com.nhom15.datxebackend.common.enums.VehicleType
 import com.nhom15.datxebackend.common.port.NearbyDriver
 import com.nhom15.datxebackend.driver.entity.Driver
 import com.nhom15.datxebackend.driver.repository.DriverRepository
-import com.nhom15.datxebackend.driver.repository.DriverSkillRepository
+import com.nhom15.datxebackend.driver.verification.*
 import com.nhom15.datxebackend.config.properties.MatchingProperties
 import com.nhom15.datxebackend.matching.service.DriverSelectionService
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -18,18 +18,19 @@ import java.time.LocalDate
 
 class DriverSelectionTests {
     private val driverRepository = Mockito.mock(DriverRepository::class.java)
-    private val skillRepository = Mockito.mock(DriverSkillRepository::class.java)
-    private val service = DriverSelectionService(driverRepository, skillRepository, MatchingProperties())
+    private val projection = Mockito.mock(VerificationProjectionRepository::class.java)
+    private val service = DriverSelectionService(driverRepository, MatchingProperties(),
+        verification = DriverVerificationEligibility(projection))
 
     private val nearby = listOf(
         NearbyDriver(driverId = 2, distanceKm = 0.4, location = GeoPoint(21.0285, 105.8542)),
     )
 
     @Test
-    fun `ky nang da duyet theo loai xe la du, khong phu thuoc hop so cua xe khach`() {
+    fun `verified motorcycle capabilities cover both transmissions`() {
         // Xe cua khach la MANUAL, con skill cua tai xe chi ghi AUTO. Voi xe may, hop so
         // khong con la dieu kien loai tru; bang lai moi la rang buoc that (A/A1 lai duoc ca hai).
-        stub(driver(), verifiedDriverIds = setOf(2L))
+        stub(driver())
 
         val ranked = service.filterAndRankDrivers(
             nearbyDrivers = nearby,
@@ -45,7 +46,6 @@ class DriverSelectionTests {
     fun `bang B1 khong nhan chuyen xe o to so san`() {
         stub(
             driver(vehicleType = VehicleType.CAR, licenseClass = "B1"),
-            verifiedDriverIds = setOf(2L),
         )
 
         val ranked = service.filterAndRankDrivers(
@@ -59,8 +59,8 @@ class DriverSelectionTests {
     }
 
     @Test
-    fun `tai xe chua duoc duyet ky nang khong phai ung vien`() {
-        stub(driver(), verifiedDriverIds = emptySet())
+    fun `driver without an eKYC projection cannot enter the candidate list`() {
+        stub(driver(), verified = false)
 
         val ranked = service.filterAndRankDrivers(
             nearbyDrivers = nearby,
@@ -74,7 +74,7 @@ class DriverSelectionTests {
 
     @Test
     fun `tai xe offline hoac het han bang lai khong phai ung vien`() {
-        stub(driver().apply { status = DriverStatus.OFFLINE }, verifiedDriverIds = setOf(2L))
+        stub(driver().apply { status = DriverStatus.OFFLINE })
 
         assertTrue(
             service.filterAndRankDrivers(
@@ -87,7 +87,6 @@ class DriverSelectionTests {
 
         stub(
             driver().apply { licenseExpiryDate = LocalDate.now().minusDays(1) },
-            verifiedDriverIds = setOf(2L),
         )
 
         assertTrue(
@@ -105,9 +104,8 @@ class DriverSelectionTests {
         val near = driver(id = 2).apply { averageRating = 3.0; yearsOfExperience = 0 }
         val far = driver(id = 3).apply { averageRating = 5.0; yearsOfExperience = 10 }
         Mockito.`when`(driverRepository.findAllById(listOf(2L, 3L))).thenReturn(listOf(near, far))
-        Mockito.`when`(
-            skillRepository.findVerifiedDriverIds(listOf(2L, 3L), VehicleType.MOTORCYCLE),
-        ).thenReturn(setOf(2L, 3L))
+        stubProjection(near)
+        stubProjection(far)
 
         val ranked = service.filterAndRankDrivers(
             nearbyDrivers = listOf(
@@ -122,13 +120,22 @@ class DriverSelectionTests {
         assertEquals(listOf(2L, 3L), ranked.map { it.driverId })
     }
 
-    private fun stub(driver: Driver, verifiedDriverIds: Set<Long>) {
-        // Không dùng Mockito matcher cho tham số non-null của Kotlin (Kotlin chèn null-check
-        // vào giá trị trả về của any()); stub bằng đúng giá trị service truyền xuống.
+    private fun stub(driver: Driver, verified: Boolean = true) {
         Mockito.`when`(driverRepository.findAllById(listOf(driver.id))).thenReturn(listOf(driver))
-        Mockito.`when`(
-            skillRepository.findVerifiedDriverIds(listOf(driver.id), driver.onlineVehicleType!!),
-        ).thenReturn(verifiedDriverIds)
+        if (verified) stubProjection(driver)
+    }
+
+    private fun stubProjection(driver: Driver) {
+        val entitlement = LicenseEntitlement(driver.licenseClass!!, LicenseValidity.HAS_EXPIRY, driver.licenseExpiryDate)
+        val groups = supportedCapabilityGroups.filter { group -> group.vehicleType == driver.onlineVehicleType &&
+            (driver.licenseClass != "B1" || group.transmission == Transmission.AUTO) }
+        val applicationId = java.util.UUID.randomUUID()
+        val capabilities = groups.map { ApprovedCapability(it.id, applicationId, 1, 2,
+            LicenseEligibilityPolicy.VERSION, listOf(entitlement)) }
+        Mockito.`when`(projection.current(driver.firebaseUid)).thenReturn(DriverVerificationProjection(
+            VerificationStatus.APPROVED, listOf(entitlement), revision = 2, capabilities = capabilities,
+            enabledGroups = capabilities.mapTo(mutableSetOf()) { it.groupId },
+        ))
     }
 
     private fun driver(
@@ -138,6 +145,7 @@ class DriverSelectionTests {
     ) = Driver().apply {
         creditBalance = 50_000
         this.id = id
+        firebaseUid = "selection-$id"
         status = DriverStatus.ONLINE
         onlineVehicleType = vehicleType
         verificationStatus = "APPROVED"

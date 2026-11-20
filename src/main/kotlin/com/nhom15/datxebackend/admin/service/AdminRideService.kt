@@ -18,7 +18,6 @@ import com.nhom15.datxebackend.common.redis.RedisTtl
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.admin.dto.AdminAssignRideRequest
 import com.nhom15.datxebackend.driver.repository.DriverRepository
-import com.nhom15.datxebackend.driver.repository.DriverSkillRepository
 import com.nhom15.datxebackend.notification.api.NotificationPort
 import com.nhom15.datxebackend.notification.api.Recipient
 import com.nhom15.datxebackend.notification.dto.RideUpdatedPayload
@@ -56,10 +55,9 @@ class AdminRideService(
     private val rideService: RideService,
     private val rideStateMachine: RideStateMachine,
     private val driverRepository: DriverRepository,
-    private val driverSkillRepository: DriverSkillRepository,
     private val redisTemplate: StringRedisTemplate,
     private val notificationPort: NotificationPort,
-    private val verification: DriverVerificationEligibility = DriverVerificationEligibility(),
+    private val verification: DriverVerificationEligibility,
     private val matching: MatchingProperties = MatchingProperties(),
     @org.springframework.beans.factory.annotation.Value("\${wallet.minimum-credit:50000}") private val minimumCredit: Long = 50_000,
     private val userCache: AuthenticatedUserCache? = null,
@@ -105,10 +103,9 @@ class AdminRideService(
 
     private fun assignmentEligible(driver: Driver, ride: Ride, verifySource: Boolean = true): Boolean {
         if (ride.driverId == driver.id ||
-            !verification.mayDriveForRide(driver, ride, driverSkillRepository, verifySource) ||
+            !verification.mayDriveForRide(driver, ride, verifySource) ||
             rideRepository.existsByDriverIdAndStatusIn(driver.id, ACTIVE_RIDE_STATUSES)
         ) return false
-        if (!verification.synchronizedWorkflow) return driverSkillRepository.hasVerifiedSkill(driver.id, ride.vehicleType)
         if ((driver.creditBalance ?: 0) < minimumCredit) return false
         val position = redisTemplate.opsForHash<String, String>().entries(RedisKeys.driverLocation(driver.id.toString()))
         val lat = position["lat"]?.toDoubleOrNull() ?: return false

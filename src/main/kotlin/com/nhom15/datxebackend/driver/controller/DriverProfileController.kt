@@ -6,7 +6,6 @@ import com.nhom15.datxebackend.common.api.ApiResponse
 import com.nhom15.datxebackend.driver.dto.DriverIdentityResponse
 import com.nhom15.datxebackend.driver.dto.UpdateDriverIdentityRequest
 import com.nhom15.datxebackend.driver.dto.DriverProfileResponse
-import com.nhom15.datxebackend.driver.dto.UpdateDriverProfileRequest
 import com.nhom15.datxebackend.driver.service.DriverProfileService
 import jakarta.validation.Valid
 import org.springframework.security.access.prepost.PreAuthorize
@@ -25,13 +24,6 @@ class DriverProfileController(
     @GetMapping("/profile")
     fun getProfile(@CurrentUser user: AuthUser): ApiResponse<DriverProfileResponse> =
         ApiResponse.ok(driverProfileService.get(user.id))
-
-    @PutMapping("/profile")
-    fun updateProfile(
-        @CurrentUser user: AuthUser,
-        @Valid @RequestBody request: UpdateDriverProfileRequest,
-    ): ApiResponse<DriverProfileResponse> =
-        ApiResponse.ok(driverProfileService.update(user.id, request))
 
     @PutMapping("/profile/identity")
     fun updateIdentity(

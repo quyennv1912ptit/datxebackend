@@ -30,7 +30,6 @@ object FcmMessageFactory {
             PayloadType.OFFER_EXPIRED -> "Lời mời nhận chuyến đã hết hạn"
             PayloadType.OFFER_CANCELLED -> "Lời mời nhận chuyến đã hủy"
             PayloadType.HANDOVER_CONFIRMED -> "Biên bản đã được xác nhận"
-            PayloadType.DRIVER_DOCUMENT_REVIEWED -> "Có kết quả kiểm tra giấy tờ"
             PayloadType.DRIVER_VERIFICATION_UPDATED -> "Hồ sơ tài xế có cập nhật"
             PayloadType.DRIVER_FORCE_OFFLINE -> "Đã tạm ngừng nhận chuyến"
             else -> "Cập nhật chuyến đi"

@@ -1,6 +1,8 @@
 package com.nhom15.datxebackend.matching.service
 
+import com.nhom15.datxebackend.common.enums.DriverStatus
 import com.nhom15.datxebackend.common.enums.RideStatus
+import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.common.redis.RedisKeys
 import com.nhom15.datxebackend.common.redis.RedisTtl
 import com.nhom15.datxebackend.ride.event.RideStatusChanged
@@ -10,7 +12,10 @@ import org.springframework.transaction.event.TransactionPhase
 import org.springframework.transaction.event.TransactionalEventListener
 
 @Service
-class DriverReleaseService(private val redisTemplate: StringRedisTemplate) {
+class DriverReleaseService(
+    private val redisTemplate: StringRedisTemplate,
+    private val drivers: DriverRepository,
+) {
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     fun onStatusChanged(e: RideStatusChanged) {
@@ -44,6 +49,7 @@ class DriverReleaseService(private val redisTemplate: StringRedisTemplate) {
     }
 
     fun reconcileIdle(driverId: Long, expectedRide: String) {
-        redisTemplate.execute(DispatchScripts.RECONCILE_IDLE, listOf(RedisKeys.GEO_KEY), driverId.toString(), expectedRide)
+        val status = drivers.findById(driverId).orElse(null)?.status ?: DriverStatus.OFFLINE
+        redisTemplate.execute(DispatchScripts.RECONCILE_IDLE, listOf(RedisKeys.GEO_KEY), driverId.toString(), expectedRide, status.name)
     }
 }

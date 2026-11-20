@@ -6,22 +6,29 @@ import com.nhom15.datxebackend.driver.dto.AdminDriverSummary
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Repository
+import com.nhom15.datxebackend.driver.dto.DriverVerificationApplicationSummary
 import java.sql.ResultSet
+import java.util.UUID
 
 @Repository
 class AdminDriverQueryRepository(
     private val jdbcTemplate: JdbcTemplate,
     @Value("\${app.verification-sync.enabled:false}") private val syncEnabled: Boolean = false,
 ) {
-    private val verificationStatusSql = if (syncEnabled) {
+    private val verificationStatusSql =
         """CASE WHEN d.verification_status = 'SUSPENDED' THEN 'SUSPENDED' ELSE COALESCE((
                SELECT CASE p.status WHEN 'APPROVED' THEN 'APPROVED'
                    WHEN 'REJECTED' THEN 'REJECTED' WHEN 'REVOKED' THEN 'REJECTED'
                    ELSE 'PENDING' END
-               FROM driver_verification_projection p CROSS JOIN verification_sync_checkpoint c
-               WHERE p.owner_uid = d.firebase_uid AND c.caught_up_at > clock_timestamp() - interval '10 seconds'
+               FROM driver_verification_projection p
+               WHERE p.owner_uid = d.firebase_uid AND (p.native_workflow OR (
+                   $syncEnabled AND p.synced_workflow AND EXISTS (
+                       SELECT 1 FROM verification_sync_checkpoint c
+                       WHERE c.singleton AND c.caught_up_at > clock_timestamp() - interval '10 seconds'
+                   )
+               ))
            ), 'PENDING') END"""
-    } else "COALESCE(d.verification_status, 'PENDING')"
+
     fun findPage(filter: AdminDriverFilter, status: String?): List<AdminDriverSummary> {
         val (where, args) = whereClause(filter, status)
         return jdbcTemplate.query(
@@ -56,6 +63,13 @@ class AdminDriverQueryRepository(
            FROM drivers d WHERE id = ?""".trimIndent(),
         { row, _ -> row.toSummary() },
         id,
+    ).firstOrNull()
+
+    fun findVerification(driverId: Long): DriverVerificationApplicationSummary? = jdbcTemplate.query(
+        """SELECT a.id, a.status FROM driver_verification_applications a
+           JOIN drivers d ON d.firebase_uid = a.owner_uid WHERE d.id = ?""",
+        { row, _ -> DriverVerificationApplicationSummary(row.getObject("id", UUID::class.java), row.getString("status")) },
+        driverId,
     ).firstOrNull()
 
     private fun whereClause(filter: AdminDriverFilter, status: String?): Pair<String, List<Any>> {
