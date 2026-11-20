@@ -199,22 +199,21 @@ class RideRatingService(
             throw NotFoundException(ErrorCode.USER_NOT_FOUND)
         }
 
-                val cleanComment = request.comment?.trim()?.takeIf(String::isNotEmpty)
-        val recipient = if (target.direction == "CUSTOMER_TO_DRIVER") {
-            Recipient.Driver(target.rateeId)
-        } else {
-            Recipient.Customer(target.rateeId)
-        }
-        runCatching {
-            notifications.send(
-                recipient,
-                RatingReceivedNotificationPayload(
-                    rideId = rideId,
-                    stars = request.stars,
-                    comment = cleanComment,
-                    tags = tags,
-                ),
-            )
+        val cleanComment = request.comment?.trim()?.takeIf(String::isNotEmpty)
+        // App tài xế không hiển thị thông báo "đánh giá mới": chỉ phát thông báo cho khách hàng.
+        // Đánh giá CUSTOMER_TO_DRIVER vẫn được lưu và xem trong hồ sơ tài xế qua /driver/ratings/received.
+        if (target.direction == "DRIVER_TO_CUSTOMER") {
+            runCatching {
+                notifications.send(
+                    Recipient.Customer(target.rateeId),
+                    RatingReceivedNotificationPayload(
+                        rideId = rideId,
+                        stars = request.stars,
+                        comment = cleanComment,
+                        tags = tags,
+                    ),
+                )
+            }
         }
 
         return RideRatingResponse(
