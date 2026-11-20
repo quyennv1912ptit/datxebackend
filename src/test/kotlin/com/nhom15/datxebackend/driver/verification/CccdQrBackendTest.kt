@@ -212,6 +212,13 @@ class CccdQrBackendTest {
         assertEquals("1996-01-01", pipeGplx.fields["dob"])
         assertEquals(listOf("A1", "B2"), pipeGplx.fields["vehicle_class"])
 
+        val semicolonClasses = CccdQrParser.parse(
+            "790123456789|NGUYỄN VĂN MẪU|01/01/1996|A1;B2|Sở GTVT TP.HCM",
+            slot = "gplx_back", today = today,
+        )
+        assertEquals(CccdQrStatus.DECODED_VALID, semicolonClasses.status)
+        assertEquals(listOf("A1", "B2"), semicolonClasses.fields["vehicle_class"])
+
         val fourFieldGplx = CccdQrParser.parse(
             "NGUYỄN VĂN MẪU|01/01/1996|B2|Sở GTVT Hà Nội",
             slot = "gplx_back",
@@ -235,4 +242,30 @@ class CccdQrBackendTest {
 
         assertTrue("gplx_back" in DriverVerificationWarnings.REQUIRED_SLOTS)
     }
+    @Test
+    fun `semicolon GPLX supports unlimited expiry and an optional lookup link`() {
+        val payload = "790123456789;NGUYỄN VĂN MẪU;01011996;A1;30102025;Không thời hạn;Phú Thọ"
+        for (suffix in listOf("", "\nhttps://gplx.csgt.bocongan.gov.vn/\u00a0", "\r\nhttps://gplx.csgt.bocongan.gov.vn/")) {
+            val result = CccdQrParser.parse(payload + suffix, slot = "gplx_back", today = LocalDate.of(2026, 11, 20))
+            assertEquals(CccdQrStatus.DECODED_VALID, result.status)
+            assertEquals("790123456789", result.fields["id_number"])
+            assertEquals("1996-01-01", result.fields["dob"])
+            assertEquals("2025-10-30", result.fields["issue_date"])
+            assertEquals(listOf("A1"), result.fields["vehicle_class"])
+            assertEquals(mapOf("no_expiry" to true, "expiry_date" to null), result.fields["expiry"])
+        }
+        val fixed = CccdQrParser.parse(payload.replace("Không thời hạn", "30102035"), slot = "gplx_back")
+        assertEquals(CccdQrStatus.DECODED_VALID, fixed.status)
+        assertEquals("2035-10-30", fixed.fields["expiry"])
+        for (invalid in listOf(
+            payload.replace("30102025", "31112025"),
+            payload.replace("Không thời hạn", "không rõ"),
+            payload.replace("Không thời hạn", "30102020"),
+            payload + ";EXTRA",
+            payload + "\nDữ liệu lạ",
+        )) {
+            assertEquals(CccdQrStatus.INVALID_FORMAT, CccdQrParser.parse(invalid, slot = "gplx_back").status)
+        }
+    }
+
 }

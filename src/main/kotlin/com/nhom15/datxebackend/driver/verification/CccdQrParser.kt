@@ -270,8 +270,26 @@ object CccdQrParser {
         var rawDob = ""
         var rawClasses = ""
         var rawExpiry = ""
+        var rawIssueDate = ""
+        var noExpiry = false
 
         when {
+            ';' in raw.lineSequence().first() && '|' !in raw.lineSequence().first() -> {
+                val lines = raw.lines().map(String::trim).filter(String::isNotEmpty)
+                val parts = lines.first().split(';').map(::normalizeText)
+                if (parts.size != 7 || parts.any(String::isBlank) ||
+                    lines.drop(1).any { !it.startsWith("https://", ignoreCase = true) && !it.startsWith("http://", ignoreCase = true) }
+                ) {
+                    return CccdQrParseResult(status = CccdQrStatus.INVALID_FORMAT)
+                }
+                rawId = parts[0].uppercase()
+                rawName = parts[1]
+                rawDob = parts[2]
+                rawClasses = parts[3]
+                rawIssueDate = parts[4]
+                noExpiry = foldDiacritics(parts[5]).lowercase() == "khong thoi han"
+                if (!noExpiry) rawExpiry = parts[5]
+            }
             '|' in raw -> {
                 val parts = raw.split('|').map(::normalizeText)
                 if (parts.size < 4) {
@@ -394,9 +412,24 @@ object CccdQrParser {
             missing.add("vehicle_class")
         }
 
-        if (rawExpiry.isNotEmpty()) {
+        if (rawIssueDate.isNotEmpty()) {
+            val issued = parseQrDate(rawIssueDate)
+                ?: return CccdQrParseResult(status = CccdQrStatus.INVALID_FORMAT)
+            val birth = (fields["dob"] as? String)?.let(LocalDate::parse)
+            if (issued.isAfter(today) || (birth != null && issued.isBefore(birth))) {
+                return CccdQrParseResult(status = CccdQrStatus.INVALID_FORMAT)
+            }
+            fields["issue_date"] = issued.toString()
+        }
+        if (noExpiry) {
+            fields["expiry"] = mapOf("no_expiry" to true, "expiry_date" to null)
+        } else if (rawExpiry.isNotEmpty()) {
             val parsedExpiry = parseQrDate(rawExpiry)
                 ?: return CccdQrParseResult(status = CccdQrStatus.INVALID_FORMAT)
+            val issued = (fields["issue_date"] as? String)?.let(LocalDate::parse)
+            if (issued != null && parsedExpiry.isBefore(issued)) {
+                return CccdQrParseResult(status = CccdQrStatus.INVALID_FORMAT)
+            }
             fields["expiry"] = parsedExpiry.toString()
         }
 
