@@ -56,19 +56,24 @@ class VerificationProjectionRepository @Autowired constructor(
             require(event.ownerUid.isNotBlank() && event.ownerUid.length <= 128)
             require(event.entitlements.size <= 20)
             val existingApplication = jdbc.query(
-                "SELECT application_id FROM driver_verification_projection WHERE owner_uid=?",
+                "SELECT application_id FROM driver_verification_projection WHERE owner_uid=? AND synced_workflow",
                 { rs, _ -> rs.getObject(1, UUID::class.java) }, event.ownerUid,
             ).firstOrNull()
             require(existingApplication == null || existingApplication == event.applicationId)
             jdbc.update(
                 """INSERT INTO driver_verification_projection
-                   (owner_uid, application_id, revision, status, entitlements, cccd_expires_on, approved_capabilities)
-                   VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (owner_uid) DO UPDATE
-                   SET revision = EXCLUDED.revision, status = EXCLUDED.status,
+                   (owner_uid, application_id, revision, status, entitlements, cccd_expires_on, approved_capabilities, synced_workflow)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, true) ON CONFLICT (owner_uid) DO UPDATE
+                   SET application_id = EXCLUDED.application_id, synced_workflow = true,
+                       revision = EXCLUDED.revision, status = EXCLUDED.status,
                        entitlements = EXCLUDED.entitlements, cccd_expires_on = EXCLUDED.cccd_expires_on,
                        approved_capabilities = EXCLUDED.approved_capabilities
-                   WHERE driver_verification_projection.application_id = EXCLUDED.application_id
-                     AND driver_verification_projection.revision < EXCLUDED.revision""",
+                   WHERE NOT driver_verification_projection.native_workflow AND (
+                       NOT driver_verification_projection.synced_workflow OR (
+                         driver_verification_projection.application_id = EXCLUDED.application_id
+                         AND driver_verification_projection.revision < EXCLUDED.revision
+                       )
+                     )""",
                 event.ownerUid, event.applicationId, event.revision, event.status.name,
                 mapper.writeValueAsString(event.entitlements), event.cccdExpiresOn,
                 mapper.writeValueAsString(grants(event, today)),
@@ -92,7 +97,6 @@ class VerificationProjectionRepository @Autowired constructor(
         entitlements: List<LicenseEntitlement>,
         cccdExpiresOn: LocalDate?,
         capabilityReview: CapabilityReview?,
-        explicitCapabilities: List<ApprovedCapability>? = null,
     ) {
         val today = capabilityToday()
         val event = VerificationEvent(
@@ -105,19 +109,22 @@ class VerificationProjectionRepository @Autowired constructor(
             cccdExpiresOn = cccdExpiresOn,
             capabilityReview = capabilityReview,
         )
-        val granted = explicitCapabilities ?: grants(event, today)
+        val granted = grants(event, today)
         jdbc.update(
             """INSERT INTO driver_verification_projection
-               (owner_uid, application_id, revision, status, entitlements, cccd_expires_on, approved_capabilities)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
+               (owner_uid, application_id, revision, status, entitlements, cccd_expires_on, approved_capabilities, native_workflow)
+               VALUES (?, ?, ?, ?, ?, ?, ?, true)
                ON CONFLICT (owner_uid) DO UPDATE
-               SET application_id = EXCLUDED.application_id,
+               SET application_id = EXCLUDED.application_id, native_workflow = true, synced_workflow = false,
                    revision = EXCLUDED.revision,
                    status = EXCLUDED.status,
                    entitlements = EXCLUDED.entitlements,
                    cccd_expires_on = EXCLUDED.cccd_expires_on,
                    approved_capabilities = EXCLUDED.approved_capabilities
-               WHERE driver_verification_projection.revision <= EXCLUDED.revision""",
+               WHERE NOT driver_verification_projection.native_workflow OR (
+                   driver_verification_projection.application_id = EXCLUDED.application_id
+                   AND driver_verification_projection.revision <= EXCLUDED.revision
+               )""",
             ownerUid,
             applicationId,
             revision,
@@ -126,7 +133,6 @@ class VerificationProjectionRepository @Autowired constructor(
             SqlParameterValue(Types.DATE, cccdExpiresOn),
             mapper.writeValueAsString(granted),
         )
-        jdbc.update("UPDATE verification_sync_checkpoint SET caught_up_at = clock_timestamp() WHERE singleton")
     }
 
     fun failed() {
@@ -182,10 +188,10 @@ class VerificationProjectionRepository @Autowired constructor(
     }
 
     private fun find(column: String, value: Any): DriverVerificationProjection? {
-        val freshnessClause = if (requireSyncCheckpoint) {
-            " AND c.caught_up_at > clock_timestamp() - interval '10 seconds'"
+        val provenanceClause = if (requireSyncCheckpoint) {
+            "(p.native_workflow OR (p.synced_workflow AND c.caught_up_at > clock_timestamp() - interval '10 seconds'))"
         } else {
-            ""
+            "p.native_workflow"
         }
         return jdbc.query(
             """SELECT p.status, p.revision, p.entitlements, p.cccd_expires_on, p.approved_capabilities,
@@ -194,7 +200,7 @@ class VerificationProjectionRepository @Autowired constructor(
                CROSS JOIN verification_sync_checkpoint c
                LEFT JOIN drivers d ON d.firebase_uid=p.owner_uid
                LEFT JOIN driver_capability_preferences prefs ON prefs.driver_id=d.id AND prefs.approval_revision=p.revision
-               WHERE $column=?$freshnessClause""",
+               WHERE $column=? AND $provenanceClause""",
             { rs, _ ->
                 val factory = mapper.typeFactory
                 fun <T> readList(columnName: String, element: Class<T>): List<T> =

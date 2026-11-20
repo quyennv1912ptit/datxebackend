@@ -7,7 +7,6 @@ import com.nhom15.datxebackend.common.enums.VehicleType
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.driver.entity.Driver
 import com.nhom15.datxebackend.driver.repository.DriverRepository
-import com.nhom15.datxebackend.driver.repository.DriverSkillRepository
 import com.nhom15.datxebackend.vehicle.catalog.VehicleCatalog
 import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.Test
@@ -146,9 +145,8 @@ class DriverVerificationIdentityLockTest {
     }
 
     @Test
-    fun `legacy backfill skips missing capture blocker and expired GPLX locks eligibility immediately`() {
-        val legacySnapshot = mapOf(
-            "legacyBackfill" to true,
+    fun `missing captures block submission and expired GPLX locks eligibility immediately`() {
+        val incompleteSnapshot = mapOf(
             "captures" to emptyMap<String, Any?>(),
             "proposals" to emptyMap<String, Any?>(),
             "confirmed" to mapOf(
@@ -161,12 +159,11 @@ class DriverVerificationIdentityLockTest {
                 "expiry_date" to null,
             ),
         )
-        val legacyWarnings = DriverVerificationWarnings.build(legacySnapshot, 2)
-        assertTrue(legacyWarnings.none { it.code == "DOCUMENT_REQUIRED" })
+        val warnings = DriverVerificationWarnings.build(incompleteSnapshot, 2)
+        assertTrue(warnings.any { it.code == "DOCUMENT_REQUIRED" && it.blocksSubmission })
 
         val today = capabilityToday()
         val projection = mock(VerificationProjectionRepository::class.java)
-        val skills = mock(DriverSkillRepository::class.java)
         val eligibility = DriverVerificationEligibility(projection, null)
         val driver = Driver().apply { id = 11; firebaseUid = "driver-exp"; verificationStatus = "APPROVED" }
 
@@ -188,8 +185,8 @@ class DriverVerificationIdentityLockTest {
                 enabledGroups = setOf(carGroup.id, motoGroup.id),
             ),
         )
-        assertTrue(eligibility.mayGoOnline(driver, VehicleType.CAR, skills))
-        assertFalse(eligibility.mayGoOnline(driver, VehicleType.MOTORCYCLE, skills))
+        assertTrue(eligibility.mayGoOnline(driver, VehicleType.CAR))
+        assertFalse(eligibility.mayGoOnline(driver, VehicleType.MOTORCYCLE))
     }
 
     @Test
@@ -275,7 +272,6 @@ class DriverVerificationIdentityLockTest {
         val workflow = DriverVerificationWorkflowService(jdbc, mapper, storage, projection, driversRepo)
         val eligibility = DriverVerificationEligibility(projection, null)
         val capabilitySvc = DriverCapabilityService(driversRepo, projection, eligibility)
-        val skills = mock(DriverSkillRepository::class.java)
 
         fun insertDriver(uid: String, phone: String): Driver {
             val id = jdbc.queryForObject(
@@ -358,8 +354,8 @@ class DriverVerificationIdentityLockTest {
 
         // Enable moto-50-125 preference
         capabilitySvc.update(actor1, "moto-50-125", CapabilityPreferenceRequest(rev, 0L, true))
-        assertTrue(eligibility.mayGoOnline(d1, VehicleType.MOTORCYCLE, skills))
-        assertFalse(eligibility.mayGoOnline(d1, VehicleType.CAR, skills))
+        assertTrue(eligibility.mayGoOnline(d1, VehicleType.MOTORCYCLE))
+        assertFalse(eligibility.mayGoOnline(d1, VehicleType.CAR))
 
         // Driver detail hides raw CCCD inside maskedCccdId
         val driverView = workflow.detail(actor1, appId1, review = false)
@@ -374,11 +370,11 @@ class DriverVerificationIdentityLockTest {
         val selfieV2 = testPng(Color.LIGHT_GRAY) // Different bytes -> different sha256, same person allowed
         rev = (workflow.replaceCapture(actor1, appId1, "selfie", rev, "image/png", selfieV2)["revision"] as Number).toLong()
         // While editing in draft, old A1 capability STILL works!
-        assertTrue(eligibility.mayGoOnline(d1, VehicleType.MOTORCYCLE, skills))
+        assertTrue(eligibility.mayGoOnline(d1, VehicleType.MOTORCYCLE))
         val cancelled = workflow.cancelReverify(actor1, appId1, rev)
         rev = (cancelled["revision"] as Number).toLong()
         assertEquals("APPROVED", cancelled["status"])
-        assertTrue(eligibility.mayGoOnline(d1, VehicleType.MOTORCYCLE, skills))
+        assertTrue(eligibility.mayGoOnline(d1, VehicleType.MOTORCYCLE))
 
         // Case 3: Attempt to change locked cccd_id -> 409 IDENTITY_LOCKED
         rev = (workflow.reverify(actor1, appId1, rev)["revision"] as Number).toLong()
@@ -400,17 +396,17 @@ class DriverVerificationIdentityLockTest {
         rev = (workflow.confirmFields(actor1, appId1, rev, upgradeDetails)["revision"] as Number).toLong()
         rev = (workflow.submit(actor1, appId1, "sub-upgrade", rev, null, null)["revision"] as Number).toLong()
         // Still APPROVED for old A1 during pending review, CAR NOT yet active!
-        assertTrue(eligibility.mayGoOnline(d1, VehicleType.MOTORCYCLE, skills))
-        assertFalse(eligibility.mayGoOnline(d1, VehicleType.CAR, skills))
+        assertTrue(eligibility.mayGoOnline(d1, VehicleType.MOTORCYCLE))
+        assertFalse(eligibility.mayGoOnline(d1, VehicleType.CAR))
         assertEquals(setOf("moto-50-125"), projection.current(d1.firebaseUid)?.effectiveGroups(capabilityToday()))
-        assertFalse(eligibility.mayDrive(d1, VehicleType.CAR, Transmission.AUTO, skills))
+        assertFalse(eligibility.mayDrive(d1, VehicleType.CAR, Transmission.AUTO))
 
         // Case: Normal rejection (e.g., blurry upgrade photo) keeps prior valid A1 approval!
         rev = (workflow.decision(admin, appId1, VerificationDecisionRequest(rev, "UNDER_REVIEW"))["revision"] as Number).toLong()
         val rejectedUpgrade = workflow.decision(admin, appId1, VerificationDecisionRequest(rev, "REJECTED", reason = "Ảnh GPLX mờ"))
         rev = (rejectedUpgrade["revision"] as Number).toLong()
         assertEquals("REJECTED", rejectedUpgrade["status"])
-        assertTrue(eligibility.mayGoOnline(d1, VehicleType.MOTORCYCLE, skills))
+        assertTrue(eligibility.mayGoOnline(d1, VehicleType.MOTORCYCLE))
 
         // Re-submit upgrade and approve -> preserves previously enabled moto-50-125 + unlocks car-auto!
         rev = (workflow.reverify(actor1, appId1, rev)["revision"] as Number).toLong()
@@ -434,7 +430,7 @@ class DriverVerificationIdentityLockTest {
         )
         rev = (approvedUpgrade["revision"] as Number).toLong()
         // Previously enabled moto-50-125 stays active immediately without re-enabling!
-        assertTrue(eligibility.mayGoOnline(d1, VehicleType.MOTORCYCLE, skills))
+        assertTrue(eligibility.mayGoOnline(d1, VehicleType.MOTORCYCLE))
         assertNotNull(projection.current(d1.firebaseUid)?.capabilities?.firstOrNull { it.groupId == "car-auto" })
 
         // Case 6: Submitting GPLX bearing someone else's name -> identityHold = true & blocks APPROVED!
@@ -442,7 +438,7 @@ class DriverVerificationIdentityLockTest {
         rev = (workflow.confirmFields(actor1, appId1, rev, upgradeDetails + ("gplx_name" to "Trần Văn Người Khác"))["revision"] as Number).toLong()
         rev = (workflow.submit(actor1, appId1, "sub-other-gplx", rev, null, rev)["revision"] as Number).toLong()
         // Suspected identity discrepancy suspends ride-receiving!
-        assertFalse(eligibility.mayGoOnline(d1, VehicleType.MOTORCYCLE, skills))
+        assertFalse(eligibility.mayGoOnline(d1, VehicleType.MOTORCYCLE))
         rev = (workflow.decision(admin, appId1, VerificationDecisionRequest(rev, "UNDER_REVIEW"))["revision"] as Number).toLong()
         val blockedApprove = assertFailsWith<VerificationWorkflowException> {
             workflow.decision(
@@ -497,7 +493,7 @@ class DriverVerificationIdentityLockTest {
             )
         }
         assertEquals("VERIFICATION_ACTIVATION_BLOCKED", blockedDup.errorCode)
-        assertFalse(eligibility.mayGoOnline(d2, VehicleType.MOTORCYCLE, skills))
+        assertFalse(eligibility.mayGoOnline(d2, VehicleType.MOTORCYCLE))
 
         // Rejected initial application (never approved) can start a fresh draft via reverify and resubmit
         val rejectedInitial = workflow.decision(

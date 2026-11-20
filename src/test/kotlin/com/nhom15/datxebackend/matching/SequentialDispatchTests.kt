@@ -1,5 +1,6 @@
 package com.nhom15.datxebackend.matching
 
+import com.nhom15.datxebackend.driver.verification.DriverVerificationEligibility
 import com.nhom15.datxebackend.common.domain.*
 import com.nhom15.datxebackend.common.enums.*
 import com.nhom15.datxebackend.common.event.EventPublisher
@@ -415,5 +416,7 @@ class SequentialDispatchTests {
             mock(com.nhom15.datxebackend.chat.service.ConversationService::class.java),MatchingProperties(),outbox,
             mock(DispatchOfferRepository::class.java),drivers,
             mock(com.nhom15.datxebackend.payment.service.WalletService::class.java), vouchers,
-            ScheduledRideProperties(),Clock.systemUTC(), userCache = cache)
+            ScheduledRideProperties(),Clock.systemUTC(), verification = mock(DriverVerificationEligibility::class.java) {
+                if (it.method.name == "statusAfterRide") DriverStatus.ONLINE else org.mockito.Mockito.RETURNS_DEFAULTS.answer(it)
+            }, userCache = cache)
 }

@@ -46,6 +46,12 @@ Phân trang thường bắt đầu từ `page=0`. `PageResponse` có các trư�
 - Rate limit dùng Redis: 60 lần/phút/IP cho login, 60 lần/phút/người dùng cho mỗi endpoint địa điểm/chỉ đường, 30 lần/phút/người dùng gộp cho estimate và tạo chuyến, 20 tin/phút/người dùng cho chat. Bộ đếm và TTL được cập nhật nguyên tử. Khi vượt giới hạn, API trả HTTP 429 với mã `RATE_LIMITED`. Các route khác chưa có rate limit dùng chung.
 - Login giới hạn theo `remoteAddr` mà server nhìn thấy; nếu triển khai sau reverse proxy, cần cấu hình trusted client-IP forwarding để tránh dùng chung quota theo IP proxy.
 
+## Xác minh tài xế
+
+Ứng dụng tài xế và GoAdmin dùng eKYC qua Spring Boot. Backend lưu bản nộp, quyết định và ảnh riêng tư, rồi tính quyền hoạt động từ hồ sơ và nhóm xe đủ điều kiện. Dùng `GET /ekyc/driver-verification/v1/admin/review-queue?status=PENDING_REVIEW` để lấy hồ sơ đã nộp hoặc đang xét duyệt và tổng số `totalElements`. `GET /api/admin/drivers/{id}` trả `verification` với mã và trạng thái hồ sơ khi có.
+
+V42 xóa dữ liệu giấy tờ thủ công. Chuẩn bị backup PostgreSQL, chạy kiểm kê ảnh ở chế độ chỉ đọc và xử lý chuyến còn ở trước bước bắt đầu trước khi lên lịch nâng cấp. Script kiểm kê nằm tại `scripts/legacy_verification_assets.py`.
+
 ## HTTP API
 
 ### Xác thực — `/api/auth`
@@ -114,12 +120,8 @@ Các route trong nhóm này yêu cầu vai trò `DRIVER`.
 | Method | Route | Chức năng |
 |---|---|---|
 | GET | `/api/driver/profile` | Xem hồ sơ tài xế. |
-| PUT | `/api/driver/profile` | Cập nhật hồ sơ tài xế. |
-| POST | `/api/driver/documents` | Nộp giấy tờ xác minh. |
-| GET | `/api/driver/documents` | Danh sách giấy tờ và trạng thái duyệt. |
+| PUT | `/api/driver/profile/identity` | Cập nhật thông tin liên hệ và ngân hàng. |
 | GET | `/api/driver/verification` | Tổng hợp trạng thái xác minh. |
-| GET | `/api/driver/skills` | Danh sách loại xe/kỹ năng đã khai báo. |
-| PUT | `/api/driver/skills` | Cập nhật danh sách kỹ năng. |
 | PUT | `/api/driver/availability` | Cập nhật trạng thái sẵn sàng và loại xe đang phục vụ. |
 | GET | `/api/driver/offers/pending` | Khôi phục các lời mời chuyến đang chờ. |
 | POST | `/api/driver/offers/{rideId}/accept` | Nhận lời mời chuyến. |
@@ -159,10 +161,6 @@ Các route trong nhóm này yêu cầu vai trò `ADMIN`.
 |---|---|---|---|
 | GET | `/api/admin/drivers` | `verificationStatus` hoặc `verification_status`, `online`, `flagged`, `search`, `page`, `size` | Tìm và lọc tài xế. |
 | GET | `/api/admin/drivers/{id}` | — | Chi tiết tài xế, giấy tờ, kỹ năng và thống kê. |
-| GET | `/api/admin/driver-documents` | `status` (mặc định `PENDING`), `page`, `size` | Hàng chờ duyệt giấy tờ. |
-| PUT | `/api/admin/driver-documents/{id}/review` | `ReviewDriverDocumentRequest` | Duyệt/từ chối giấy tờ. |
-| PUT | `/api/admin/driver-skills/{id}/verify` | `VerifyDriverSkillRequest` | Duyệt kỹ năng loại xe. |
-| PUT | `/api/admin/drivers/{id}/verification-status` | `SetDriverVerificationStatusRequest` | Quyết định trạng thái xác minh. |
 | POST | `/api/admin/drivers/{id}/force-offline` | — | Ép tài xế offline. |
 
 #### Khách hàng
@@ -258,7 +256,7 @@ Thông báo dùng envelope:
 }
 ```
 
-Các `type` hiện có: `RIDE_OFFER`, `OFFER_EXPIRED`, `OFFER_CANCELLED`, `RIDE_UPDATED`, `HANDOVER_CONFIRMED`, `RIDE_CANCELLED`, `RIDE_COMPLETED`, `RIDE_NO_DRIVER`, `RIDE_ASSIGNED`, `DRIVER_DOCUMENT_REVIEWED`, `DRIVER_VERIFICATION_UPDATED`, `DRIVER_FORCE_OFFLINE`, `CHAT_MESSAGE`, `CHAT_READ`. Cấu trúc `payload` phụ thuộc từng loại sự kiện.
+Các `type` hiện có: `RIDE_OFFER`, `OFFER_EXPIRED`, `OFFER_CANCELLED`, `RIDE_UPDATED`, `HANDOVER_CONFIRMED`, `RIDE_CANCELLED`, `RIDE_COMPLETED`, `RIDE_NO_DRIVER`, `RIDE_ASSIGNED`, `DRIVER_VERIFICATION_UPDATED`, `DRIVER_FORCE_OFFLINE`, `CHAT_MESSAGE`, `CHAT_READ`. Cấu trúc `payload` phụ thuộc từng loại sự kiện.
 
 `HANDOVER_CONFIRMED` được gửi cho tài xế ngay sau khi khách xác nhận biên bản, với payload `{ "rideId": 123, "confirmedByCustomer": true, "phase": "PICKUP" | "DROPOFF" }`. Xác nhận lặp lại (idempotent) không phát lại thông báo.
 
@@ -276,7 +274,7 @@ Chính sách dispatch của thông báo:
 
 | Type | Chính sách |
 |---|---|
-| `RIDE_OFFER`, `RIDE_UPDATED`, `HANDOVER_CONFIRMED`, `RIDE_CANCELLED`, `RIDE_NO_DRIVER`, `RIDE_ASSIGNED`, `DRIVER_DOCUMENT_REVIEWED`, `DRIVER_VERIFICATION_UPDATED`, `DRIVER_FORCE_OFFLINE`, `CHAT_MESSAGE` | `WS_THEN_PUSH` |
+| `RIDE_OFFER`, `RIDE_UPDATED`, `HANDOVER_CONFIRMED`, `RIDE_CANCELLED`, `RIDE_NO_DRIVER`, `RIDE_ASSIGNED`, `DRIVER_VERIFICATION_UPDATED`, `DRIVER_FORCE_OFFLINE`, `CHAT_MESSAGE` | `WS_THEN_PUSH` |
 | `RIDE_COMPLETED` | `PUSH_ALSO` |
 | `OFFER_EXPIRED`, `OFFER_CANCELLED`, `CHAT_READ` | `WS_ONLY` |
 
@@ -287,7 +285,6 @@ Thông báo nghiệp vụ được lưu vào lịch sử `/api/notifications`. C
 Ảnh/file được upload trực tiếp từ app lên Cloudinary. Backend không nhận nội dung file; app xin chữ ký tại `GET /api/uploads/signature`, upload theo chữ ký, sau đó gửi `secureUrl` và `publicId` trong API nghiệp vụ.
 
 - Không truyền `purpose` (hoặc dùng `DEFAULT`): folder mặc định theo người gọi.
-- `purpose=DRIVER_DOCUMENT`: chỉ tài xế; folder khóa theo tài xế đăng nhập.
 - `purpose=CHAT&rideId={id}` (cũng hỗ trợ `CHAT_IMAGE`): chỉ thành viên chuyến; folder khóa theo chuyến và giới hạn định dạng ảnh `jpg`, `jpeg`, `png`, `webp`.
 - `purpose=HANDOVER&rideId={id}` (cũng hỗ trợ `HANDOVER_IMAGE`): chỉ tài xế được gán cho chuyến; folder khóa theo chuyến và giới hạn định dạng ảnh.
 - API lưu ảnh kiểm tra asset thuộc đúng folder Cloudinary tương ứng. Chữ ký trả về `signature`, `timestamp`, `apiKey`, `cloudName`, `folder` và `allowedFormats` nếu áp dụng.
@@ -321,7 +318,7 @@ Lỗi nghiệp vụ trả cùng cấu trúc `ApiResponse`; HTTP status do `Error
 | `TOKEN_EXPIRED`, `TOKEN_INVALID` | 401 | Firebase token hết hạn hoặc sai. |
 | `OTP_INVALID`, `OTP_EXPIRED` | 400 | OTP sai hoặc hết hạn. |
 | `ACCOUNT_LOCKED`, `DRIVER_NOT_VERIFIED` | 403 | Tài khoản bị khóa hoặc tài xế chưa được duyệt. |
-| `DRIVER_DOCUMENT_NOT_FOUND`, `DRIVER_SKILL_NOT_FOUND`, `VEHICLE_NOT_FOUND`, `NOTIFICATION_NOT_FOUND` | 404 | Không tìm thấy tài liệu, kỹ năng, xe hoặc thông báo. |
+| `VEHICLE_NOT_FOUND`, `NOTIFICATION_NOT_FOUND` | 404 | Không tìm thấy xe hoặc thông báo. |
 | `ACCOUNT_ALREADY_EXISTS` | 409 | Hồ sơ cùng vai trò đã tồn tại hoặc Firebase UID thuộc admin; customer và driver được phép dùng chung UID. |
 | `ACCOUNT_HAS_ACTIVE_RIDES` | 409 | Tài khoản còn chuyến chưa kết thúc. |
 | `PHONE_MISMATCH` | 400 | Số điện thoại không khớp Firebase. |

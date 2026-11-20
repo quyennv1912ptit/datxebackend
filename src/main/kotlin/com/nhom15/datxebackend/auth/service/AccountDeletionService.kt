@@ -106,11 +106,6 @@ class AccountDeletionService(
 
         val firebaseUid = driver.firebaseUid
         val avatarPublicId = driver.avatarPublicId
-        val documentPublicIds = jdbcTemplate.query(
-            "SELECT cloudinary_public_id FROM driver_documents WHERE driver_id = ?",
-            { row, _ -> row.getString("cloudinary_public_id") },
-            driverId,
-        )
         driver.deletedAt = Instant.now()
         driver.firebaseUid = tombstoneUid("driver", driverId)
         driver.fullName = null
@@ -121,7 +116,6 @@ class AccountDeletionService(
         driver.bankAccountNumber = null
         driver.licenseClass = null
         driver.licenseNumber = null
-        driver.licenseImageUrl = null
         driver.licenseExpiryDate = null
         driver.licenseVerified = false
         driver.backgroundCheckStatus = null
@@ -134,13 +128,12 @@ class AccountDeletionService(
 
         deviceTokenRepository.deleteAllByRoleAndOwnerId(Role.DRIVER, driverId)
         jdbcTemplate.update("DELETE FROM notifications WHERE recipient_driver_id = ?", driverId)
-        jdbcTemplate.update("DELETE FROM driver_documents WHERE driver_id = ?", driverId)
         jdbcTemplate.update("DELETE FROM driver_vehicle_skills WHERE driver_id = ?", driverId)
         cleanupOutbox.enqueue(
             firebaseUid = firebaseUid,
             ownerRole = Role.DRIVER.name,
             ownerId = driverId,
-            publicIds = listOfNotNull(avatarPublicId) + documentPublicIds,
+            publicIds = listOfNotNull(avatarPublicId),
         )
     }
 

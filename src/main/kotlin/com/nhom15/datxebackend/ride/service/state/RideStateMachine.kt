@@ -2,7 +2,6 @@ package com.nhom15.datxebackend.ride.service.state
 
 import com.nhom15.datxebackend.auth.security.AuthenticatedUserCache
 
-import com.nhom15.datxebackend.driver.repository.DriverSkillRepository
 import com.nhom15.datxebackend.driver.verification.DriverVerificationEligibility
 
 import com.nhom15.datxebackend.common.enums.DriverStatus
@@ -56,8 +55,7 @@ class RideStateMachine(
     private val vouchers: com.nhom15.datxebackend.voucher.service.VoucherService,
     private val scheduled: ScheduledRideProperties,
     private val clock: Clock,
-    private val verification: DriverVerificationEligibility = DriverVerificationEligibility(),
-    private val skills: DriverSkillRepository? = null,
+    private val verification: DriverVerificationEligibility,
     private val userCache: AuthenticatedUserCache? = null,
 ) {
 
@@ -104,10 +102,10 @@ class RideStateMachine(
         }
         if (command.event == RideTransitionEvent.COMPLETE && ride.status != RideStatus.VEHICLE_RETURNED)
             throw com.nhom15.datxebackend.payment.exception.InvalidTripStateException()
-        if (command.event == RideTransitionEvent.START_TRIP && verification.synchronizedWorkflow) {
+        if (command.event == RideTransitionEvent.START_TRIP) {
             val driver = ride.driverId?.let { drivers.findByIdForUpdate(it).orElse(null) }
-            if (driver == null || skills == null ||
-                !verification.mayDriveForRide(driver, ride, skills, starting = true, now = now)
+            if (driver == null ||
+                !verification.mayDriveForRide(driver, ride, starting = true, now = now)
             ) throw ConflictException(ErrorCode.DRIVER_NOT_VERIFIED)
         }
         val previousStatus = ride.status
@@ -174,7 +172,7 @@ class RideStateMachine(
             oldDriver?.let { driverId ->
                 drivers.findByIdForUpdate(driverId).orElse(null)?.let { driver ->
                     if (driver.status == DriverStatus.BUSY) {
-                        driver.status = DriverStatus.ONLINE
+                        driver.status = verification.statusAfterRide(driver)
                         drivers.save(driver)
                         userCache?.evictAfterCommit(driver.firebaseUid)
                     }
@@ -236,9 +234,7 @@ class RideStateMachine(
         val ride = findRide(rideId)
         val driver = drivers.findByIdForUpdate(driverId).orElseThrow { NotFoundException(ErrorCode.USER_NOT_FOUND) }
         if (driver.status != DriverStatus.ONLINE) throw ConflictException(ErrorCode.DRIVER_NOT_AVAILABLE)
-        if (verification.synchronizedWorkflow && (
-            skills == null || !verification.mayDriveForRide(driver, ride, skills, now = clock.instant())
-        )) throw ConflictException(ErrorCode.DRIVER_NOT_VERIFIED)
+        if (!verification.mayDriveForRide(driver, ride, now = clock.instant())) throw ConflictException(ErrorCode.DRIVER_NOT_VERIFIED)
         val cashPayable = (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).roundToNearestThousandVnd()
             .takeIf { ride.paymentMethod == com.nhom15.datxebackend.common.enums.PaymentMethod.CASH }
         wallets.requireEligibleDriver(driverId, cashPayable, ride.fareEstimate.takeIf { cashPayable != null })
@@ -292,9 +288,7 @@ class RideStateMachine(
             throw ConflictException(ErrorCode.INVALID_RIDE_STATE)
         }
         drivers.findByIdForUpdate(driverId).orElseThrow { NotFoundException(ErrorCode.USER_NOT_FOUND) }.let { driver ->
-            if (verification.synchronizedWorkflow &&
-                (skills == null || !verification.mayDriveForRide(driver, ride, skills, now = clock.instant()))
-            ) throw ConflictException(ErrorCode.DRIVER_NOT_VERIFIED)
+            if (!verification.mayDriveForRide(driver, ride, now = clock.instant())) throw ConflictException(ErrorCode.DRIVER_NOT_VERIFIED)
             val cashPayable = (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).roundToNearestThousandVnd()
             .takeIf { ride.paymentMethod == com.nhom15.datxebackend.common.enums.PaymentMethod.CASH }
         wallets.requireEligibleDriver(driverId, cashPayable, ride.fareEstimate.takeIf { cashPayable != null })

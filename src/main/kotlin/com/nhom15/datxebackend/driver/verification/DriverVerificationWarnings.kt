@@ -199,13 +199,10 @@ object DriverVerificationWarnings {
 
         val captures = payload["captures"] as? Map<String, Any?> ?: emptyMap()
         val fields = payload["confirmed"] as? Map<String, Any?> ?: emptyMap()
-        val legacyBackfill = payload["legacyBackfill"] == true
 
-        if (!legacyBackfill) {
-            for (slot in REQUIRED_SLOTS) {
-                if (!captures.containsKey(slot)) {
-                    add("DOCUMENT_REQUIRED", "CAPTURE", slot = slot, severity = "BLOCKING")
-                }
+        for (slot in REQUIRED_SLOTS) {
+            if (!captures.containsKey(slot)) {
+                add("DOCUMENT_REQUIRED", "CAPTURE", slot = slot, severity = "BLOCKING")
             }
         }
         for ((slot, capObj) in captures) {

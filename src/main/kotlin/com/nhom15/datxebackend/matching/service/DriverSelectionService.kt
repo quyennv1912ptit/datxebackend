@@ -18,16 +18,14 @@ import com.nhom15.datxebackend.config.properties.DriverRanking
 import com.nhom15.datxebackend.config.properties.MatchingProperties
 import com.nhom15.datxebackend.matching.dto.RankedDriverDTO
 import com.nhom15.datxebackend.common.port.NearbyDriver
-import com.nhom15.datxebackend.driver.repository.DriverSkillRepository
 import com.nhom15.datxebackend.driver.verification.DriverVerificationEligibility
 
 @Service
 class DriverSelectionService(
     private val driverRepository: DriverRepository,
-    private val driverSkillRepository: DriverSkillRepository,
     private val properties: MatchingProperties,
     @org.springframework.beans.factory.annotation.Value("\${wallet.minimum-credit:50000}") private val minimumCredit: Long = 50_000,
-    private val verification: DriverVerificationEligibility = DriverVerificationEligibility(),
+    private val verification: DriverVerificationEligibility,
     private val redis: StringRedisTemplate? = null,
     private val rides: RideRepository? = null,
 ) {
@@ -46,18 +44,13 @@ class DriverSelectionService(
         val driversById: Map<Long, Driver> = driverRepository
             .findAllById(nearbyDrivers.map { it.driverId })
             .associateBy { it.id }
-        val verifiedDriverIds = if (verification.synchronizedWorkflow) driversById.keys else driverSkillRepository.findVerifiedDriverIds(
-            nearbyDrivers.map { it.driverId }.distinct(),
-            requiredVehicleType,
-        )
-
         return nearbyDrivers
             .mapNotNull { nearby ->
                 val driver = driversById[nearby.driverId] ?: return@mapNotNull null
-                if (nearby.driverId !in verifiedDriverIds || !nearby.distanceKm.isFinite() ||
+                if (!nearby.distanceKm.isFinite() ||
                     nearby.distanceKm !in 0.0..radiusKm || (driver.creditBalance ?: 0) < minimumCredit ||
                     !(if (ride == null) isEligible(driver, requiredVehicleType, requiredTransmission, verifySource = false)
-                    else verification.mayDriveForRide(driver, ride, driverSkillRepository, verifySource = false))) {
+                    else verification.mayDriveForRide(driver, ride, verifySource = false))) {
                     return@mapNotNull null
                 }
 
@@ -82,7 +75,7 @@ class DriverSelectionService(
         if (driver.status != DriverStatus.ONLINE) return false
         if ((driver.creditBalance ?: 0) < minimumCredit) return false
         if (driver.onlineVehicleType != requiredVehicleType) return false
-        return verification.mayDrive(driver, requiredVehicleType, requiredTransmission, driverSkillRepository, verifySource)
+        return verification.mayDrive(driver, requiredVehicleType, requiredTransmission, verifySource)
     }
 
     @Transactional
@@ -91,18 +84,15 @@ class DriverSelectionService(
         if (current.status != RideStatus.SEARCHING || current.redispatchCount != ride.redispatchCount) return false
         val driver = driverRepository.findByIdForUpdate(driverId).orElse(null) ?: return false
         if ((driver.creditBalance ?: 0) < minimumCredit ||
-            !verification.mayDriveForRide(driver, current, driverSkillRepository) ||
-            (!verification.synchronizedWorkflow && !driverSkillRepository.hasVerifiedSkill(driverId, ride.vehicleType))
+            !verification.mayDriveForRide(driver, current)
         ) return false
-        if (verification.synchronizedWorkflow) {
-            val position = redis?.opsForHash<String, String>()?.entries(RedisKeys.driverLocation(driverId.toString()))
+        val position = redis?.opsForHash<String, String>()?.entries(RedisKeys.driverLocation(driverId.toString()))
                 ?: return false
-            val lat = position["lat"]?.toDoubleOrNull() ?: return false
-            val lng = position["lng"]?.toDoubleOrNull() ?: return false
-            val point = GeoPoint(lat, lng)
-            if (!GeoUtils.isValid(point) || GeoUtils.distanceKm(point, ride.pickup.geoPoint) > properties.searchRadiiKm.last()) {
-                return false
-            }
+        val lat = position["lat"]?.toDoubleOrNull() ?: return false
+        val lng = position["lng"]?.toDoubleOrNull() ?: return false
+        val point = GeoPoint(lat, lng)
+        if (!GeoUtils.isValid(point) || GeoUtils.distanceKm(point, ride.pickup.geoPoint) > properties.searchRadiiKm.last()) {
+            return false
         }
         return record()
     }

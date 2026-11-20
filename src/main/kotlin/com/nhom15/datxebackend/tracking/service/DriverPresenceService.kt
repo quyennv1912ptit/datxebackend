@@ -10,7 +10,6 @@ import com.nhom15.datxebackend.common.exception.NotFoundException
 import com.nhom15.datxebackend.common.exception.BadRequestException
 import com.nhom15.datxebackend.common.redis.RedisKeys
 import com.nhom15.datxebackend.common.enums.VehicleType
-import com.nhom15.datxebackend.driver.repository.DriverSkillRepository
 import com.nhom15.datxebackend.tracking.dto.DriverAvailabilityResponse
 import org.slf4j.LoggerFactory
 import org.springframework.data.redis.core.StringRedisTemplate
@@ -23,11 +22,10 @@ import com.nhom15.datxebackend.driver.verification.DriverVerificationEligibility
 @Service
 class DriverPresenceService(
     private val driverRepository: DriverRepository,
-    private val driverSkillRepository: DriverSkillRepository,
     private val locationService: LocationService,
     private val redisTemplate: StringRedisTemplate,
     private val wallets: com.nhom15.datxebackend.payment.service.WalletService,
-    private val verification: DriverVerificationEligibility = DriverVerificationEligibility(),
+    private val verification: DriverVerificationEligibility,
     private val authenticatedUserCache: AuthenticatedUserCache? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
@@ -53,16 +51,10 @@ class DriverPresenceService(
             if (vehicleType == null) {
                 throw BadRequestException(message = "Cần chọn vehicle_type khi bật trạng thái online")
             }
-            if (!verification.mayGoOnline(driver, vehicleType, driverSkillRepository)) {
+            if (!verification.mayGoOnline(driver, vehicleType)) {
                 throw ForbiddenException(
                     ErrorCode.DRIVER_NOT_VERIFIED,
                     "Tài xế chưa đủ điều kiện nhận chuyến",
-                )
-            }
-            if (!verification.synchronizedWorkflow && !driverSkillRepository.hasVerifiedSkill(driverId, vehicleType)) {
-                throw ForbiddenException(
-                    ErrorCode.DRIVER_NOT_VERIFIED,
-                    "Chưa có kỹ năng đã được duyệt cho loại xe $vehicleType",
                 )
             }
             val id = driverId.toString()

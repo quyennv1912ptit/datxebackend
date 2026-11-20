@@ -15,7 +15,6 @@ import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.customer.repository.CustomerRepository
 import com.nhom15.datxebackend.driver.entity.Driver
 import com.nhom15.datxebackend.driver.repository.DriverRepository
-import com.nhom15.datxebackend.driver.repository.DriverSkillRepository
 import com.nhom15.datxebackend.driver.verification.DriverVerificationEligibility
 import com.nhom15.datxebackend.notification.token.DeviceTokenService
 import com.nhom15.datxebackend.payment.service.WalletService
@@ -90,12 +89,11 @@ class DriverOnlineVehicleTypeTests {
     @Test
     fun `updateAvailability sets, clears and returns onlineVehicleType while evicting user cache`() {
         val drivers = Mockito.mock(DriverRepository::class.java)
-        val skills = Mockito.mock(DriverSkillRepository::class.java)
         val locations = Mockito.mock(LocationService::class.java)
         val redis = Mockito.mock(StringRedisTemplate::class.java)
         val wallets = Mockito.mock(WalletService::class.java)
         val cache = Mockito.mock(AuthenticatedUserCache::class.java)
-        val eligibility = DriverVerificationEligibility()
+        val eligibility = Mockito.mock(DriverVerificationEligibility::class.java)
 
         val driver = Driver().apply {
             id = 7L
@@ -104,9 +102,9 @@ class DriverOnlineVehicleTypeTests {
             verificationStatus = "APPROVED"
         }
         Mockito.`when`(drivers.findByIdForUpdate(7L)).thenReturn(Optional.of(driver))
-        Mockito.`when`(skills.hasVerifiedSkill(7L, VehicleType.CAR)).thenReturn(true)
+        Mockito.`when`(eligibility.mayGoOnline(driver, VehicleType.CAR)).thenReturn(true)
 
-        val service = DriverPresenceService(drivers, skills, locations, redis, wallets, eligibility, cache)
+        val service = DriverPresenceService(drivers, locations, redis, wallets, eligibility, cache)
 
         val onlineResponse = service.updateAvailability(7L, true, VehicleType.CAR)
         assertEquals(DriverStatus.ONLINE, onlineResponse.status)

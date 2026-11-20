@@ -23,12 +23,6 @@ class UploadSignatureService(
                 CloudinaryFolders.forActor(actor)
             }
             null, "DEFAULT" -> CloudinaryFolders.forActor(actor)
-            "DRIVER_DOCUMENT" -> {
-                if (actor.role != Role.DRIVER) {
-                    throw BadRequestException(message = "Chỉ tài xế mới được ký upload giấy tờ")
-                }
-                CloudinaryFolders.driverDocuments(actor.id)
-            }
             "CHAT", "CHAT_IMAGE" -> {
                 if (actor.role !in setOf(Role.CUSTOMER, Role.DRIVER)) {
                     throw BadRequestException(message = "Chỉ khách hàng hoặc tài xế trong chuyến mới được tải ảnh chat")

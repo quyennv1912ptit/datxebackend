@@ -12,7 +12,6 @@ import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.exception.BadRequestException
 import com.nhom15.datxebackend.common.exception.NotFoundException
 import com.nhom15.datxebackend.driver.dto.DriverProfileResponse
-import com.nhom15.datxebackend.driver.dto.UpdateDriverProfileRequest
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -23,26 +22,6 @@ class DriverProfileService(
 ) {
     @Transactional(readOnly = true)
     fun get(driverId: Long): DriverProfileResponse = response(getDriver(driverId))
-
-    @Transactional
-    fun update(driverId: Long, request: UpdateDriverProfileRequest): DriverProfileResponse {
-        val driver = getDriver(driverId)
-        driver.licenseNumber = request.licenseNumber.trim()
-        driver.licenseClass = request.licenseClass.trim().uppercase()
-        driver.yearsOfExperience = request.yearsOfExperience
-        request.licenseImageUrl?.let { imageUrl ->
-            val url = imageUrl.trim()
-            if (!(url.startsWith("https://") || url.startsWith("http://"))) {
-                throw BadRequestException(message = "Đường dẫn ảnh bằng lái không hợp lệ")
-            }
-            driver.licenseImageUrl = url
-        }
-        // Chỉ cập nhật khi client gửi trường; app cũ không gửi thì giữ nguyên thông tin ngân hàng.
-        request.bankName?.let { driver.bankName = it.trim().takeIf(String::isNotEmpty) }
-        request.bankAccountNumber?.let { driver.bankAccountNumber = it.trim().takeIf(String::isNotEmpty) }
-        val saved = driverRepository.save(driver)
-        return response(saved)
-    }
 
     @Transactional
     fun updateIdentity(driverId: Long, request: UpdateDriverIdentityRequest): DriverIdentityResponse {
@@ -63,32 +42,15 @@ class DriverProfileService(
         return DriverIdentityResponse(driver.fullName, driver.email, driver.bankName, driver.bankAccountNumber)
     }
 
-    @Transactional
-    fun review(driverId: Long, approved: Boolean): DriverProfileResponse {
-        val driver = getDriver(driverId)
-        if (approved && (driver.licenseNumber.isNullOrBlank() || driver.licenseClass.isNullOrBlank())) {
-            throw BadRequestException(message = "Tài xế chưa khai báo đủ thông tin bằng lái")
-        }
-        driver.licenseVerified = approved
-        return response(driverRepository.save(driver))
-    }
-
     private fun response(driver: Driver): DriverProfileResponse {
         val id = requireNotNull(driver.id)
-        val complete = !driver.licenseNumber.isNullOrBlank() && !driver.licenseClass.isNullOrBlank()
         return DriverProfileResponse(
             id = id,
             avatarUrl = driver.avatarUrl,
             licenseNumber = driver.licenseNumber,
             licenseClass = driver.licenseClass,
             yearsOfExperience = driver.yearsOfExperience,
-            licenseImageUrl = driver.licenseImageUrl,
             licenseVerified = driver.licenseVerified == true,
-            licenseReviewStatus = when {
-                driver.licenseVerified == true -> "APPROVED"
-                complete -> "PENDING"
-                else -> "NOT_SUBMITTED"
-            },
             bankName = driver.bankName,
             bankAccountNumber = driver.bankAccountNumber,
         )

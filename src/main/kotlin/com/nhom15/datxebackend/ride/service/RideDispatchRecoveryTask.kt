@@ -4,6 +4,7 @@ import com.nhom15.datxebackend.auth.security.AuthenticatedUserCache
 
 import com.nhom15.datxebackend.common.enums.DriverStatus
 import com.nhom15.datxebackend.driver.repository.DriverRepository
+import com.nhom15.datxebackend.driver.verification.DriverVerificationEligibility
 import com.nhom15.datxebackend.matching.service.DriverReleaseService
 import com.nhom15.datxebackend.ride.repository.ACTIVE_RIDE_STATUSES
 import com.nhom15.datxebackend.ride.repository.DispatchOfferRepository
@@ -35,6 +36,7 @@ class RideDispatchRecoveryTask(
     private val drivers: DriverRepository,
     private val driverRelease: DriverReleaseService,
     transactionManager: PlatformTransactionManager,
+    private val verification: DriverVerificationEligibility,
     private val userCache: AuthenticatedUserCache? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
@@ -94,7 +96,7 @@ class RideDispatchRecoveryTask(
                 if (driver.status == DriverStatus.BUSY &&
                     rideRepository.findFirstByDriverIdAndStatusInOrderByCreatedAtDesc(driver.id, assigned) == null &&
                     !offers.driverHasOffer(driver.id)) {
-                    driver.status = DriverStatus.ONLINE
+                    driver.status = verification.statusAfterRide(driver)
                     drivers.save(driver)
                     userCache?.evictAfterCommit(driver.firebaseUid)
                     val current = redisTemplate.opsForValue().get(RedisKeys.driverCurrentRide(driver.id.toString())) ?: ""

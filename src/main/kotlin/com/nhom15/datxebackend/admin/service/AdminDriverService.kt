@@ -6,77 +6,37 @@ import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.api.PageResponse
 import com.nhom15.datxebackend.common.enums.DriverStatus
 import com.nhom15.datxebackend.common.enums.Role
-import com.nhom15.datxebackend.common.enums.Transmission
-import com.nhom15.datxebackend.common.enums.VehicleType
 import com.nhom15.datxebackend.common.exception.BadRequestException
-import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.common.exception.ForbiddenException
 import com.nhom15.datxebackend.common.exception.NotFoundException
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.common.websocket.PayloadType
 import com.nhom15.datxebackend.driver.dto.AdminDriverDetail
-import com.nhom15.datxebackend.driver.dto.AdminDriverDocumentQueueItem
 import com.nhom15.datxebackend.driver.dto.AdminDriverFilter
 import com.nhom15.datxebackend.driver.dto.AdminDriverSummary
-import com.nhom15.datxebackend.driver.dto.DocumentVerificationStatus
-import com.nhom15.datxebackend.driver.dto.DriverDocumentResponse
-import com.nhom15.datxebackend.driver.dto.DriverVerificationStatus
-import com.nhom15.datxebackend.driver.dto.ReviewDriverDocumentRequest
-import com.nhom15.datxebackend.driver.dto.SetDriverVerificationStatusRequest
-import com.nhom15.datxebackend.driver.dto.VerifyDriverSkillRequest
 import com.nhom15.datxebackend.driver.entity.Driver
-import com.nhom15.datxebackend.driver.repository.DriverDocumentRepository
 import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.driver.repository.DriverSkillRepository
-import com.nhom15.datxebackend.driver.verification.ApprovedCapability
-import com.nhom15.datxebackend.driver.verification.LicenseEligibilityPolicy
-import com.nhom15.datxebackend.driver.verification.LicenseEntitlement
-import com.nhom15.datxebackend.driver.verification.LicenseValidity
-import com.nhom15.datxebackend.driver.verification.VerificationProjectionRepository
-import com.nhom15.datxebackend.driver.verification.VerificationStatus
 import com.nhom15.datxebackend.notification.api.NotificationPort
 import com.nhom15.datxebackend.notification.api.Recipient
 import com.nhom15.datxebackend.notification.dto.DriverAccountNotificationPayload
 import com.nhom15.datxebackend.tracking.service.LocationService
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
-import java.time.Instant
-import java.util.UUID
 
 @Service
 class AdminDriverService @Autowired constructor(
     private val queryRepository: AdminDriverQueryRepository,
-    private val documentRepository: DriverDocumentRepository,
     private val skillRepository: DriverSkillRepository,
     private val driverRepository: DriverRepository,
     private val locationService: LocationService,
     private val notificationPort: NotificationPort,
-    @Value("\${app.driver.required-document-types:CCCD,DRIVER_LICENSE}") requiredDocumentTypes: String,
-    @Value("\${app.driver.license-document-type:DRIVER_LICENSE}") licenseDocumentType: String,
-    @Value("\${app.verification-sync.enabled:false}") private val verificationSyncEnabled: Boolean = false,
-    private val projection: VerificationProjectionRepository? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
-    private val requiredDocumentTypes = requiredDocumentTypes.split(',')
-        .map(String::trim)
-        .filter(String::isNotEmpty)
-        .map(String::uppercase)
-        .distinct()
-    private val licenseDocumentType = licenseDocumentType.trim().uppercase()
-
-    init {
-        require(this.requiredDocumentTypes.isNotEmpty()) {
-            "app.driver.required-document-types phải có ít nhất một loại giấy tờ"
-        }
-        require(this.licenseDocumentType.isNotBlank()) {
-            "app.driver.license-document-type không được để trống"
-        }
-    }
 
     @Transactional(readOnly = true)
     fun list(actor: AuthUser, filter: AdminDriverFilter): PageResponse<AdminDriverSummary> {
@@ -104,168 +64,9 @@ class AdminDriverService @Autowired constructor(
             ?: throw NotFoundException(ErrorCode.USER_NOT_FOUND, "Không tìm thấy tài xế")
         return AdminDriverDetail(
             driver = driver,
-            documents = documentRepository.findAllForDriver(driverId),
+            verification = queryRepository.findVerification(driverId),
             skills = skillRepository.findAllForDriver(driverId),
         )
-    }
-
-    @Transactional(readOnly = true)
-    fun documentQueue(
-        actor: AuthUser,
-        status: DocumentVerificationStatus,
-        page: Int,
-        size: Int,
-    ): PageResponse<AdminDriverDocumentQueueItem> {
-        requireAdmin(actor)
-        validatePage(page, size)
-        val total = documentRepository.countReviewQueue(status)
-        val content = documentRepository.findReviewQueue(status, size, page.toLong() * size).map { row ->
-            AdminDriverDocumentQueueItem(row.document, row.driverName, row.driverPhone)
-        }
-        val totalPages = if (total == 0L) 0 else ((total + size - 1) / size).toInt()
-        return PageResponse(content, page, size, total, totalPages, page + 1 < totalPages)
-    }
-
-    @Transactional
-    fun reviewDocument(actor: AuthUser, documentId: Long, request: ReviewDriverDocumentRequest): DriverDocumentResponse {
-        requireAdmin(actor)
-        val initial = documentRepository.findById(documentId)
-            ?: throw NotFoundException(ErrorCode.DRIVER_DOCUMENT_NOT_FOUND)
-        val driver = lockDriver(initial.driverId)
-        val document = documentRepository.findById(documentId)
-            ?.takeIf(DriverDocumentResponse::isCurrent)
-            ?: throw NotFoundException(ErrorCode.DRIVER_DOCUMENT_NOT_FOUND)
-        val rejectionReason = request.rejectionReason?.trim()?.takeIf(String::isNotEmpty)
-        if (request.status == DocumentVerificationStatus.REJECTED && rejectionReason == null) {
-            throw BadRequestException(message = "Cần nhập rejection_reason khi từ chối giấy tờ")
-        }
-        val updated = documentRepository.review(
-            id = documentId,
-            status = request.status,
-            rejectionReason = rejectionReason,
-            adminId = actor.id,
-            now = Instant.now(),
-        )
-        if (updated == 0) throw NotFoundException(ErrorCode.DRIVER_DOCUMENT_NOT_FOUND)
-
-        if (document.documentType == licenseDocumentType) {
-            driver.licenseVerified = request.status == DocumentVerificationStatus.APPROVED
-            if (request.status == DocumentVerificationStatus.APPROVED) {
-                driver.licenseNumber = document.documentNumber
-                driver.licenseExpiryDate = document.expiresAt
-                driver.licenseImageUrl = document.secureUrl
-            }
-        }
-        val invalidatesApproval = request.status == DocumentVerificationStatus.REJECTED &&
-            (document.documentType in requiredDocumentTypes || document.documentType == licenseDocumentType)
-        if (invalidatesApproval) {
-            driver.verificationStatus = "PENDING"
-            driver.status = DriverStatus.OFFLINE
-            driver.onlineVehicleType = null
-            projection?.current(driver.firebaseUid)?.let { currentProj ->
-                projection.upsertDirectProjection(
-                    ownerUid = driver.firebaseUid,
-                    applicationId = currentProj.capabilities.firstOrNull()?.applicationId ?: UUID.randomUUID(),
-                    revision = currentProj.revision + 1L,
-                    status = VerificationStatus.NEEDS_MORE_INFO,
-                    entitlements = emptyList(),
-                    cccdExpiresOn = currentProj.cccdExpiresOn,
-                    capabilityReview = null,
-                )
-            }
-        }
-        if (document.documentType == licenseDocumentType || invalidatesApproval) driverRepository.save(driver)
-
-        afterCommit {
-            if (invalidatesApproval) removeFromAvailability(document.driverId)
-            sendNotification(
-                document.driverId,
-                DriverAccountNotificationPayload(
-                    type = PayloadType.DRIVER_DOCUMENT_REVIEWED,
-                    status = request.status.name,
-                    documentType = document.documentType,
-                    rejectionReason = rejectionReason,
-                ),
-            )
-        }
-        return documentRepository.findById(documentId)
-            ?: throw NotFoundException(ErrorCode.DRIVER_DOCUMENT_NOT_FOUND)
-    }
-
-    @Transactional
-    fun verifySkill(actor: AuthUser, skillId: Long, request: VerifyDriverSkillRequest) {
-        requireAdmin(actor)
-        if (skillRepository.verify(skillId, request.verified) == 0) {
-            throw NotFoundException(ErrorCode.DRIVER_SKILL_NOT_FOUND)
-        }
-    }
-
-    @Transactional
-    fun setVerificationStatus(
-        actor: AuthUser,
-        driverId: Long,
-        request: SetDriverVerificationStatusRequest,
-    ) {
-        requireAdmin(actor)
-        if (verificationSyncEnabled) {
-            throw ConflictException(message = "Hãy quyết định trạng thái xác minh trên hồ sơ eKYC")
-        }
-        val driver = lockDriver(driverId)
-        when (request.status) {
-            DriverVerificationStatus.APPROVED -> {
-                val approvedTypes = documentRepository.findCurrentForDriver(driverId)
-                    .filter { it.verificationStatus == DocumentVerificationStatus.APPROVED }
-                    .map { it.documentType }
-                    .toSet()
-                val missing = requiredDocumentTypes.filterNot(approvedTypes::contains)
-                if (missing.isNotEmpty()) {
-                    throw ConflictException(message = "Chưa duyệt đủ giấy tờ bắt buộc: ${missing.joinToString()}")
-                }
-                driver.verificationStatus = DriverVerificationStatus.APPROVED.name
-                driver.licenseVerified = licenseDocumentType in approvedTypes
-                driverRepository.save(driver)
-                syncLegacyApprovalToProjection(driver)
-                afterCommit {
-                    sendNotification(
-                        driverId,
-                        DriverAccountNotificationPayload(
-                            type = PayloadType.DRIVER_VERIFICATION_UPDATED,
-                            status = DriverVerificationStatus.APPROVED.name,
-                        ),
-                    )
-                }
-            }
-
-            DriverVerificationStatus.REJECTED -> {
-                driver.verificationStatus = DriverVerificationStatus.REJECTED.name
-                driver.status = DriverStatus.OFFLINE
-                driver.onlineVehicleType = null
-                driver.licenseVerified = false
-                driverRepository.save(driver)
-                val existingProj = projection?.current(driver.firebaseUid)
-                projection?.upsertDirectProjection(
-                    ownerUid = driver.firebaseUid,
-                    applicationId = existingProj?.capabilities?.firstOrNull()?.applicationId ?: UUID.randomUUID(),
-                    revision = (existingProj?.revision ?: 0L) + 1L,
-                    status = VerificationStatus.REJECTED,
-                    entitlements = emptyList(),
-                    cccdExpiresOn = existingProj?.cccdExpiresOn,
-                    capabilityReview = null,
-                )
-                val reason = request.rejectionReason?.trim()?.takeIf(String::isNotEmpty)
-                afterCommit {
-                    removeFromAvailability(driverId)
-                    sendNotification(
-                        driverId,
-                        DriverAccountNotificationPayload(
-                            type = PayloadType.DRIVER_VERIFICATION_UPDATED,
-                            status = DriverVerificationStatus.REJECTED.name,
-                            rejectionReason = reason,
-                        ),
-                    )
-                }
-            }
-        }
     }
 
     @Transactional
@@ -285,51 +86,6 @@ class AdminDriverService @Autowired constructor(
                 ),
             )
         }
-    }
-
-    private fun syncLegacyApprovalToProjection(driver: Driver) {
-        val repo = projection ?: return
-        val existing = repo.current(driver.firebaseUid)
-        val appId = existing?.capabilities?.firstOrNull()?.applicationId ?: UUID.randomUUID()
-        val revision = (existing?.revision ?: 0L) + 1L
-        val grade = driver.licenseClass?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: "A1"
-        val expiry = driver.licenseExpiryDate
-        val validity = if (expiry != null) LicenseValidity.HAS_EXPIRY else LicenseValidity.NO_EXPIRY
-        val entitlement = LicenseEntitlement(grade, validity, expiry)
-        val skills = skillRepository.findAllForDriver(driver.id).filter { it.verified }
-        val groupIds = linkedSetOf<String>()
-        if (grade in setOf("A1", "A2", "A", "B1") || skills.any { it.vehicleType == VehicleType.MOTORCYCLE }) {
-            groupIds += listOf("moto-50-125", "moto-electric-4-11")
-        }
-        if (grade in setOf("A2", "A")) {
-            groupIds += listOf("moto-126-174", "moto-175-plus", "moto-electric-over-11-under-14", "moto-electric-14-plus")
-        }
-        if (grade in setOf("B", "B1", "B2", "C1", "C", "D1", "D2", "D", "E") || skills.any { it.vehicleType == VehicleType.CAR }) {
-            groupIds += "car-auto"
-            val onlyAuto = grade == "B1" || (skills.any { it.vehicleType == VehicleType.CAR } && skills.none { it.vehicleType == VehicleType.CAR && it.transmission == Transmission.MANUAL })
-            if (!onlyAuto) groupIds += "car-manual"
-        }
-        val capabilities = groupIds.map { groupId ->
-            ApprovedCapability(
-                groupId = groupId,
-                applicationId = appId,
-                submissionRevision = revision - 1L,
-                approvalRevision = revision,
-                policyVersion = LicenseEligibilityPolicy.VERSION,
-                entitlements = listOf(entitlement),
-            )
-        }
-        repo.upsertDirectProjection(
-            ownerUid = driver.firebaseUid,
-            applicationId = appId,
-            revision = revision,
-            status = VerificationStatus.APPROVED,
-            entitlements = listOf(entitlement),
-            cccdExpiresOn = existing?.cccdExpiresOn,
-            capabilityReview = null,
-            explicitCapabilities = capabilities,
-        )
-        repo.savePreferences(driver.id, revision, (existing?.preferenceVersion ?: 0L) + 1L, groupIds)
     }
 
     private fun sendNotification(driverId: Long, payload: DriverAccountNotificationPayload) {

@@ -89,9 +89,6 @@ class Driver : BaseEntity(), RoleAwareEntity {
     @Column(name = "license_verified")
     var licenseVerified: Boolean? = false
 
-    @Column(name = "license_image_url", columnDefinition = "text")
-    var licenseImageUrl: String? = null
-
     @Column(name = "total_trips")
     var totalTrips: Int? = 0
 

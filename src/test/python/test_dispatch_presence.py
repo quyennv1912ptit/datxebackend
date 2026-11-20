@@ -9,8 +9,8 @@ import re
 import unittest
 
 KOTLIN = Path(__file__).resolve().parents[2] / 'main/kotlin/com/nhom15/datxebackend'
-SOURCE = (KOTLIN / 'matching/service/DispatchScripts.kt').read_text()
-SOURCE += (KOTLIN / 'tracking/service/LocationService.kt').read_text()
+SOURCE = (KOTLIN / 'matching/service/DispatchScripts.kt').read_text(encoding='utf-8')
+SOURCE += (KOTLIN / 'tracking/service/LocationService.kt').read_text(encoding='utf-8')
 LUA = ctypes.CDLL(ctypes.util.find_library('lua5.4'))
 LUA.luaL_newstate.restype = ctypes.c_void_p
 for name in ['luaL_openlibs', 'lua_close']:
@@ -163,9 +163,9 @@ class DispatchPresenceTests(unittest.TestCase):
 
     def test_idle_reconcile_cannot_free_driver_owned_by_new_ride(self):
         execute("""seed();offer();accept();
-            assert(run('RECONCILE_IDLE',{'available_drivers'},{'7','41'})==0)
+            assert(run('RECONCILE_IDLE',{'available_drivers'},{'7','41','ONLINE'})==0)
             assert(redis.call('GET','driver:7:status')=='BUSY')
-            assert(run('RECONCILE_IDLE',{'available_drivers'},{'7','42'})==1)
+            assert(run('RECONCILE_IDLE',{'available_drivers'},{'7','42','ONLINE'})==1)
             assert(redis.call('GET','driver:7:status')=='ONLINE')""")
 
     def test_delayed_gps_cannot_replace_a_newer_fix_or_extend_its_ttl(self):

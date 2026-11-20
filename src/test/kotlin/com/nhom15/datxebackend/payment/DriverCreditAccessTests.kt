@@ -1,7 +1,8 @@
 package com.nhom15.datxebackend.payment
 
 import com.nhom15.datxebackend.driver.entity.Driver
-import com.nhom15.datxebackend.driver.repository.*
+import com.nhom15.datxebackend.driver.repository.DriverRepository
+import com.nhom15.datxebackend.driver.verification.DriverVerificationEligibility
 import com.nhom15.datxebackend.common.enums.*
 import com.nhom15.datxebackend.payment.exception.CreditWalletBelowMinimumException
 import com.nhom15.datxebackend.payment.service.WalletService
@@ -21,7 +22,7 @@ class DriverCreditAccessTests {
         val driver = Driver().apply { status = DriverStatus.OFFLINE }
         `when`(drivers.findByIdForUpdate(7)).thenReturn(Optional.of(driver))
         doThrow(CreditWalletBelowMinimumException()).`when`(wallets).requireEligibleDriver(7)
-        val presence = DriverPresenceService(drivers, mock(DriverSkillRepository::class.java), locations, redis, wallets)
+        val presence = DriverPresenceService(drivers, locations, redis, wallets, mock(DriverVerificationEligibility::class.java))
         assertThrows(CreditWalletBelowMinimumException::class.java) { presence.setOnline(7, true, VehicleType.CAR) }
         assertEquals(DriverStatus.OFFLINE, driver.status)
         verifyNoInteractions(redis, locations)

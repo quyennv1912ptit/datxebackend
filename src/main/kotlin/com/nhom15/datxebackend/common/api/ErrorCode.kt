@@ -32,8 +32,6 @@ enum class ErrorCode(val httpStatus: HttpStatus, val defaultMessage: String) {
     ACCOUNT_LOCKED(HttpStatus.FORBIDDEN, "Tài khoản đã bị khóa"),
     ACCOUNT_NOT_FOUND(HttpStatus.NOT_FOUND, "Tài khoản chưa được đăng ký"),
     DRIVER_NOT_VERIFIED(HttpStatus.FORBIDDEN, "Tài xế chưa được duyệt"),
-    DRIVER_DOCUMENT_NOT_FOUND(HttpStatus.NOT_FOUND, "Không tìm thấy giấy tờ hiện tại của tài xế"),
-    DRIVER_SKILL_NOT_FOUND(HttpStatus.NOT_FOUND, "Không tìm thấy kỹ năng tài xế"),
     VEHICLE_NOT_FOUND(HttpStatus.NOT_FOUND, "Không tìm thấy xe"),
     NOTIFICATION_NOT_FOUND(HttpStatus.NOT_FOUND, "Không tìm thấy thông báo"),
     ACCOUNT_ALREADY_EXISTS(HttpStatus.CONFLICT, "Tài khoản đã được đăng ký"),

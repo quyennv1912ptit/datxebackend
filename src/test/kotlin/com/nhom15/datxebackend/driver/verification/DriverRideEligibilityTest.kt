@@ -8,7 +8,6 @@ import com.nhom15.datxebackend.common.enums.Transmission
 import com.nhom15.datxebackend.common.enums.VehicleType
 import com.nhom15.datxebackend.common.port.VehicleBookingDetails
 import com.nhom15.datxebackend.driver.entity.Driver
-import com.nhom15.datxebackend.driver.repository.DriverSkillRepository
 import com.nhom15.datxebackend.ride.entity.Ride
 import com.nhom15.datxebackend.ride.entity.RideType
 import com.nhom15.datxebackend.vehicle.catalog.VehicleCatalog
@@ -30,7 +29,6 @@ import kotlin.test.assertTrue
 class DriverRideEligibilityTest {
     private val source = mock(VerificationProjectionRepository::class.java)
     private val sync = mock(VerificationSync::class.java)
-    private val skills = mock(DriverSkillRepository::class.java)
     private val eligibility = DriverVerificationEligibility(source, sync)
     private val application = UUID.randomUUID()
     private val head = VerificationHead(UUID.randomUUID(), 2)
@@ -65,7 +63,7 @@ class DriverRideEligibilityTest {
     }
 
     private fun permits(ride: Ride, starting: Boolean = false, at: Instant = now) =
-        eligibility.mayDriveForRide(driver, ride, skills, starting = starting, now = at)
+        eligibility.mayDriveForRide(driver, ride, starting = starting, now = at)
 
     @Test
     fun `exact immutable group selects correct entitlement and does not widen legacy or mismatched trips`() {
@@ -119,7 +117,7 @@ class DriverRideEligibilityTest {
         val rides = mock(RideRepository::class.java)
         `when`(drivers.findByIdForUpdate(7)).thenReturn(Optional.of(driver))
         `when`(rides.findByIdForUpdate(91)).thenReturn(Optional.of(trip))
-        val selection = DriverSelectionService(drivers, skills, MatchingProperties(),
+        val selection = DriverSelectionService(drivers, MatchingProperties(),
             verification = eligibility, redis = mock(StringRedisTemplate::class.java), rides = rides)
         stub(record.copy(enabledGroups = emptySet()))
         assertFalse(selection.recordOfferIfEligible(trip, 7) { error("Record must not be called") })
