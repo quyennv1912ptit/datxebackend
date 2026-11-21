@@ -34,3 +34,17 @@ data class UpdateDriverIdentityRequest(
 )
 
 data class DriverIdentityResponse(val fullName: String?, val email: String?, val bankName: String? = null, val bankAccountNumber: String? = null)
+
+data class UpdateDriverAvatarRequest(
+    @JsonProperty("secure_url")
+    @JsonAlias("secureUrl")
+    @field:NotBlank
+    @field:Size(max = 2048)
+    val secureUrl: String,
+
+    @JsonProperty("public_id")
+    @JsonAlias("publicId")
+    @field:NotBlank
+    @field:Size(max = 512)
+    val publicId: String,
+)

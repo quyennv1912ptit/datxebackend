@@ -26,7 +26,12 @@ class CloudinaryAssetService(private val cloudinary: Cloudinary) {
     private val log = LoggerFactory.getLogger(javaClass)
 
     fun validateCustomerImage(actor: AuthUser, secureUrl: String, publicId: String) {
-        requireOwnedAsset(publicId, "${CloudinaryFolders.forActor(actor)}/")
+        validateOwnedImage(actor.role, actor.id, secureUrl, publicId)
+    }
+
+    /** Dùng chung cho avatar khách hàng và avatar tài xế: ảnh phải nằm trong thư mục của chính chủ. */
+    fun validateOwnedImage(role: Role, id: Long, secureUrl: String, publicId: String) {
+        requireOwnedAsset(publicId, "${CloudinaryFolders.forActor(role, id)}/")
         validateCloudinaryImage(secureUrl, publicId)
     }
 
