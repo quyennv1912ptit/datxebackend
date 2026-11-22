@@ -128,6 +128,15 @@ class PaymentService(
         return (loadPayment(rideId) ?: throw NotFoundException(ErrorCode.PAYMENT_NOT_FOUND)).toConfirmation(rideId)
     }
 
+    internal fun allowsVoucherPaymentMethod(rideId: Long, method: PaymentMethod): Boolean =
+        jdbcTemplate.queryForList(
+            """SELECT v.allowed_payment_method
+               FROM voucher_usages u JOIN vouchers v ON v.id = u.voucher_id
+               WHERE u.ride_id = ? AND v.allowed_payment_method IS NOT NULL
+                 AND v.allowed_payment_method <> ?""",
+            String::class.java, rideId, method.name,
+        ).isEmpty()
+
     @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT)
     @Transactional(propagation = Propagation.MANDATORY)
     fun onRideCompleted(event: RideCompleted) {
@@ -146,7 +155,12 @@ class PaymentService(
 
         // Driver's 80% share is based on the original fare before the voucher.
         val rawFare = ride.fareEstimate
-        val settledMethod = wallets.settle(ride.id, ride.customerId, event.driverId, event.finalFare.amount, ride.paymentMethod, rawFare)
+        val allowCashFallback = ride.paymentMethod != PaymentMethod.WALLET ||
+            allowsVoucherPaymentMethod(ride.id, PaymentMethod.CASH)
+        val settledMethod = wallets.settle(
+            ride.id, ride.customerId, event.driverId, event.finalFare.amount, ride.paymentMethod, rawFare,
+            allowCashFallback = allowCashFallback,
+        )
         if (ride.paymentMethod != settledMethod) ride.paymentMethod = settledMethod
         val paidNow = settledMethod == PaymentMethod.WALLET || event.finalFare.amount == 0L
         val paidAt = if (paidNow) java.sql.Timestamp.from(Instant.now()) else null

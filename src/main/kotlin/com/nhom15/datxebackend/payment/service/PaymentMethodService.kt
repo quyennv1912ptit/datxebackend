@@ -6,6 +6,7 @@ import com.nhom15.datxebackend.common.exception.*
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.payment.dto.RidePaymentResponse
 import com.nhom15.datxebackend.payment.event.PaymentUpdated
+import com.nhom15.datxebackend.payment.exception.PaymentMethodMismatchException
 import com.nhom15.datxebackend.ride.repository.RideRepository
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.jdbc.core.JdbcTemplate
@@ -36,6 +37,9 @@ class PaymentMethodService(private val rides: RideRepository, private val paymen
         if (payment.method != expectedMethod.name || ride.paymentMethod.name != payment.method)
             throw ConflictException(message = "Phương thức thanh toán đã thay đổi. Vui lòng kiểm tra lại.")
         if (method == expectedMethod) throw BadRequestException(message = "Hãy chọn phương thức khác phương thức hiện tại")
+        if (!payments.allowsVoucherPaymentMethod(rideId, method)) {
+            throw PaymentMethodMismatchException("Voucher không áp dụng cho phương thức thanh toán này")
+        }
         val driverId = ride.driverId ?: throw ConflictException(message = "Chuyến chưa có tài xế")
         if (method == PaymentMethod.WALLET) wallets.pendingCashToWallet(rideId, actor.id, driverId, payment.amount, ride.fareEstimate)
         else {

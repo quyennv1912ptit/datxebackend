@@ -1,8 +1,10 @@
 package com.nhom15.datxebackend.payment
 
+import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.domain.Money
 import com.nhom15.datxebackend.common.enums.PaymentMethod
 import com.nhom15.datxebackend.common.enums.Role
+import com.nhom15.datxebackend.common.exception.AppException
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.common.util.roundToNearestThousandVnd
 import com.nhom15.datxebackend.customer.repository.CustomerRepository
@@ -16,9 +18,11 @@ import com.nhom15.datxebackend.ride.event.RideCompleted
 import com.nhom15.datxebackend.ride.repository.RideRepository
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
 import org.mockito.Mockito
 import org.springframework.context.ApplicationEventPublisher
@@ -118,6 +122,72 @@ class VoucherSettlementPostgresTests {
 
     private fun balance(userId: Long, type: String): Long =
         jdbc.queryForObject("SELECT balance FROM wallets WHERE user_id = ? AND wallet_type = ?", Long::class.java, userId, type)!!
+
+    private fun seedVoucherUsage(rideId: Long, discount: Long, method: PaymentMethod) {
+        val voucherId = jdbc.queryForObject(
+            """INSERT INTO vouchers(code, discount_type, value, usage_count, valid_from, valid_to, allowed_payment_method)
+               VALUES ('RESTRICTED', 'FIXED', ?, 1, now() - interval '1 day', now() + interval '1 day', ?)
+               RETURNING id""",
+            Long::class.javaObjectType, discount, method.name,
+        )!!
+        jdbc.update(
+            "INSERT INTO voucher_usages(ride_id, customer_id, voucher_id, discount_amount) VALUES (?, 7002, ?, ?)",
+            rideId, voucherId, discount,
+        )
+    }
+
+    @Test
+    fun `cash-only voucher prevents switching a pending payment to wallet`() {
+        val rideId = 9501L
+        seedBase()
+        seedRide(rideId, 50_000, 5_000, 45_000, "CASH")
+        seedVoucherUsage(rideId, 5_000, PaymentMethod.CASH)
+        tx.executeWithoutResult { payments.onRideCompleted(RideCompleted(rideId, 7002, 7001, Money(45_000))) }
+
+        val customer = AuthUser(7002, "vs-c", Role.CUSTOMER, "Khách", null, null, "ACTIVE")
+        val error = assertThrows<AppException> {
+            tx.executeWithoutResult {
+                methodChanges.change(customer, rideId, PaymentMethod.WALLET, PaymentMethod.CASH, "restricted-voucher")
+            }
+        }
+
+        assertEquals(ErrorCode.PAYMENT_METHOD_MISMATCH, error.errorCode)
+        val payment = payments.getRidePayment(rideId)!!
+        assertEquals("CASH", payment.method)
+        assertEquals("PENDING", payment.status)
+        assertEquals("CASH", jdbc.queryForObject("SELECT payment_method FROM rides WHERE id = ?", String::class.java, rideId))
+        assertEquals(200_000L, balance(7002, "CUSTOMER"))
+        assertEquals(95_000L, balance(7001, "CREDIT"))
+        assertEquals(0L, balance(7001, "CASH"))
+        assertEquals(1L, jdbc.queryForObject("SELECT count(*) FROM wallet_transactions", Long::class.java))
+        assertEquals(0L, jdbc.queryForObject("SELECT count(*) FROM payment_method_changes", Long::class.java))
+    }
+
+    @Test
+    fun `wallet-only voucher keeps settlement atomic when the customer must top up`() {
+        val rideId = 9502L
+        seedBase(customerBalance = 1_000)
+        seedRide(rideId, 50_000, 20_000, 30_000, "WALLET")
+        seedVoucherUsage(rideId, 20_000, PaymentMethod.WALLET)
+        jdbc.update("UPDATE rides SET status = 'VEHICLE_RETURNED', completed_at = NULL WHERE id = ?", rideId)
+
+        val error = assertThrows<AppException> {
+            tx.executeWithoutResult {
+                jdbc.update("UPDATE rides SET status = 'COMPLETED', completed_at = now() WHERE id = ?", rideId)
+                payments.onRideCompleted(RideCompleted(rideId, 7002, 7001, Money(30_000)))
+            }
+        }
+
+        assertEquals(ErrorCode.INSUFFICIENT_CUSTOMER_BALANCE, error.errorCode)
+        assertEquals("VEHICLE_RETURNED", jdbc.queryForObject("SELECT status FROM rides WHERE id = ?", String::class.java, rideId))
+        assertEquals("WALLET", jdbc.queryForObject("SELECT payment_method FROM rides WHERE id = ?", String::class.java, rideId))
+        assertNull(payments.getRidePayment(rideId))
+        assertEquals(1_000L, balance(7002, "CUSTOMER"))
+        assertEquals(100_000L, balance(7001, "CREDIT"))
+        assertEquals(0L, balance(7001, "CASH"))
+        assertEquals(0L, jdbc.queryForObject("SELECT count(*) FROM ride_wallet_settlements", Long::class.java))
+        assertEquals(0L, jdbc.queryForObject("SELECT count(*) FROM wallet_transactions", Long::class.java))
+    }
 
     @Test
     fun `0 vnd cash and wallet rides settle once and match daily summary and ride earnings`() {

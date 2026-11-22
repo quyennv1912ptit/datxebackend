@@ -103,7 +103,15 @@ class WalletService(
      * 20% chiết khấu được tính trên giá gốc chưa làm tròn; phần làm tròn lên giữ lại cho App.
      */
     @Transactional
-    fun settle(rideId: Long, customerId: Long, driverId: Long, fare: Long, method: PaymentMethod, rawFare: Long = fare): PaymentMethod {
+    fun settle(
+        rideId: Long,
+        customerId: Long,
+        driverId: Long,
+        fare: Long,
+        method: PaymentMethod,
+        rawFare: Long = fare,
+        allowCashFallback: Boolean = true,
+    ): PaymentMethod {
         requireFare(fare)
         val fee = commission(fare, rawFare)
         return when (method) {
@@ -129,6 +137,7 @@ class WalletService(
                 val customer = locked(customerId, WalletOwner.CUSTOMER, WalletType.CUSTOMER)
                 val driverNet = driverNetEarning(rawFare)
                 if (customer.balance < fare) {
+                    if (!allowCashFallback) throw InsufficientCustomerBalanceException()
                     if (fee > 0) {
                         change(
                             locked(driverId, WalletOwner.DRIVER, WalletType.CREDIT), -fee, TransactionType.COMMISSION_FEE, rideId,
