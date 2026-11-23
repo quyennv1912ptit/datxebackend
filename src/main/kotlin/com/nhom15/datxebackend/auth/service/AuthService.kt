@@ -48,7 +48,7 @@ class AuthService @Autowired constructor(
             ?: attachCustomerByPhone(token.uid, verifiedPhone)
             ?: throw AppException(ErrorCode.ACCOUNT_NOT_FOUND)
 
-        if (existing.deletedAt != null || existing.status != UserStatus.ACTIVE) {
+        if (existing.deletedAt != null || existing.status == UserStatus.BANNED) {
             throw AppException(ErrorCode.ACCOUNT_LOCKED)
         }
         if (existing.phoneNumber == null && verifiedPhone != null) existing.phoneNumber = verifiedPhone
@@ -121,6 +121,13 @@ class AuthService @Autowired constructor(
         return profileOf(toAuthUser(admin))
     }
 
+    @Transactional(readOnly = true)
+    fun isCustomerBanned(firebaseUid: String, roleHint: Role?): Boolean {
+        if (roleHint != null && roleHint != Role.CUSTOMER) return false
+        val customer = customerRepository.findByFirebaseUid(firebaseUid).orElse(null) ?: return false
+        return customer.deletedAt == null && customer.status == UserStatus.BANNED
+    }
+
     /** Resolve token UID to an enabled database account; login endpoints create accounts separately. */
     @Transactional(readOnly = true)
     override fun findAuthenticatedUser(firebaseUid: String, roleHint: Role?): AuthUser? =
@@ -152,7 +159,7 @@ class AuthService @Autowired constructor(
         }
 
         val driver = driverProfile?.takeIf { it.deletedAt == null }
-        val customer = customerProfile?.takeIf { it.deletedAt == null && it.status == UserStatus.ACTIVE }
+        val customer = customerProfile?.takeIf { it.deletedAt == null && it.status != UserStatus.BANNED }
         return when (roleHint) {
             Role.CUSTOMER -> customer?.let(::toAuthUser)
             Role.DRIVER -> driver?.let(::toAuthUser)

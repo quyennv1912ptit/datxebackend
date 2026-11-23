@@ -3,6 +3,7 @@ package com.nhom15.datxebackend.customer.dto
 import com.fasterxml.jackson.annotation.JsonAlias
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.nhom15.datxebackend.common.enums.PaymentMethod
+import com.nhom15.datxebackend.common.enums.UserStatus
 import jakarta.validation.constraints.Email
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Past
@@ -56,4 +57,5 @@ data class CustomerProfileResponse(
     val gender: String?,
     @JsonProperty("default_payment_method") val defaultPaymentMethod: PaymentMethod?,
     @JsonProperty("avatar_url") val avatarUrl: String?,
+    val status: UserStatus = UserStatus.ACTIVE,
 )

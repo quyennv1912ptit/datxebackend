@@ -30,6 +30,10 @@ enum class ErrorCode(val httpStatus: HttpStatus, val defaultMessage: String) {
     OTP_INVALID(HttpStatus.BAD_REQUEST, "Mã OTP không đúng"),
     OTP_EXPIRED(HttpStatus.BAD_REQUEST, "Mã OTP đã hết hạn"),
     ACCOUNT_LOCKED(HttpStatus.FORBIDDEN, "Tài khoản đã bị khóa"),
+    ACCOUNT_SUSPENDED(
+        HttpStatus.FORBIDDEN,
+        "Tài khoản đang bị tạm ngưng tính năng đặt chuyến. Vui lòng thanh toán cước nợ hoặc liên hệ CSKH để được hỗ trợ.",
+    ),
     ACCOUNT_NOT_FOUND(HttpStatus.NOT_FOUND, "Tài khoản chưa được đăng ký"),
     DRIVER_NOT_VERIFIED(HttpStatus.FORBIDDEN, "Tài xế chưa được duyệt"),
     VEHICLE_NOT_FOUND(HttpStatus.NOT_FOUND, "Không tìm thấy xe"),

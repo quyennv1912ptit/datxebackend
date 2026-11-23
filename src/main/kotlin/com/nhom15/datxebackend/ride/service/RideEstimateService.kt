@@ -3,6 +3,8 @@ package com.nhom15.datxebackend.ride.service
 import com.nhom15.datxebackend.common.domain.GeoPoint
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.enums.Role
+import com.nhom15.datxebackend.common.enums.UserStatus
+import com.nhom15.datxebackend.common.exception.AppException
 import com.nhom15.datxebackend.common.exception.BadRequestException
 import com.nhom15.datxebackend.common.exception.ForbiddenException
 import com.nhom15.datxebackend.common.exception.NotFoundException
@@ -30,6 +32,12 @@ class RideEstimateService(
     fun estimateRide(actor: AuthUser, request: EstimateRideRequest): EstimateRideResponse {
         if (actor.role != Role.CUSTOMER) {
             throw ForbiddenException(message = "Chỉ khách hàng mới có thể báo giá chuyến đi")
+        }
+        if (actor.status == UserStatus.BANNED.name) {
+            throw AppException(ErrorCode.ACCOUNT_LOCKED)
+        }
+        if (actor.status == UserStatus.INACTIVE.name) {
+            throw AppException(ErrorCode.ACCOUNT_SUSPENDED)
         }
         validateEstimate(request)
 
