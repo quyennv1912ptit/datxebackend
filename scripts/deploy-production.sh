@@ -79,29 +79,36 @@ import json
 import sys
 backend = json.load(sys.stdin)["services"]["backend"]
 env = backend.get("environment") or {}
+errors = []
 if not str(env.get("DATXE_VERIFICATION_ENCRYPTION_KEY") or "").strip():
-    sys.exit(1)
+    errors.append("missing DATXE_VERIFICATION_ENCRYPTION_KEY")
 if not str(env.get("DATXE_VERIFICATION_LOOKUP_HMAC_KEY") or "").strip():
-    sys.exit(1)
+    errors.append("missing DATXE_VERIFICATION_LOOKUP_HMAC_KEY")
 blocked_exact = {"JAVA_OPTS", "_JAVA_OPTIONS", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS"}
 for raw_k, raw_v in env.items():
     k = str(raw_k).upper().replace(".", "_").replace("-", "_")
     v = str(raw_v or "").strip()
     if (k in blocked_exact or k.startswith("SPRING_CONFIG_")) and v:
-        sys.exit(1)
-profile = str(env.get("SPRING_PROFILES_ACTIVE") or "").strip().lower()
-if profile not in {"prod", "production"}:
-    sys.exit(1)
+        errors.append(f"blocked env var {k}")
+profiles = {p.strip().lower() for p in str(env.get("SPRING_PROFILES_ACTIVE") or "").split(",") if p.strip()}
+allowed_profiles = {"prod", "production", "demo"}
+if not profiles or not profiles.issubset(allowed_profiles):
+    errors.append("SPRING_PROFILES_ACTIVE must use prod, production, or demo")
 mock_topup = str(env.get("WALLET_MOCK_TOPUP_ENABLED") or "false").strip().lower()
-if mock_topup in {"1", "true", "yes", "on"}:
-    sys.exit(1)
+if mock_topup in {"1", "true", "yes", "on"} and "demo" not in profiles:
+    errors.append("WALLET_MOCK_TOPUP_ENABLED=true requires demo profile")
+mount_source = None
 for volume in backend["volumes"]:
     if volume["target"] == "/var/lib/ptitgo/verification":
-        print(volume["source"])
+        mount_source = volume["source"]
         break
-else:
+if not mount_source:
+    errors.append("missing /var/lib/ptitgo/verification mount")
+if errors:
+    sys.stderr.write("Deploy preflight failed: " + "; ".join(errors) + "\n")
     sys.exit(1)
-' 2>/dev/null) || fail 'Production verification requires capture mount, encryption key, HMAC key, prod profile, and no JAVA_OPTS/mock-topup override.'
+print(mount_source)
+') || fail 'Production deploy preflight failed (see specific reason above).'
 [[ "$capture_root" == /* && -d "$capture_root" ]] || fail 'Provision the capture directory before deploying.'
 capture_root=$(realpath -e "$capture_root")
 source_root=$(realpath -e "${GITHUB_WORKSPACE:-$PWD}")
