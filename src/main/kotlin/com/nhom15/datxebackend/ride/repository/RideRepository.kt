@@ -55,10 +55,16 @@ interface RideRepository : JpaRepository<Ride, Long>, org.springframework.data.j
 
     fun existsByCustomerIdAndTypeAndStatus(customerId: Long, type: RideType, status: RideStatus): Boolean
 
-    /** Tổng số tiền ví còn cam kết ở các chuyến chưa kết thúc (đã giữ chỗ nhưng chưa trừ ví). */
+    /**
+     * Tổng số tiền ví còn cam kết ở các chuyến chưa kết thúc (đã giữ chỗ nhưng chưa trừ ví).
+     * Phải cộng đúng số đã làm tròn lên bội 1.000đ giống RideService/RideStateMachine,
+     * nếu không checkBooking duyệt theo số thô rồi settle fallback sang CASH vì thiếu
+     * tối đa 999đ mỗi chuyến.
+     */
     @Query(
-        """SELECT COALESCE(SUM(CASE WHEN r.fareEstimate > r.discountAmount
-                                THEN r.fareEstimate - r.discountAmount ELSE 0L END), 0L)
+        """SELECT COALESCE(SUM(CASE WHEN r.fareEstimate > COALESCE(r.discountAmount, 0L)
+                                THEN ((r.fareEstimate - COALESCE(r.discountAmount, 0L) + 999L) / 1000L) * 1000L
+                                 ELSE 0L END), 0L)
            FROM Ride r
            WHERE r.customerId = :customerId
              AND r.status IN :statuses

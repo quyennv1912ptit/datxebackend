@@ -147,10 +147,10 @@ class LegacyVerificationRemovalPostgresTest {
             """, UUID.randomUUID(), mixed)
 
             val flyway = Flyway.configure().dataSource(ds).schemas(schema).load()
-            // V42 was the tip when this fixture was written; V43..V46 now follow it.
-            assertEquals(5, flyway.migrate().migrationsExecuted)
+            // V42 was the tip when this fixture was written; V43..V47 now follow it.
+            assertEquals(6, flyway.migrate().migrationsExecuted)
             flyway.validate()
-            assertEquals("46", flyway.info().current().version.version)
+            assertEquals("47", flyway.info().current().version.version)
             assertNull(jdbc.queryForObject("SELECT to_regclass('driver_documents')::text", String::class.java))
             assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM information_schema.columns WHERE table_schema = ? AND table_name = 'drivers' AND column_name = 'license_image_url'", Int::class.java, schema))
             assertEquals("BUSY/CAR/PENDING", jdbc.queryForObject(

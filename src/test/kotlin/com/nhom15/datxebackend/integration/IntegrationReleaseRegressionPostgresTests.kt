@@ -85,7 +85,7 @@ class IntegrationReleaseRegressionPostgresTests {
                    VALUES (601, 401, 'CUSTOMER_TO_DRIVER', 201, 101, 2, 'Bình luận cần ẩn', TRUE)""",
             )
 
-            // 3. Chạy nâng cấp Flyway lên phiên bản mới nhất V34..V46
+            // 3. Chạy nâng cấp Flyway lên phiên bản mới nhất V34..V47
             val result = Flyway.configure()
                 .dataSource(ds)
                 .schemas(schema)
@@ -102,7 +102,7 @@ class IntegrationReleaseRegressionPostgresTests {
             assertTrue(appliedVersions.contains("43"))
             assertTrue(appliedVersions.contains("44"))
             assertTrue(appliedVersions.contains("45"))
-            assertEquals("46", appliedVersions.last())
+            assertEquals("47", appliedVersions.last())
 
             // 4. Dữ liệu avatar_url, rating moderation và voucher campaign được bảo toàn nguyên vẹn
             assertEquals(

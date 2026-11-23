@@ -137,10 +137,14 @@ class VerificationProjectionPostgresTest {
         val tx = TransactionTemplate(DataSourceTransactionManager(source))
         val stream = UUID.randomUUID()
         val app = UUID.randomUUID()
-        val owner = "synthetic-verification-projection"
+        // Test này commit dữ liệu vào DB dùng lại giữa các lần chạy: dùng UID/phone duy nhất
+        // và đưa checkpoint về đầu stream để assertion seq 1..6 vẫn đúng ở lần chạy sau.
+        val runId = UUID.randomUUID().toString().replace("-", "").take(10)
+        val owner = "synthetic-verification-projection-$runId"
+        jdbc.update("UPDATE verification_sync_checkpoint SET cursor_seq = 0, stream_id = NULL WHERE singleton")
         val driverId = jdbc.queryForObject(
             "INSERT INTO drivers(firebase_uid,phone_number,verification_status) VALUES (?,?,'APPROVED') RETURNING id",
-            Long::class.java, owner, "0000000000",
+            Long::class.java, owner, "0000$runId",
         )!!
         val adminQuery = AdminDriverQueryRepository(jdbc, syncEnabled = true)
         fun event(seq: Long, revision: Long, status: VerificationStatus) =

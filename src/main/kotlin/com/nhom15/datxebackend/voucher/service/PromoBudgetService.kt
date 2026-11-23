@@ -364,12 +364,23 @@ class PromoBudgetService(private val jdbc: JdbcTemplate) {
             // đã chặn một phần trích. clamp theo available hiện tại + held vừa được hoàn để
             // không bao giờ "tạo tiền" vượt budget_limit khi release các row lịch sử này.
             val maxSafeRestore = (budget.availableAmount + holdAmount).coerceAtLeast(0L)
-            val canRestoreAmount = if (canRestore) minOf(consumedReserve, maxSafeRestore) else 0L
+            // Voucher cá nhân đã hết hạn/bị ngưng hoạt động: khoản thực trích lúc HOLD vẫn
+            // phải hoàn dù voucher không còn dùng được. Nếu bỏ qua, V47 sweeper cũng loại
+            // voucher này vì còn dòng HOLD trong ledger => issuance_reserved treo vĩnh viễn.
+            val restoreExpiredPersonalReserve = !canRestore && campaignId == null && consumedReserve > 0
+            val canRestoreAmount = when {
+                canRestore || restoreExpiredPersonalReserve -> minOf(consumedReserve, maxSafeRestore)
+                else -> 0L
+            }
             jdbc.update(
                 "UPDATE promo_budget SET held_amount = GREATEST(held_amount - ?, 0), issuance_reserved = issuance_reserved + ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
                 holdAmount,
                 canRestoreAmount,
             )
+            if (restoreExpiredPersonalReserve && canRestoreAmount > 0) {
+                // Đánh dấu đã hoàn để sweeper V47 không cộng lại lần nữa.
+                jdbc.update("UPDATE vouchers SET reserve_released = TRUE WHERE id = ?", hold[2])
+            }
             if (campaignId != null) {
                 if (canRestore) {
                     jdbc.update(

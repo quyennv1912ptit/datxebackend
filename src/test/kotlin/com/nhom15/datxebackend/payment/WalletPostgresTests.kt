@@ -32,6 +32,7 @@ class WalletPostgresTests {
     private lateinit var methodChanges: PaymentMethodService
     private lateinit var payments: PaymentService
     private lateinit var withdrawals: WithdrawalService
+    private lateinit var rides: com.nhom15.datxebackend.ride.repository.RideRepository
 
     @BeforeEach fun setup() {
         val url = System.getenv("TEST_DB_URL")
@@ -61,6 +62,7 @@ class WalletPostgresTests {
         val driverRepo = repos.getRepository(DriverRepository::class.java)
         val customerRepo = repos.getRepository(CustomerRepository::class.java)
         val ledgerRepo = repos.getRepository(WalletTransactionRepository::class.java)
+        rides = repos.getRepository(com.nhom15.datxebackend.ride.repository.RideRepository::class.java)
         wallets = WalletService(repos.getRepository(WalletRepository::class.java), ledgerRepo, driverRepo, customerRepo, 50_000)
         payments = PaymentService(jdbc, driverRepo, repos.getRepository(com.nhom15.datxebackend.ride.repository.RideRepository::class.java), wallets, org.mockito.Mockito.mock(org.springframework.context.ApplicationEventPublisher::class.java))
         methodChanges = PaymentMethodService(repos.getRepository(com.nhom15.datxebackend.ride.repository.RideRepository::class.java), payments, wallets, jdbc, org.mockito.Mockito.mock(org.springframework.context.ApplicationEventPublisher::class.java))
@@ -277,5 +279,28 @@ class WalletPostgresTests {
         assertEquals("0123456789", pending.content.single().bankAccountNumber)
         assertTrue(withdrawals.adminList(WithdrawalStatus.REJECTED, 0, 20).content.isEmpty())
         assertEquals(1, withdrawals.adminList(null, 0, 20).content.size)
+    }
+
+    @Test fun `committed wallet fare sums the rounded payable, not the raw estimate`() {
+        jdbc.update("INSERT INTO customers(id,firebase_uid,status,wallet_balance) VALUES(7001,'wallet-commit-customer','ACTIVE',200000),(7002,'wallet-commit-other','ACTIVE',200000)")
+        jdbc.update("INSERT INTO vehicles(id,customer_id,plate_number,vehicle_type,transmission_type) VALUES(31,7001,'COMMIT-001','CAR','AUTO'),(32,7002,'COMMIT-002','CAR','AUTO')")
+        fun ride(id: Long, customer: Long, vehicle: Long, status: String, fare: Long, method: String) = jdbc.update(
+            """INSERT INTO rides(id, customer_id, status, type, fare_estimate, discount_amount,
+                   payment_method, transmission, vehicle_type, vehicle_id)
+               VALUES (?, ?, ?, 'INSTANT', ?, 0, ?, 'AUTO', 'CAR', ?)""",
+            id, customer, status, fare, method, vehicle,
+        )
+        ride(8001, 7001, 31, "IN_PROGRESS", 98_998, "WALLET") // thực thu 99.000
+        ride(8002, 7001, 31, "PENDING", 50_000, "WALLET")
+        ride(8003, 7001, 31, "COMPLETED", 70_000, "WALLET") // đã kết thúc: không tính
+        ride(8004, 7002, 32, "IN_PROGRESS", 80_000, "CASH") // khách khác + không phải ví: không tính
+
+        val committed = rides.sumCommittedWalletFare(
+            7001,
+            com.nhom15.datxebackend.ride.repository.ACTIVE_RIDE_STATUSES + com.nhom15.datxebackend.common.enums.RideStatus.PENDING,
+            com.nhom15.datxebackend.common.enums.PaymentMethod.WALLET,
+        )
+
+        assertEquals(149_000L, committed)
     }
 }

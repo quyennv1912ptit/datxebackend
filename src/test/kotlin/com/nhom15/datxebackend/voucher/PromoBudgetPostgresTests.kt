@@ -89,4 +89,29 @@ class PromoBudgetPostgresTests {
         service.release(9103L)
         assertBudget(held = 0L, reserved = 20_000L)
     }
+
+    @Test fun `expired personal voucher held then released returns reserve exactly once`() {
+        voucher(20_000)
+        service.hold(9110L, 2L, amount = 10_000L, forecast = 20_000L)
+        assertBudget(held = 10_000L, reserved = 0L)
+
+        // Voucher hết hạn trước khi ride bị huỷ: release() vẫn phải hoàn phần đã trích lúc HOLD.
+        jdbc.update("UPDATE vouchers SET valid_to = CURRENT_TIMESTAMP - interval '1 second' WHERE id = 2")
+        service.release(9110L)
+        assertBudget(held = 0L, reserved = 20_000L)
+        assertEquals(
+            true,
+            jdbc.queryForObject("SELECT reserve_released FROM vouchers WHERE id = 2", Boolean::class.java),
+        )
+
+        // summary() chạy V47 sweeper: không được cộng lần hai dù ledger còn dòng HOLD.
+        assertBudget(held = 0L, reserved = 20_000L)
+        assertEquals(
+            1,
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM promo_budget_ledger WHERE voucher_id = 2 AND action = 'RELEASE'",
+                Int::class.java,
+            ),
+        )
+    }
 }

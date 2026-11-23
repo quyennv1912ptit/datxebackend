@@ -156,7 +156,7 @@ class PromoBudgetServiceTests {
     }
 
     @Test
-    fun `release does not restore reserve when the voucher is no longer usable`() {
+    fun `release of expired personal voucher returns consumed reserve and marks it released`() {
         val jdbc = mockJdbc(
             holdRow = holdRs(amount = 10_000L, consumedReserve = 20_000L),
             voucherCanRestore = false,
@@ -164,7 +164,10 @@ class PromoBudgetServiceTests {
 
         PromoBudgetService(jdbc).release(9001L)
 
-        verify(jdbc).update(contains("issuance_reserved = issuance_reserved + ?"), eq(10_000L), eq(0L))
+        // Dù voucher đã hết hạn, khoản thực trích lúc HOLD vẫn phải hoàn; nếu không,
+        // V47 sweeper sẽ bỏ sót vì ledger còn dòng HOLD => reserve treo vĩnh viễn.
+        verify(jdbc).update(contains("issuance_reserved = issuance_reserved + ?"), eq(10_000L), eq(20_000L))
+        verify(jdbc).update(contains("reserve_released = TRUE"), eq(501L))
     }
 
     @Test

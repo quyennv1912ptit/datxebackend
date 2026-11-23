@@ -289,8 +289,17 @@ class DriverVerificationIdentityLockTest {
             }.also { driverState[uid] = it }
         }
 
-        val d1 = insertDriver("uid-e2e-driver-1", "+84900000001")
-        val d2 = insertDriver("uid-e2e-driver-2", "+84900000002")
+        // DB dùng lại giữa các lần chạy: UID/phone/CCCD/GPLX phải duy nhất cho mỗi lần chạy,
+        // nếu không duplicate check sẽ thấy dữ liệu của lần trước và chặn submit.
+        val runId = UUID.randomUUID().toString().replace("-", "").take(10)
+        val serial = (System.currentTimeMillis() % 100_000_000L).toString().padStart(8, '0')
+        val cccd1 = "9992$serial"
+        val cccd2 = "9993$serial"
+        val gplx1 = "9999$serial"
+        val gplx2 = "2502$serial"
+        val gplxUpgrade = "2503$serial"
+        val d1 = insertDriver("uid-e2e-driver-1-$runId", "+849000$runId")
+        val d2 = insertDriver("uid-e2e-driver-2-$runId", "+849001$runId")
         val actor1 = AuthUser(d1.id, d1.firebaseUid, Role.DRIVER, "Quyền", null, d1.phoneNumber, "OFFLINE")
         val actor2 = AuthUser(d2.id, d2.firebaseUid, Role.DRIVER, "Khác", null, d2.phoneNumber, "OFFLINE")
         val admin = AuthUser(99, "uid-admin-1", Role.ADMIN, "Admin", null, null, "OFFLINE")
@@ -322,11 +331,11 @@ class DriverVerificationIdentityLockTest {
         }.errorCode)
         val initialDetails = linkedMapOf<String, Any?>(
             "cccd_name" to "Tài Xế Kiểm Thử A",
-            "cccd_id" to "999206000001",
+            "cccd_id" to cccd1,
             "cccd_dob" to "2006-01-01",
             "cccd_expiry_date" to "2031-12-19",
             "cccd_gender" to "MALE",
-            "gplx_number" to "999999000001",
+            "gplx_number" to gplx1,
             "gplx_name" to "Tài Xế Kiểm Thử A",
             "gplx_dob" to "2006-01-01",
             "gplx_classes" to listOf("A1"),
@@ -366,7 +375,7 @@ class DriverVerificationIdentityLockTest {
         val driverView = workflow.detail(actor1, appId1, review = false)
         @Suppress("UNCHECKED_CAST")
         val lockedIdMap = driverView["lockedIdentity"] as Map<String, Any?>
-        assertEquals("********0001", lockedIdMap["maskedCccdId"])
+        assertEquals("********${cccd1.takeLast(4)}", lockedIdMap["maskedCccdId"])
         assertNull(lockedIdMap["cccdId"])
 
         // Case: Re-verify -> cancel-reverify preserves APPROVED + previous captures
@@ -393,7 +402,7 @@ class DriverVerificationIdentityLockTest {
         rev = (workflow.replaceCapture(actor1, appId1, "selfie", rev, "image/png", selfieV3)["revision"] as Number).toLong()
         val upgradeDetails = initialDetails + mapOf(
             "cccd_expiry_date" to "2036-12-19",
-            "gplx_number" to "250256099999",
+            "gplx_number" to gplxUpgrade,
             "gplx_classes" to listOf("A1", "B"),
             "no_expiry" to false,
             "expiry_date" to LocalDate.now().plusYears(5).toString(),
@@ -471,7 +480,7 @@ class DriverVerificationIdentityLockTest {
         for (slot in listOf("cccd_front", "cccd_back", "gplx_front", "gplx_back", "selfie")) {
             rev2 = (workflow.replaceCapture(actor2, appId2, slot, rev2, "image/png", imgBytes)["revision"] as Number).toLong()
         }
-        val dupRes = workflow.confirmFields(actor2, appId2, rev2, initialDetails + ("gplx_number" to "250256099999"))
+        val dupRes = workflow.confirmFields(actor2, appId2, rev2, initialDetails + ("gplx_number" to gplxUpgrade))
         rev2 = (dupRes["revision"] as Number).toLong()
         @Suppress("UNCHECKED_CAST")
         val dupWarnings = dupRes["verificationWarnings"] as List<VerificationWarningDto>
@@ -516,10 +525,10 @@ class DriverVerificationIdentityLockTest {
         assertEquals(false, reopened2["identityHold"])
 
         val validD2Details = initialDetails + mapOf(
-            "cccd_id" to "999206000002",
+            "cccd_id" to cccd2,
             "cccd_name" to "Khác",
             "gplx_name" to "Khác",
-            "gplx_number" to "250256000002",
+            "gplx_number" to gplx2,
         )
         val savedGplxQr = mapOf("status" to "DECODED_VALID", "documentSide" to "BACK", "boundToCapture" to true)
         jdbc.update(
