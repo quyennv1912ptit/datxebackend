@@ -947,6 +947,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
         return mapOf(
             "revision" to expectedRevision,
             "status" to status,
+            "quality" to qualityMap,
             "verificationWarnings" to warnings,
         )
     }
