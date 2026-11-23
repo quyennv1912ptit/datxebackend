@@ -5,6 +5,9 @@ import com.nhom15.datxebackend.common.enums.Role
 import com.nhom15.datxebackend.common.exception.*
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.ride.repository.RideRepository
+import com.nhom15.datxebackend.support.ticket.SupportTicketRepository
+import com.nhom15.datxebackend.support.ticket.TicketMessageRepository
+import com.nhom15.datxebackend.support.ticket.TicketService
 import com.nhom15.datxebackend.uploads.CloudinaryAssetService
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.AfterEach
@@ -13,7 +16,9 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
 import org.mockito.Mockito
 import org.springframework.dao.DataIntegrityViolationException
+import org.springframework.context.ApplicationEventPublisher
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.jdbc.core.RowMapper
 import org.springframework.jdbc.datasource.SingleConnectionDataSource
 import java.nio.file.Files
 import java.nio.file.Path
@@ -92,6 +97,73 @@ class SupportPersistenceTests {
         assertEquals(20, service.list(customer, 0, "OPEN").size)
         assertEquals(2, service.list(customer, 1, "OPEN").size)
         assertThrows(BadRequestException::class.java) { service.list(customer, 0, "INVALID") }
+    }
+
+    @Test fun `legacy ticket list fetches ordered images in one batch`() {
+        fun image(name: String): SupportImage {
+            val publicId = "app_dat_xe/customer/11/$name"
+            return SupportImage("https://res.cloudinary.com/test-cloud/image/upload/v1/$publicId.jpg", publicId)
+        }
+        val older = service.create(customer, CreateSupportTicket(
+            UUID.randomUUID(), category = "OTHER", description = "Yêu cầu hỗ trợ thứ nhất",
+            images = listOf(image("first"), image("second")),
+        ))
+        val newer = service.create(customer, CreateSupportTicket(
+            UUID.randomUUID(), category = "OTHER", description = "Yêu cầu hỗ trợ thứ hai",
+            images = listOf(image("third")),
+        ))
+        val readJdbc = Mockito.spy(jdbc)
+        val reader = SupportService(readJdbc, Mockito.mock(RideRepository::class.java), Mockito.mock(CloudinaryAssetService::class.java))
+        fun queryCount() = Mockito.mockingDetails(readJdbc).invocations.count {
+            it.method.name == "query" && it.method.parameterTypes.getOrNull(1) == RowMapper::class.java
+        }
+
+        assertEquals(listOf(newer, older), reader.list(customer, 0))
+        assertEquals(2, queryCount())
+        Mockito.clearInvocations(readJdbc)
+        val ticketing = TicketService(
+            reader, Mockito.mock(SupportTicketRepository::class.java), Mockito.mock(TicketMessageRepository::class.java),
+            readJdbc, Mockito.mock(ApplicationEventPublisher::class.java),
+        )
+        assertEquals(listOf(newer.id, older.id), ticketing.list(customer, 0, null).map { it.id })
+        assertEquals(1, queryCount())
+    }
+
+    @Test fun `message idempotency key is unique within a ticket and sender`() {
+        val ticket = service.create(customer, CreateSupportTicket(UUID.randomUUID(), category = "OTHER", description = "Yêu cầu gửi tin nhắn hỗ trợ"))
+        val key = UUID.randomUUID()
+        val insert = """INSERT INTO support_ticket_messages(ticket_id,sender_id,sender_role,body,client_message_id)
+            VALUES (?,?,?,?,?)""".trimIndent()
+        jdbc.update(insert, ticket.id, customer.id, "CUSTOMER", "Tin nhắn", key)
+        jdbc.update(insert, ticket.id, customer.id, "DRIVER", "Tin nhắn tài xế", key)
+        assertThrows(DataIntegrityViolationException::class.java) {
+            jdbc.update(insert, ticket.id, customer.id, "CUSTOMER", "Tin nhắn", key)
+        }
+    }
+
+    @Test fun `initial message page and both cursor directions preserve chronology without gaps`() {
+        val ticket = service.create(customer, CreateSupportTicket(UUID.randomUUID(), category = "OTHER", description = "Yêu cầu kiểm tra tin nhắn cũ"))
+        val ticketing = TicketService(
+            service, Mockito.mock(SupportTicketRepository::class.java), Mockito.mock(TicketMessageRepository::class.java),
+            jdbc, Mockito.mock(ApplicationEventPublisher::class.java),
+        )
+        repeat(102) { index ->
+            jdbc.update(
+                """INSERT INTO support_ticket_messages(ticket_id,sender_id,sender_role,body,created_at)
+                   VALUES (?,?,?,?, (SELECT created_at FROM support_tickets WHERE id=?))""".trimIndent(),
+                ticket.id, customer.id, "CUSTOMER", "Tin nhắn $index", ticket.id,
+            )
+        }
+        val detail = ticketing.detail(customer, ticket.id)
+        assertTrue(detail.hasOlderMessages)
+        val latest = detail.messages
+        assertEquals(100, latest.size)
+        assertEquals("Tin nhắn 2", latest.first().body)
+        assertEquals("Tin nhắn 101", latest.last().body)
+        val older = ticketing.messages(customer, ticket.id, beforeId = latest.first().id)
+        assertEquals(listOf(ticket.description, "Tin nhắn 0", "Tin nhắn 1"), older.map { it.body })
+        val newer = ticketing.messages(admin, ticket.id, afterId = older.last().id, size = 2)
+        assertEquals(latest.take(2), newer)
     }
 
     @Test fun `both apps see the same admin processing states response and evidence`() {

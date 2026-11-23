@@ -6,6 +6,7 @@ import com.nhom15.datxebackend.common.port.CustomerVehicleSnapshot
 import com.nhom15.datxebackend.pricing.model.RideQuote
 import com.nhom15.datxebackend.ride.dto.request.CreateRideRequest
 import com.nhom15.datxebackend.ride.entity.Ride
+import com.nhom15.datxebackend.ride.entity.RideFareSnapshot
 
 internal object RideFactory {
     fun create(
@@ -35,5 +36,13 @@ internal object RideFactory {
         routeProvider = quote.route?.provider,
         routeLimitation = quote.route?.limitation,
         fareEstimate = quote.estimatedFare,
+        fareSnapshot = RideFareSnapshot(
+            pricingRuleId = quote.pricingRuleId,
+            baseFare = quote.baseFare,
+            distanceFare = quote.distanceFare,
+            waitingFare = quote.waitingFare,
+            nightSurcharge = quote.nightSurcharge,
+            returnFee = quote.returnFee,
+        ),
     ).also { it.discountAmount = discountAmount }
 }

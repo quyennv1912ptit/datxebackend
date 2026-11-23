@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.sql.ResultSet
+import java.time.ZoneOffset
 import java.time.Instant
 
 @Service
@@ -49,7 +50,6 @@ class VoucherService(
         """
     }
 
-    @Transactional(readOnly = true)
     fun listAvailable(actor: AuthUser): List<VoucherResponse> {
         requireCustomer(actor)
 
@@ -87,13 +87,13 @@ class VoucherService(
         return jdbcTemplate.query(
             """SELECT v.id,v.code,v.campaign_title,v.description,v.discount_type,v.value,v.max_discount,v.minimum_order_amount,
                       v.campaign_claim_count,v.usage_limit,v.valid_from,v.valid_to,v.campaign_budget_limit,
-                      GREATEST(v.campaign_budget_limit-COALESCE(cb.held_amount,0)-COALESCE(cb.spent_amount,0),0) AS budget_remaining
+                      GREATEST(v.campaign_budget_limit-COALESCE(cb.held_amount,0)-COALESCE(cb.spent_amount,0)-COALESCE(cb.released_amount,0),0) AS budget_remaining
                FROM vouchers v JOIN voucher_campaign_budget cb ON cb.campaign_id=v.id
                WHERE v.source='PUBLIC_CODE' AND v.owner_customer_id IS NULL AND v.campaign_budget_limit IS NOT NULL
                  AND v.active AND v.valid_from<=CURRENT_TIMESTAMP AND v.valid_to>CURRENT_TIMESTAMP
                  AND v.campaign_claim_count<v.usage_limit
                  AND NOT EXISTS(SELECT 1 FROM vouchers claimed WHERE claimed.campaign_id=v.id AND claimed.owner_customer_id=?)
-                 AND v.campaign_budget_limit-COALESCE(cb.held_amount,0)-COALESCE(cb.spent_amount,0)>=v.forecast_reserve_per_use
+                 AND v.campaign_budget_limit-COALESCE(cb.held_amount,0)-COALESCE(cb.spent_amount,0)-COALESCE(cb.released_amount,0)>=v.forecast_reserve_per_use
                 ORDER BY v.valid_to,v.id""".trimIndent(),
         { rs, _ -> VoucherCampaignResponse(
             id=rs.getLong("id"), code=rs.getString("code"), campaignTitle=rs.getString("campaign_title"), description=rs.getString("description"),
@@ -124,7 +124,7 @@ class VoucherService(
             """UPDATE vouchers SET campaign_claim_count=campaign_claim_count+1
                WHERE id=? AND active AND valid_from<=CURRENT_TIMESTAMP AND valid_to>CURRENT_TIMESTAMP
                  AND campaign_claim_count<usage_limit
-                 AND campaign_budget_limit-COALESCE((SELECT held_amount+spent_amount FROM voucher_campaign_budget WHERE campaign_id=?),0)>=forecast_reserve_per_use
+                 AND campaign_budget_limit-COALESCE((SELECT held_amount+spent_amount+released_amount FROM voucher_campaign_budget WHERE campaign_id=?),0)>=forecast_reserve_per_use
                  AND NOT EXISTS(SELECT 1 FROM vouchers c WHERE c.campaign_id=? AND c.owner_customer_id=?) RETURNING campaign_claim_count""".trimIndent(),
             { rs, _ -> rs.getInt(1) },
             campaignId, campaignId, campaignId, actor.id,
@@ -162,6 +162,7 @@ class VoucherService(
         subtotal: Long,
         paymentMethod: PaymentMethod? = null,
         voucherId: Long? = null,
+        scheduledAt: Instant? = null,
     ): AppliedVoucher? {
         requireCustomer(actor)
 
@@ -186,6 +187,10 @@ class VoucherService(
         } else {
             loadPublic(code!!.trim().uppercase(), actor.id)
         } ?: throw BadRequestException(ErrorCode.VOUCHER_INVALID)
+
+        if (scheduledAt != null && !scheduledAt.isBefore(voucher.validTo)) {
+            throw BadRequestException(ErrorCode.VOUCHER_INVALID, "Voucher hết hạn vào thời điểm đón khách")
+        }
 
         if (subtotal < voucher.minimumOrderAmount) {
             throw BadRequestException(
@@ -233,6 +238,7 @@ class VoucherService(
         applied: AppliedVoucher,
         rideId: Long,
         paymentMethod: PaymentMethod? = null,
+        scheduledAt: Instant? = null,
     ) {
         val personalReward = applied.code == null
 
@@ -244,6 +250,7 @@ class VoucherService(
               AND active = TRUE
               AND valid_from <= CURRENT_TIMESTAMP
               AND valid_to > CURRENT_TIMESTAMP
+              AND valid_to > COALESCE(?::timestamptz, CURRENT_TIMESTAMP)
               AND (usage_limit IS NULL OR usage_count < usage_limit)
               AND (
                   (
@@ -272,6 +279,7 @@ class VoucherService(
               )
             """.trimIndent(),
             applied.voucherId,
+            scheduledAt?.atOffset(ZoneOffset.UTC),
             personalReward,
             customerId,
             personalReward,

@@ -23,6 +23,8 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.*
 import org.springframework.context.ApplicationEventPublisher
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.support.SimpleTransactionStatus
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.data.redis.core.StringRedisTemplate
 import java.time.Instant
@@ -39,6 +41,10 @@ class SequentialDispatchTests {
         transmission=Transmission.AUTO, fareEstimate=30000, paymentMethod=PaymentMethod.CASH,
         status=status,
     ).apply { id=42; searchExpiresAt=Instant.now().plusSeconds(90) }
+
+    private fun mockTransactions() = mock(PlatformTransactionManager::class.java).also {
+        `when`(it.getTransaction(any())).thenAnswer { SimpleTransactionStatus() }
+    }
 
     @Test fun `offer defaults allow twenty-five seconds on the client and preserve the server grace`() {
         val properties = MatchingProperties()
@@ -88,7 +94,7 @@ class SequentialDispatchTests {
         `when`(builder.build(42, 7, expires.toEpochMilli(), "offer-1")).thenReturn(payload)
         val service=RideAcceptanceService(redis, mock(RideAssignmentPort::class.java), rides,
             mock(RideDispatchService::class.java), mock(OfferReleaseService::class.java), builder,
-            MatchingProperties(), offers)
+            MatchingProperties(), offers, mockTransactions())
         assertSame(payload, service.pendingOffer(7))
     }
 
@@ -234,9 +240,9 @@ class SequentialDispatchTests {
         val offers = mock(DispatchOfferRepository::class.java)
         val service = RideAcceptanceService(redis, mock(RideAssignmentPort::class.java), rides,
             mock(RideDispatchService::class.java), mock(OfferReleaseService::class.java),
-            mock(RideOfferBuilder::class.java), MatchingProperties(), offers)
+            mock(RideOfferBuilder::class.java), MatchingProperties(), offers, mockTransactions())
         val trip = ride()
-        `when`(rides.findById(42)).thenReturn(Optional.of(trip))
+        `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(trip))
         val offer = DispatchOffer("current", 42, 7, Instant.now().plusSeconds(10), 0)
         `when`(offers.outstanding(42)).thenReturn(offer)
         assertFalse(service.accept(42, 7, "stale"))

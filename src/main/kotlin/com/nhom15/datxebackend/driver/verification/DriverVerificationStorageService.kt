@@ -36,13 +36,20 @@ class DriverVerificationStorageService(
     @Value("\${app.verification.storage-dir:./data/driver-verification-captures}") storageDir: String,
     @Value("\${app.verification.encryption-key:}") encryptionKey: String,
     @Value("\${app.verification.require-protected-storage:false}") private val protectedStorage: Boolean = false,
+    @Value("\${app.verification.previous-encryption-keys:}") previousEncryptionKeys: String = "",
 ) {
     private val root: Path = Paths.get(storageDir).toAbsolutePath().normalize()
-    private val aesKey: SecretKeySpec? = encryptionKey.trim().takeIf { it.isNotEmpty() }?.let { raw ->
-        val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(StandardCharsets.UTF_8))
-        SecretKeySpec(digest, "AES")
-    }
+    private val aesKey: SecretKeySpec? = deriveAesKey(encryptionKey)
+    private val previousAesKeys: List<SecretKeySpec> = previousEncryptionKeys
+        .split(',')
+        .mapNotNull(::deriveAesKey)
     private val rng = SecureRandom()
+
+    private fun deriveAesKey(rawKey: String): SecretKeySpec? =
+        rawKey.trim().takeIf { it.isNotEmpty() }?.let { raw ->
+            val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(StandardCharsets.UTF_8))
+            SecretKeySpec(digest, "AES")
+        }
 
     init {
         if (protectedStorage) {
@@ -117,7 +124,7 @@ class DriverVerificationStorageService(
         if (protectedStorage && !encrypted) {
             throw VerificationWorkflowException(503, "VERIFICATION_UNAVAILABLE", "Ảnh cần được chuyển sang kho lưu trữ bảo mật.")
         }
-        val plain = if (aesKey != null && encrypted) decrypt(aesKey, stored) else stored
+        val plain = if (encrypted) decryptWithRotation(stored) else stored
         if (plain.size != expectedSize || sha256Hex(plain) != expectedSha256) {
             throw VerificationWorkflowException(503, "VERIFICATION_UNAVAILABLE", "Kiểm tra toàn vẹn ảnh thất bại.")
         }
@@ -126,6 +133,27 @@ class DriverVerificationStorageService(
 
     fun deleteQuietly(objectKey: String) {
         runCatching { Files.deleteIfExists(resolveSafe(objectKey)) }
+    }
+
+    /**
+     * Lists regular capture object keys directly in storage root whose lastModifiedTime is
+     * strictly before [cutoff], avoiding in-flight uploads and subdirectories.
+     */
+    fun listKeysOlderThan(cutoff: java.time.Instant): List<String> {
+        if (!Files.isDirectory(root)) return emptyList()
+        val results = mutableListOf<String>()
+        Files.list(root).use { stream ->
+            stream.forEach { path ->
+                if (!Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return@forEach
+                val name = path.fileName?.toString() ?: return@forEach
+                if (!name.matches(Regex("^[A-Za-z0-9_-]{8,128}$"))) return@forEach
+                val mtime = runCatching { Files.getLastModifiedTime(path).toInstant() }.getOrNull() ?: return@forEach
+                if (mtime.isBefore(cutoff)) {
+                    results.add(name)
+                }
+            }
+        }
+        return results
     }
 
     private fun resolveSafe(objectKey: String): Path {
@@ -143,6 +171,21 @@ class DriverVerificationStorageService(
         cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, iv))
         val sealed = cipher.doFinal(plain)
         return ENCRYPTED_MAGIC + iv + sealed
+    }
+
+    private fun decryptWithRotation(payload: ByteArray): ByteArray {
+        val candidates = listOfNotNull(aesKey) + previousAesKeys
+        if (candidates.isEmpty()) {
+            throw VerificationWorkflowException(503, "VERIFICATION_UNAVAILABLE", "Thiếu khóa giải mã tệp ảnh xác minh.")
+        }
+        for (candidate in candidates) {
+            try {
+                return decrypt(candidate, payload)
+            } catch (_: java.security.GeneralSecurityException) {
+                // Try next rotated key without logging key material.
+            }
+        }
+        throw VerificationWorkflowException(503, "VERIFICATION_UNAVAILABLE", "Không thể giải mã tệp ảnh xác minh.")
     }
 
     private fun decrypt(key: SecretKeySpec, payload: ByteArray): ByteArray {

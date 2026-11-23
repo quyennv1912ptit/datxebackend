@@ -61,6 +61,7 @@ class CustomerPlaceService(
               AND dropoff_lng IS NOT NULL
               AND created_at >= NOW() - INTERVAL '180 days'
             GROUP BY dropoff_address, dropoff_lat, dropoff_lng
+            HAVING COUNT(DISTINCT customer_id) >= $MIN_DISTINCT_CUSTOMERS
             ORDER BY uses DESC
             LIMIT $POPULAR_SCAN_SIZE
             """.trimIndent(),
@@ -124,5 +125,6 @@ class CustomerPlaceService(
         const val RECENT_SCAN_SIZE = 30
         const val POPULAR_SCAN_SIZE = 200
         const val MAX_POPULAR_DISTANCE_METERS = 50_000
+        const val MIN_DISTINCT_CUSTOMERS = 5
     }
 }

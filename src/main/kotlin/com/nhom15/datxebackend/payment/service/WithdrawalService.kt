@@ -28,12 +28,23 @@ class WithdrawalService(
         if (walletType != WalletType.CASH) throw InvalidWalletTypeException()
         wallets.requireAmount(amount)
         if (key.isBlank() || key.length > 100) throw BadRequestException(message = "Idempotency-Key cần từ 1 đến 100 ký tự")
-        drivers.findByIdForUpdate(driverId).orElseThrow { NotFoundException() }
+        val driver = drivers.findByIdForUpdate(driverId).orElseThrow { NotFoundException() }
         requests.findByDriverIdAndIdempotencyKey(driverId, key)?.let {
             if (it.amount != amount) throw ConflictException(message = "Idempotency-Key đã dùng với số tiền khác")
             return it
         }
-        val request = requests.saveAndFlush(WithdrawalRequest(driverId, amount, key))
+        val bankName = driver.bankName?.trim()
+        val bankAccountNumber = driver.bankAccountNumber?.trim()
+        if (bankName.isNullOrBlank() || bankAccountNumber.isNullOrBlank()) {
+            throw BadRequestException(message = "Cần cung cấp tên ngân hàng và số tài khoản để yêu cầu rút tiền")
+        }
+        val request = requests.saveAndFlush(WithdrawalRequest(
+            driverId,
+            amount,
+            key,
+            bankNameSnapshot = bankName,
+            bankAccountNumberSnapshot = bankAccountNumber,
+        ))
         wallets.hold(driverId, amount, request.id)
         return request
     }
@@ -42,6 +53,11 @@ class WithdrawalService(
     fun review(id: Long, adminId: Long, action: WithdrawalAction, rejectReason: String? = null): WithdrawalRequest {
         val request = requests.lockRequest(id) ?: throw WithdrawalRequestNotFoundException()
         if (request.status != WithdrawalStatus.PENDING) throw InvalidWithdrawalActionException()
+        if (action == WithdrawalAction.APPROVE &&
+            (request.bankNameSnapshot.isNullOrBlank() || request.bankAccountNumberSnapshot.isNullOrBlank())
+        ) {
+            throw ConflictException(message = "Yêu cầu rút tiền chưa có thông tin tài khoản nhận tiền tại thời điểm tạo")
+        }
         val reason = if (action == WithdrawalAction.REJECT) rejectReason?.trim() else null
         if (action == WithdrawalAction.REJECT && (reason.isNullOrBlank() || reason.length > 500))
             throw BadRequestException(message = "Lý do từ chối cần từ 1 đến 500 ký tự")
@@ -67,7 +83,7 @@ class WithdrawalService(
     @Transactional(readOnly = true)
     fun list(driverId: Long, page: Int) = requests.findByDriverIdOrderByCreatedAtDesc(driverId, PageRequest.of(page.coerceAtLeast(0), 20))
 
-    /** Admin xem hàng đợi rút tiền, lọc theo trạng thái; trả kèm tài khoản ngân hàng hiện tại của tài xế. */
+    /** Hàng đợi rút tiền hiển thị tài khoản nhận tiền đã lưu khi tạo yêu cầu. */
     @Transactional(readOnly = true)
     fun adminList(status: WithdrawalStatus?, page: Int, size: Int, filter: AdminSearchFilter = AdminSearchFilter()): PageResponse<AdminWithdrawalDto> {
         if (page < 0) throw BadRequestException(message = "page phải lớn hơn hoặc bằng 0")
@@ -86,8 +102,8 @@ class WithdrawalService(
                 driverId = request.driverId,
                 driverName = driver?.fullName,
                 driverPhoneNumber = driver?.phoneNumber,
-                bankName = driver?.bankName,
-                bankAccountNumber = driver?.bankAccountNumber,
+                bankName = request.bankNameSnapshot,
+                bankAccountNumber = request.bankAccountNumberSnapshot,
                 amount = request.amount,
                 status = request.status,
                 createdAt = request.createdAt,

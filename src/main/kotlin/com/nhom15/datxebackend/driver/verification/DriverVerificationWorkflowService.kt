@@ -98,12 +98,56 @@ class DriverVerificationWorkflowService @Autowired constructor(
     @Value("\${app.verification.uploads-per-minute:12}") private val uploadsPerMinute: Int = 12,
     @Value("\${app.verification.lookup-hmac-key:\${app.verification.encryption-key:}}") lookupHmacKey: String = "",
     transactionManager: PlatformTransactionManager? = null,
+    @Value("\${app.verification.require-protected-storage:false}") private val requireProtectedStorage: Boolean = false,
+    @Value("\${app.verification.previous-lookup-hmac-keys:\${app.verification.previous-encryption-keys:}}")
+    previousLookupHmacKeys: String = "",
+    private val userCache: com.nhom15.datxebackend.auth.security.AuthenticatedUserCache? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
     private val txTemplate: TransactionTemplate? = transactionManager?.let(::TransactionTemplate)
-    private val lookupHmacSecret: ByteArray = lookupHmacKey.trim().takeIf { it.isNotEmpty() }?.let { raw ->
-        MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(StandardCharsets.UTF_8))
-    } ?: ByteArray(32).also { SecureRandom().nextBytes(it) }
+    private val lookupHmacSecret: ByteArray = deriveLookupHmacSecret(lookupHmacKey, requireProtectedStorage)
+    private val lookupHmacVerificationSecrets: List<ByteArray> =
+        buildLookupHmacVerificationSecrets(lookupHmacKey, previousLookupHmacKeys, lookupHmacSecret)
+
+    private fun deriveLookupHmacSecret(rawKey: String, protectedMode: Boolean): ByteArray {
+        val trimmed = rawKey.trim()
+        if (protectedMode) {
+            require(trimmed.isNotEmpty()) {
+                "Production verification workflow requires a configured lookup HMAC key."
+            }
+        }
+        val material = if (trimmed.isNotEmpty()) {
+            "$LOOKUP_HMAC_DOMAIN_PREFIX$trimmed"
+        } else {
+            log.warn("app.verification.lookup-hmac-key is blank in non-protected mode; using deterministic dev HMAC domain key")
+            DEV_FALLBACK_LOOKUP_HMAC_DOMAIN
+        }
+        return sha256Bytes(material)
+    }
+
+    private fun buildLookupHmacVerificationSecrets(
+        primaryRawKey: String,
+        previousRawKeys: String,
+        primarySecret: ByteArray,
+    ): List<ByteArray> {
+        val secrets = mutableListOf(primarySecret)
+        val primaryTrimmed = primaryRawKey.trim()
+        if (primaryTrimmed.isNotEmpty()) {
+            // Backward compatibility for HMAC rows written prior to domain separation.
+            secrets.add(sha256Bytes(primaryTrimmed))
+        }
+        previousRawKeys.split(',')
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .forEach { prev ->
+                secrets.add(sha256Bytes("$LOOKUP_HMAC_DOMAIN_PREFIX$prev"))
+                secrets.add(sha256Bytes(prev))
+            }
+        return secrets
+    }
+
+    private fun sha256Bytes(material: String): ByteArray =
+        MessageDigest.getInstance("SHA-256").digest(material.toByteArray(StandardCharsets.UTF_8))
 
     private data class ApplicationRow(
         val id: UUID,
@@ -434,6 +478,17 @@ class DriverVerificationWorkflowService @Autowired constructor(
         }
 
         val objectKey = storage.store(bytes)
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(
+                object : TransactionSynchronization {
+                    override fun afterCompletion(status: Int) {
+                        if (status != TransactionSynchronization.STATUS_COMMITTED) {
+                            storage.deleteQuietly(objectKey)
+                        }
+                    }
+                },
+            )
+        }
         val captureId = UUID.randomUUID()
         val qualityMap = mapOf(
             "width" to checked.width,
@@ -1173,7 +1228,6 @@ class DriverVerificationWorkflowService @Autowired constructor(
         )
     }
 
-    @Transactional
     fun faceComparison(
         actor: AuthUser,
         applicationId: UUID,
@@ -1181,7 +1235,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
         submissionRevision: Long,
     ): Any {
         requireAdmin(actor)
-        val row = requireAccessibleApp(applicationId, actor, review = true, forUpdate = true)
+        val row = requireAccessibleApp(applicationId, actor, review = true, forUpdate = false)
         if (row.ownerUid == actor.firebaseUid) {
             throw VerificationWorkflowException(403, "FORBIDDEN", "Không thể tự đối chiếu hồ sơ của chính mình.")
         }
@@ -1337,34 +1391,44 @@ class DriverVerificationWorkflowService @Autowired constructor(
             else -> row.identityHoldReason
         }
 
-        jdbc.update(
-            """UPDATE driver_verification_applications
-               SET status = ?, revision = ?, decision_reason = ?, requested_changes = ?,
-                   confirmation_current = ?,
-                   approved_revision = ?, approved_submission_revision = ?,
-                   locked_cccd_id = ?, locked_full_name = ?, locked_dob = ?,
-                   verified_gplx_number = ?, identity_hold = ?, identity_hold_reason = ?,
-                   updated_at = CURRENT_TIMESTAMP
-               WHERE id = ?""",
-            targetStatus,
-            nextRevision,
-            SqlParameterValue(Types.VARCHAR, reason),
-            SqlParameterValue(
-                Types.VARCHAR,
-                requestedTargets?.let { mapper.writeValueAsString(it) }
-                    ?: if (targetStatus == "UNDER_REVIEW") row.requestedChangesJson else null,
-            ),
-            confirmationCurrentUpdate,
-            SqlParameterValue(Types.BIGINT, nextApprovedRevision),
-            SqlParameterValue(Types.BIGINT, nextApprovedSubmissionRev),
-            SqlParameterValue(Types.VARCHAR, nextLockedCccdId),
-            SqlParameterValue(Types.VARCHAR, nextLockedFullName),
-            SqlParameterValue(Types.DATE, nextLockedDob),
-            SqlParameterValue(Types.VARCHAR, nextVerifiedGplx),
-            nextIdentityHold,
-            SqlParameterValue(Types.VARCHAR, nextIdentityHoldReason),
-            row.id,
-        )
+        val clearHmacClaims = targetStatus in setOf("REJECTED", "REVOKED")
+        try {
+            jdbc.update(
+                """UPDATE driver_verification_applications
+                   SET status = ?, revision = ?, decision_reason = ?, requested_changes = ?,
+                       confirmation_current = ?,
+                       approved_revision = ?, approved_submission_revision = ?,
+                       locked_cccd_id = ?, locked_full_name = ?, locked_dob = ?,
+                       verified_gplx_number = ?, identity_hold = ?, identity_hold_reason = ?,
+                       cccd_id_hmac = CASE WHEN ? THEN NULL ELSE cccd_id_hmac END,
+                       qr_cccd_id_hmac = CASE WHEN ? THEN NULL ELSE qr_cccd_id_hmac END,
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                targetStatus,
+                nextRevision,
+                SqlParameterValue(Types.VARCHAR, reason),
+                SqlParameterValue(
+                    Types.VARCHAR,
+                    requestedTargets?.let { mapper.writeValueAsString(it) }
+                        ?: if (targetStatus == "UNDER_REVIEW") row.requestedChangesJson else null,
+                ),
+                confirmationCurrentUpdate,
+                SqlParameterValue(Types.BIGINT, nextApprovedRevision),
+                SqlParameterValue(Types.BIGINT, nextApprovedSubmissionRev),
+                SqlParameterValue(Types.VARCHAR, nextLockedCccdId),
+                SqlParameterValue(Types.VARCHAR, nextLockedFullName),
+                SqlParameterValue(Types.DATE, nextLockedDob),
+                SqlParameterValue(Types.VARCHAR, nextVerifiedGplx),
+                nextIdentityHold,
+                SqlParameterValue(Types.VARCHAR, nextIdentityHoldReason),
+                clearHmacClaims,
+                clearHmacClaims,
+                row.id,
+            )
+        } catch (ex: org.springframework.dao.DataIntegrityViolationException) {
+            log.warn("Identity uniqueness conflict on decision for application {}", row.id)
+            throw VerificationWorkflowException(409, "DUPLICATE_IDENTITY", "CCCD hoặc GPLX đã được sử dụng bởi tài khoản khác.")
+        }
 
         val auditMeta = linkedMapOf<String, Any?>(
             "reason" to reason,
@@ -1466,28 +1530,34 @@ class DriverVerificationWorkflowService @Autowired constructor(
             }
             VerificationStatus.REJECTED, VerificationStatus.REVOKED -> {
                 lockedDriver.verificationStatus = "REJECTED"
-                lockedDriver.status = DriverStatus.OFFLINE
-                lockedDriver.onlineVehicleType = null
                 lockedDriver.licenseVerified = false
-                driverRepository.save(lockedDriver)
-                afterCommit {
-                    runCatching { locationService?.removeDriver(lockedDriver.id) }
+                if (lockedDriver.status !in setOf(DriverStatus.BUSY, DriverStatus.BLOCKED)) {
+                    lockedDriver.status = DriverStatus.OFFLINE
+                    lockedDriver.onlineVehicleType = null
+                    afterCommit {
+                        runCatching { locationService?.removeDriver(lockedDriver.id) }
+                    }
                 }
+                driverRepository.save(lockedDriver)
+                userCache?.evictAfterCommit(lockedDriver.firebaseUid)
                 notifyStatus = "REJECTED"
             }
             VerificationStatus.NEEDS_MORE_INFO -> {
                 lockedDriver.verificationStatus = "PENDING"
-                lockedDriver.status = DriverStatus.OFFLINE
-                lockedDriver.onlineVehicleType = null
-                driverRepository.save(lockedDriver)
-                afterCommit {
-                    runCatching { locationService?.removeDriver(lockedDriver.id) }
+                if (lockedDriver.status !in setOf(DriverStatus.BUSY, DriverStatus.BLOCKED)) {
+                    lockedDriver.status = DriverStatus.OFFLINE
+                    lockedDriver.onlineVehicleType = null
+                    afterCommit {
+                        runCatching { locationService?.removeDriver(lockedDriver.id) }
+                    }
                 }
+                driverRepository.save(lockedDriver)
+                userCache?.evictAfterCommit(lockedDriver.firebaseUid)
                 notifyStatus = "PENDING"
             }
             VerificationStatus.SUBMITTED -> {
                 lockedDriver.verificationStatus = "PENDING"
-                if (takeDriverOffline) {
+                if (takeDriverOffline && lockedDriver.status !in setOf(DriverStatus.BUSY, DriverStatus.BLOCKED)) {
                     lockedDriver.status = DriverStatus.OFFLINE
                     lockedDriver.onlineVehicleType = null
                     afterCommit {
@@ -1495,16 +1565,20 @@ class DriverVerificationWorkflowService @Autowired constructor(
                     }
                 }
                 driverRepository.save(lockedDriver)
+                userCache?.evictAfterCommit(lockedDriver.firebaseUid)
             }
             VerificationStatus.UNDER_REVIEW -> {
                 if (takeDriverOffline) {
                     lockedDriver.verificationStatus = "PENDING"
-                    lockedDriver.status = DriverStatus.OFFLINE
-                    lockedDriver.onlineVehicleType = null
-                    driverRepository.save(lockedDriver)
-                    afterCommit {
-                        runCatching { locationService?.removeDriver(lockedDriver.id) }
+                    if (lockedDriver.status !in setOf(DriverStatus.BUSY, DriverStatus.BLOCKED)) {
+                        lockedDriver.status = DriverStatus.OFFLINE
+                        lockedDriver.onlineVehicleType = null
+                        afterCommit {
+                            runCatching { locationService?.removeDriver(lockedDriver.id) }
+                        }
                     }
+                    driverRepository.save(lockedDriver)
+                    userCache?.evictAfterCommit(lockedDriver.firebaseUid)
                 }
             }
         }
@@ -1824,6 +1898,37 @@ class DriverVerificationWorkflowService @Autowired constructor(
         }
     }
 
+    /**
+     * Reconciles orphan capture files left behind by an abrupt process crash before DB commit.
+     * Never deletes files referenced by any row (active or retired) in driver_verification_captures,
+     * and never deletes files newer than [minAge] to protect in-flight uploads. Safe to retry.
+     */
+    @org.springframework.transaction.annotation.Transactional(readOnly = true)
+    fun reconcileOrphanCaptures(minAge: java.time.Duration = java.time.Duration.ofHours(1)): Int {
+        val cutoff = java.time.Instant.now().minus(minAge)
+        val candidates = storage.listKeysOlderThan(cutoff)
+        if (candidates.isEmpty()) return 0
+        val referenced = mutableSetOf<String>()
+        for (chunk in candidates.chunked(200)) {
+            val marks = chunk.joinToString(",") { "?" }
+            referenced.addAll(
+                jdbc.queryForList(
+                    "SELECT storage_key FROM driver_verification_captures WHERE storage_key IN ($marks)",
+                    String::class.java,
+                    *chunk.toTypedArray(),
+                ).filterNotNull(),
+            )
+        }
+        var deleted = 0
+        for (key in candidates) {
+            if (key !in referenced) {
+                storage.deleteQuietly(key)
+                deleted++
+            }
+        }
+        return deleted
+    }
+
     private fun requireAccessibleApp(
         id: UUID,
         actor: AuthUser,
@@ -1941,16 +2046,27 @@ class DriverVerificationWorkflowService @Autowired constructor(
 
     private fun hasDuplicateCccdAcrossAccounts(ownerUid: String, cccdId: String?): Boolean {
         val clean = cccdId?.trim()?.takeIf { it.isNotEmpty() } ?: return false
-        val cccdHmac = CccdQrParser.computeLookupHmac(clean, lookupHmacSecret)
-        val appDup = runCatching {
+        val candidateHmacs = lookupHmacVerificationSecrets
+            .map { CccdQrParser.computeLookupHmac(clean, it) }
+            .distinct()
+        val hmacSet = candidateHmacs.toSet()
+        val placeholders = candidateHmacs.joinToString(",") { "?" }
+        val args = buildList<Any> {
+            add(ownerUid)
+            add(clean)
+            addAll(candidateHmacs)
+            addAll(candidateHmacs)
+        }.toTypedArray()
+        return try {
             jdbc.query(
                 """SELECT locked_cccd_id, status, confirmed_fields, cccd_id_hmac, qr_cccd_id_hmac
                    FROM driver_verification_applications
                    WHERE owner_uid <> ?
+                     AND status IN ('APPROVED', 'SUBMITTED', 'UNDER_REVIEW', 'NEEDS_MORE_INFO')
                      AND (locked_cccd_id = ?
-                          OR cccd_id_hmac = ?
-                          OR qr_cccd_id_hmac = ?
-                          OR status IN ('APPROVED', 'SUBMITTED', 'UNDER_REVIEW', 'NEEDS_MORE_INFO'))""",
+                          OR cccd_id_hmac IN ($placeholders)
+                          OR qr_cccd_id_hmac IN ($placeholders)
+                          OR confirmed_fields IS NOT NULL)""",
                 { rs, _ ->
                     listOf(
                         rs.getString("locked_cccd_id"),
@@ -1959,31 +2075,35 @@ class DriverVerificationWorkflowService @Autowired constructor(
                         rs.getString("qr_cccd_id_hmac"),
                     )
                 },
-                ownerUid,
-                clean,
-                cccdHmac,
-                cccdHmac,
+                *args,
             ).any { values ->
                 val lockedId = values[0]
                 val confirmedJson = values[1]
                 val storedHmac = values[2]
                 val storedQrHmac = values[3]
-                if (lockedId == clean || storedHmac == cccdHmac || storedQrHmac == cccdHmac) return@any true
+                if (lockedId == clean || storedHmac in hmacSet || storedQrHmac in hmacSet) return@any true
                 if (confirmedJson.isNullOrBlank()) return@any false
                 (readMap(confirmedJson)["cccd_id"] as? String)?.trim() == clean
             }
-        }.getOrDefault(false)
-        return appDup
+        } catch (ex: Exception) {
+            log.error("Không thể kiểm tra trùng lặp CCCD trên hệ thống", ex)
+            throw VerificationWorkflowException(
+                503,
+                "VERIFICATION_UNAVAILABLE",
+                "Không thể kiểm tra trùng lặp giấy tờ vào lúc này. Vui lòng thử lại.",
+            )
+        }
     }
 
     private fun hasDuplicateGplxAcrossAccounts(ownerUid: String, gplxNumber: String?): Boolean {
         val clean = gplxNumber?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: return false
-        val appDup = runCatching {
+        return try {
             jdbc.query(
                 """SELECT verified_gplx_number, status, confirmed_fields
                    FROM driver_verification_applications
                    WHERE owner_uid <> ?
-                     AND (UPPER(TRIM(verified_gplx_number)) = ? OR status IN ('APPROVED', 'SUBMITTED', 'UNDER_REVIEW'))""",
+                     AND status IN ('APPROVED', 'SUBMITTED', 'UNDER_REVIEW', 'NEEDS_MORE_INFO')
+                     AND (UPPER(TRIM(verified_gplx_number)) = ? OR confirmed_fields IS NOT NULL)""",
                 { rs, _ ->
                     Triple(
                         rs.getString("verified_gplx_number"),
@@ -1998,8 +2118,14 @@ class DriverVerificationWorkflowService @Autowired constructor(
                 if (confirmedJson.isNullOrBlank()) return@any false
                 (readMap(confirmedJson)["gplx_number"] as? String)?.trim()?.uppercase() == clean
             }
-        }.getOrDefault(false)
-        return appDup
+        } catch (ex: Exception) {
+            log.error("Không thể kiểm tra trùng lặp GPLX trên hệ thống", ex)
+            throw VerificationWorkflowException(
+                503,
+                "VERIFICATION_UNAVAILABLE",
+                "Không thể kiểm tra trùng lặp giấy tờ vào lúc này. Vui lòng thử lại.",
+            )
+        }
     }
 
     private fun buildEligibilitySummary(row: ApplicationRow): Map<String, Any?> {
@@ -2155,4 +2281,9 @@ class DriverVerificationWorkflowService @Autowired constructor(
         capturedRevision = getLong("captured_revision"),
         firstSubmittedRevision = getObject("first_submitted_revision", Long::class.javaObjectType),
     )
+
+    private companion object {
+        const val LOOKUP_HMAC_DOMAIN_PREFIX = "ptitgo:verification:lookup-hmac:v1:"
+        const val DEV_FALLBACK_LOOKUP_HMAC_DOMAIN = "ptitgo:verification:dev-lookup-hmac:v1"
+    }
 }

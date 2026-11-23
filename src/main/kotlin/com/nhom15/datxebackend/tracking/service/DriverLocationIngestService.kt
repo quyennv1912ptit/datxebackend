@@ -1,6 +1,5 @@
 package com.nhom15.datxebackend.tracking.service
 
-import com.nhom15.datxebackend.common.port.ActiveRideQueryPort
 import com.nhom15.datxebackend.notification.api.Recipient
 import com.nhom15.datxebackend.tracking.dto.DriverLocation
 import com.nhom15.datxebackend.tracking.dto.DriverLocationPolicy
@@ -15,18 +14,17 @@ import java.time.Instant
 @Service
 class DriverLocationIngestService(
     private val locationService: LocationService,
-    private val activeRideQueryPort: ActiveRideQueryPort,
     private val messagingTemplate: SimpMessagingTemplate,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
-    /** False when the sample is malformed or too old; callers may drop it silently. */
+    /** False when the sample is malformed, stale, or arrives inside the ingest interval. */
     fun ingest(driverId: Long, update: DriverLocation): Boolean {
         val now = Instant.now()
         if (!DriverLocationPolicy.valid(update, now)) return false
-        if (!locationService.saveDriverLocation(driverId, update.location, update.timestamp)) return false
+        val stored = locationService.saveDriverLocation(driverId, update.location, update.timestamp) ?: return false
         runCatching {
-            activeRideQueryPort.findActiveRideForDriver(driverId)?.let { ride ->
+            stored.activeRide?.let { ride ->
                 messagingTemplate.convertAndSendToUser(
                     Recipient.Customer(ride.customerId).key,
                     "/queue/rides/${ride.rideId}/location",

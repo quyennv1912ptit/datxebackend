@@ -139,7 +139,7 @@ class DispatchPresenceTests(unittest.TestCase):
                     elif name == 'CANCEL_SEARCH':
                         action = "assert(run('CANCEL_SEARCH',{'ride:42:state','timeouts','ride:42:candidates','available_drivers'},{'42'})=='7')"
                     else:
-                        action = "assert(accept()==1);assert(run('ROLLBACK_ACCEPT',{'ride:42:state','timeouts','ride:42:rejected','ride:42:candidates','available_drivers'},{'7','42','SEARCHING','120'})==1)"
+                        action = "assert(accept()==1);assert(run('ROLLBACK_ACCEPT',{'ride:42:state','timeouts','ride:42:rejected','ride:42:candidates','available_drivers'},{'7','42','SEARCHING','120','offer-a'})==1)"
                     execute(f"""seed();offer();{'redis.call("DEL","driver:alive:7")' if not alive else ''}
                         {action}
                         assert(redis.call('GET','driver:7:status')=='{'ONLINE' if alive else 'OFFLINE'}')
@@ -172,10 +172,12 @@ class DispatchPresenceTests(unittest.TestCase):
         execute("""
             local location='driver:7:location'
             local alive='driver:alive:7'
-            local keys={location,alive,'lastseen'}
-            assert(run('SAVE_SAMPLE',keys,{'7','21.04','105.85','new','1100','1000'})==1)
+            local keys={location,alive,'lastseen','driver:7:location-ingest'}
+            assert(run('SAVE_SAMPLE',keys,{'7','21.04','105.85','new','1100','250','1000'})==1)
+            NOW=1100
+            assert(run('SAVE_SAMPLE',keys,{'7','21.05','105.86','rapid','1200','250','1000'})==0)
             NOW=1500
-            assert(run('SAVE_SAMPLE',keys,{'7','21.03','105.84','old','1000','1000'})==0)
+            assert(run('SAVE_SAMPLE',keys,{'7','21.03','105.84','old','1000','250','1000'})==0)
             assert(redis.call('HGET',location,'sampledAt')=='new')
             assert(redis.call('GET',alive)=='1')
             NOW=2000

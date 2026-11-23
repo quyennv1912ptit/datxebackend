@@ -28,10 +28,20 @@ class FirebaseAuthFilter(
             val idToken = authorization.substring(BEARER_PREFIX.length).trim()
             if (idToken.isNotEmpty()) {
                 try {
-                    val decodedToken = firebaseAuth.verifyIdToken(idToken)
-                    val roleHint = requestedRole(request)
-                    val user = authService.findAuthenticatedUser(decodedToken.uid, roleHint)
-                    if (user != null) {
+                    val decodedToken = firebaseAuth.verifyIdToken(idToken, true)
+                    val routeRole = expectedRole(request)
+                    val headerRole = headerRole(request)
+                    val user = if (request.requestURI in DUAL_ROLE_VERIFICATION_ME) {
+                        if (headerRole == Role.ADMIN) {
+                            authService.findAuthenticatedUser(decodedToken.uid, Role.ADMIN)
+                        } else {
+                            authService.findAuthenticatedUser(decodedToken.uid, Role.DRIVER)
+                                ?: authService.findAuthenticatedUser(decodedToken.uid, Role.ADMIN)
+                        }
+                    } else {
+                        authService.findAuthenticatedUser(decodedToken.uid, routeRole ?: headerRole)
+                    }
+                    if (user != null && (routeRole == null || user.role == routeRole)) {
                         val authentication = UsernamePasswordAuthenticationToken(
                             user,
                             null,
@@ -42,11 +52,14 @@ class FirebaseAuthFilter(
                         SecurityContextHolder.clearContext()
                     }
                 } catch (exception: FirebaseAuthException) {
-                    log.debug("Rejected invalid Firebase ID token: {}", exception.message)
+                    log.debug("Rejected invalid or revoked Firebase ID token: {}", exception.message)
                     SecurityContextHolder.clearContext()
                 } catch (exception: IllegalArgumentException) {
                     log.debug("Rejected malformed Firebase ID token or X-Role header: {}", exception.message)
                     SecurityContextHolder.clearContext()
+                } catch (exception: RuntimeException) {
+                    SecurityContextHolder.clearContext()
+                    throw exception
                 }
             } else {
                 SecurityContextHolder.clearContext()
@@ -56,30 +69,35 @@ class FirebaseAuthFilter(
         filterChain.doFilter(request, response)
     }
 
-    private fun requestedRole(request: HttpServletRequest): Role? {
-        val roleHeader = request.getHeader(ROLE_HEADER)?.trim()?.uppercase()
-        if (!roleHeader.isNullOrEmpty()) {
-            return when (roleHeader) {
-                "CUSTOMER", "USER" -> Role.CUSTOMER
-                "DRIVER" -> Role.DRIVER
-                "ADMIN" -> Role.ADMIN
-                else -> throw IllegalArgumentException("Invalid X-Role header")
-            }
-        }
-
-        // Role-scoped routes remain compatible with clients that predate the role header.
+    private fun expectedRole(request: HttpServletRequest): Role? {
+        val uri = request.requestURI
         return when {
-            request.requestURI.startsWith("/api/customer/") -> Role.CUSTOMER
-            request.requestURI.startsWith("/api/driver/") -> Role.DRIVER
-            request.requestURI.startsWith("/api/admin/") -> Role.ADMIN
-            request.requestURI.startsWith("/ekyc/driver-verification/v1/admin/") -> Role.ADMIN
-            request.requestURI.startsWith("/ekyc/driver-verification/v1/") -> Role.DRIVER
+            uri.startsWith("/api/admin/") -> Role.ADMIN
+            uri.startsWith("/ekyc/driver-verification/v1/admin/") -> Role.ADMIN
+            uri in DUAL_ROLE_VERIFICATION_ME -> null
+            uri.startsWith("/api/customer/") -> Role.CUSTOMER
+            uri.startsWith("/api/driver/") || uri.startsWith("/ekyc/driver-verification/v1/") -> Role.DRIVER
             else -> null
+        }
+    }
+
+    private fun headerRole(request: HttpServletRequest): Role? {
+        val roleHeader = request.getHeader(ROLE_HEADER)?.trim()?.uppercase()
+        if (roleHeader.isNullOrEmpty()) return null
+        return when (roleHeader) {
+            "CUSTOMER", "USER" -> Role.CUSTOMER
+            "DRIVER" -> Role.DRIVER
+            "ADMIN" -> Role.ADMIN
+            else -> throw IllegalArgumentException("Invalid X-Role header")
         }
     }
 
     private companion object {
         val log = LoggerFactory.getLogger(FirebaseAuthFilter::class.java)
+        val DUAL_ROLE_VERIFICATION_ME = setOf(
+            "/ekyc/driver-verification/v1/me",
+            "/api/driver/verification/v1/me",
+        )
         const val AUTHORIZATION_HEADER = "Authorization"
         const val BEARER_PREFIX = "Bearer "
         const val ROLE_HEADER = "X-Role"

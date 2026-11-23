@@ -78,7 +78,22 @@ capture_root=$("${compose[@]}" config --format json 2>/dev/null | python3 -c '
 import json
 import sys
 backend = json.load(sys.stdin)["services"]["backend"]
-if not str(backend["environment"].get("DATXE_VERIFICATION_ENCRYPTION_KEY") or "").strip():
+env = backend.get("environment") or {}
+if not str(env.get("DATXE_VERIFICATION_ENCRYPTION_KEY") or "").strip():
+    sys.exit(1)
+if not str(env.get("DATXE_VERIFICATION_LOOKUP_HMAC_KEY") or "").strip():
+    sys.exit(1)
+blocked_exact = {"JAVA_OPTS", "_JAVA_OPTIONS", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS"}
+for raw_k, raw_v in env.items():
+    k = str(raw_k).upper().replace(".", "_").replace("-", "_")
+    v = str(raw_v or "").strip()
+    if (k in blocked_exact or k.startswith("SPRING_CONFIG_")) and v:
+        sys.exit(1)
+profile = str(env.get("SPRING_PROFILES_ACTIVE") or "").strip().lower()
+if profile not in {"prod", "production"}:
+    sys.exit(1)
+mock_topup = str(env.get("WALLET_MOCK_TOPUP_ENABLED") or "false").strip().lower()
+if mock_topup in {"1", "true", "yes", "on"}:
     sys.exit(1)
 for volume in backend["volumes"]:
     if volume["target"] == "/var/lib/ptitgo/verification":
@@ -86,7 +101,7 @@ for volume in backend["volumes"]:
         break
 else:
     sys.exit(1)
-' 2>/dev/null) || fail 'Production verification requires a capture mount and an encryption key.'
+' 2>/dev/null) || fail 'Production verification requires capture mount, encryption key, HMAC key, prod profile, and no JAVA_OPTS/mock-topup override.'
 [[ "$capture_root" == /* && -d "$capture_root" ]] || fail 'Provision the capture directory before deploying.'
 capture_root=$(realpath -e "$capture_root")
 source_root=$(realpath -e "${GITHUB_WORKSPACE:-$PWD}")

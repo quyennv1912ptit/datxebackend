@@ -14,7 +14,12 @@ import org.springframework.transaction.annotation.Transactional
 import java.sql.ResultSet
 
 @Service
-class SupportService(private val jdbc: JdbcTemplate, private val rides: RideRepository, private val assets: CloudinaryAssetService) {
+class SupportService @org.springframework.beans.factory.annotation.Autowired constructor(
+    private val jdbc: JdbcTemplate,
+    private val rides: RideRepository,
+    private val assets: CloudinaryAssetService,
+    private val events: org.springframework.context.ApplicationEventPublisher? = null,
+) {
     @Transactional
     fun create(actor: AuthUser, request: CreateSupportTicket): SupportTicket {
         requireMember(actor)
@@ -58,6 +63,12 @@ class SupportService(private val jdbc: JdbcTemplate, private val rides: RideRepo
 
     @Transactional(readOnly = true)
     fun list(actor: AuthUser, page: Int, status: String? = null): List<SupportTicket> {
+        val tickets = listWithoutImages(actor, page, status)
+        val images = imagesFor(tickets.map(SupportTicket::id))
+        return tickets.map { it.copy(images = images[it.id].orEmpty()) }
+    }
+
+    internal fun listWithoutImages(actor: AuthUser, page: Int, status: String?): List<SupportTicket> {
         if (page !in 0..10000) throw BadRequestException(message = "Trang không hợp lệ")
         if (status != null && status !in SUPPORT_STATUSES) throw BadRequestException(message = "Trạng thái yêu cầu không hợp lệ")
         val conditions = mutableListOf<String>()
@@ -77,6 +88,11 @@ class SupportService(private val jdbc: JdbcTemplate, private val rides: RideRepo
 
     @Transactional(readOnly = true)
     fun detail(actor: AuthUser, id: Long): SupportTicket {
+        val ticket = detailWithoutImages(actor, id)
+        return ticket.copy(images = imagesFor(listOf(id))[id].orEmpty())
+    }
+
+    internal fun detailWithoutImages(actor: AuthUser, id: Long): SupportTicket {
         val ticket = jdbc.query("SELECT * FROM support_tickets WHERE id=?", { r, _ -> map(r) }, id).firstOrNull() ?: throw NotFoundException()
         if (actor.role != Role.ADMIN && (ticket.ownerId != actor.id || ticket.ownerRole != actor.role.name)) throw NotFoundException()
         return ticket
@@ -86,10 +102,29 @@ class SupportService(private val jdbc: JdbcTemplate, private val rides: RideRepo
     fun update(actor: AuthUser, id: Long, request: UpdateSupportTicket): SupportTicket {
         if (actor.role != Role.ADMIN) throw ForbiddenException()
         if (request.status !in SUPPORT_STATUSES) throw BadRequestException()
-        if ((request.response?.length ?: 0) > 4000 || (request.status == "RESOLVED" && request.response.isNullOrBlank()))
+        if ((request.response?.length ?: 0) > 4000 || (request.status in setOf("RESOLVED", "CLOSED") && request.response.isNullOrBlank()))
             throw BadRequestException(message = "Cần nội dung trả lời khi đóng yêu cầu; tối đa 4000 ký tự")
-        val updatedAt = jdbc.query("SELECT updated_at FROM support_tickets WHERE id=? FOR UPDATE",
-            { row, _ -> row.getTimestamp("updated_at").toInstant() }, id).firstOrNull() ?: throw NotFoundException()
+        val locked = jdbc.query(
+            "SELECT updated_at, status, handled_by, owner_id, owner_role FROM support_tickets WHERE id=? FOR UPDATE",
+            { row, _ ->
+                arrayOf<Any?>(
+                    row.getTimestamp("updated_at").toInstant(),
+                    row.getString("status"),
+                    row.getObject("handled_by", Long::class.javaObjectType),
+                    row.getLong("owner_id"),
+                    row.getString("owner_role"),
+                )
+            },
+            id,
+        ).firstOrNull() ?: throw NotFoundException()
+        val updatedAt = locked[0] as java.time.Instant
+        val currentStatus = locked[1] as String?
+        val currentHandledBy = locked[2] as Long?
+        val ownerId = locked[3] as Long
+        val ownerRole = locked[4] as String
+        if (currentStatus == "IN_PROGRESS" && currentHandledBy != null && currentHandledBy != actor.id) {
+            throw ConflictException(message = "Ticket đang được xử lý bởi admin khác")
+        }
         if (request.expectedUpdatedAt != null && request.expectedUpdatedAt != updatedAt)
             throw ConflictException(message = "Yêu cầu đã được người khác cập nhật. Vui lòng tải lại trước khi lưu.")
         val response = request.response?.trim()
@@ -101,8 +136,32 @@ class SupportService(private val jdbc: JdbcTemplate, private val rides: RideRepo
                 "INSERT INTO support_ticket_messages(ticket_id,sender_id,sender_role,body) VALUES (?,?,?,?)",
                 id, actor.id, "ADMIN", response,
             )
+            val mappedStatus = when (request.status) {
+                "RESOLVED", "CLOSED" -> com.nhom15.datxebackend.support.ticket.TicketStatus.CLOSED
+                "IN_PROGRESS" -> com.nhom15.datxebackend.support.ticket.TicketStatus.IN_PROGRESS
+                "WAITING_FOR_USER" -> com.nhom15.datxebackend.support.ticket.TicketStatus.WAITING_FOR_USER
+                else -> com.nhom15.datxebackend.support.ticket.TicketStatus.OPEN
+            }
+            events?.publishEvent(
+                com.nhom15.datxebackend.support.ticket.TicketReplied(
+                    id, "HT-$id", ownerId, Role.valueOf(ownerRole), mappedStatus, response,
+                ),
+            )
         }
         return detail(actor, id)
+    }
+
+    internal fun validateMessageImage(actor: AuthUser, imageUrl: String) = assets.validateOwnedImage(actor, imageUrl)
+
+    private fun imagesFor(ticketIds: List<Long>): Map<Long, List<SupportImage>> {
+        if (ticketIds.isEmpty()) return emptyMap()
+        val placeholders = ticketIds.joinToString(",") { "?" }
+        return jdbc.query(
+            """SELECT ticket_id, file_url, public_id FROM support_ticket_images
+               WHERE ticket_id IN ($placeholders) ORDER BY ticket_id, id""".trimIndent(),
+            { row, _ -> row.getLong("ticket_id") to SupportImage(row.getString("file_url"), row.getString("public_id")) },
+            *ticketIds.toTypedArray(),
+        ).groupBy({ it.first }, { it.second })
     }
 
     private fun requireMember(actor: AuthUser) { if (actor.role !in setOf(Role.CUSTOMER, Role.DRIVER)) throw ForbiddenException() }
@@ -110,7 +169,7 @@ class SupportService(private val jdbc: JdbcTemplate, private val rides: RideRepo
         val id = r.getLong("id")
         return SupportTicket(id, "HT-$id", r.getObject("ride_id", Long::class.javaObjectType), r.getString("category"),
             r.getString("description"), r.getString("status"), r.getString("response"),
-            jdbc.query("SELECT file_url,public_id FROM support_ticket_images WHERE ticket_id=? ORDER BY id", { image, _ -> SupportImage(image.getString(1), image.getString(2)) }, id),
+            emptyList(),
             r.getTimestamp("created_at").toInstant(), r.getTimestamp("updated_at").toInstant(), r.getLong("owner_id"), r.getString("owner_role"))
     }
 }

@@ -29,6 +29,9 @@ interface ChatMessageRepository : JpaRepository<ChatMessage, Long> {
         pageable: Pageable,
     ): List<ChatMessage>
 
+    @Query("select max(m.id) from ChatMessage m where m.conversationId = :cid")
+    fun findMaxIdInConversation(@Param("cid") conversationId: Long): Long?
+
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(
         """update ChatMessage m set m.readAt = :now

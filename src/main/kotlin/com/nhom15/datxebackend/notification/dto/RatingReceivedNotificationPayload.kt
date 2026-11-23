@@ -4,11 +4,13 @@ import com.fasterxml.jackson.annotation.JsonIgnore
 import com.nhom15.datxebackend.common.websocket.PayloadType
 
 data class RatingReceivedNotificationPayload(
-    override val rideId: Long,
     val stars: Int,
     val comment: String? = null,
     val tags: List<String> = emptyList(),
 ) : NotificationPayload {
+    @get:JsonIgnore
+    override val rideId: Long? get() = null
+
     @get:JsonIgnore
     override val type: PayloadType = PayloadType.RATING_RECEIVED
 

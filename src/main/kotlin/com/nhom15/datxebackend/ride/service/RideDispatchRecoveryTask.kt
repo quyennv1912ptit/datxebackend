@@ -111,8 +111,8 @@ class RideDispatchRecoveryTask(
                 val driverId = key.removePrefix("driver:").removeSuffix(":status").toLongOrNull() ?: continue
                 safely(driverId) {
                     val status = redisTemplate.opsForValue().get(key)
-                    if (status !in setOf("BUSY", "ON_TRIP", "OFFERED")) return@safely
                     val current = redisTemplate.opsForValue().get(RedisKeys.driverCurrentRide(driverId.toString())) ?: ""
+                    if (status !in setOf("BUSY", "ON_TRIP", "OFFERED") && current.isEmpty()) return@safely
                     val active = rideRepository.findFirstByDriverIdAndStatusInOrderByCreatedAtDesc(driverId, assigned)
                     if (active == null && !offers.driverHasOffer(driverId)) driverRelease.reconcileIdle(driverId, current)
                 }

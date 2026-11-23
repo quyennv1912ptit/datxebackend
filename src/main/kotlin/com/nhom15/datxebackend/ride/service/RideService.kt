@@ -7,6 +7,7 @@ import com.nhom15.datxebackend.common.domain.GeoPoint
 import com.nhom15.datxebackend.common.enums.Role
 import com.nhom15.datxebackend.common.enums.RideStatus
 import com.nhom15.datxebackend.common.enums.PaymentMethod
+import com.nhom15.datxebackend.common.enums.UserStatus
 import com.nhom15.datxebackend.common.exception.BadRequestException
 import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.common.exception.ForbiddenException
@@ -60,8 +61,11 @@ class RideService(
         requireCustomer(actor)
         val key = normalizeIdempotencyKey(idempotencyKey)
         val requestHash = key?.let { hashRequest(request) }
-        customerRepository.findByIdForUpdate(actor.id).orElseThrow {
+        val customer = customerRepository.findByIdForUpdate(actor.id).orElseThrow {
             com.nhom15.datxebackend.payment.exception.UserNotFoundException()
+        }
+        if (customer.deletedAt != null || customer.status != UserStatus.ACTIVE) {
+            throw AppException(ErrorCode.ACCOUNT_LOCKED)
         }
 
         if (key != null && requestHash != null) {
@@ -105,7 +109,9 @@ class RideService(
         quoteProvider.requirePricing(vehicle.vehicleType)
         val savedRoute = rideRoutes.resolve(actor.id, request.vehicleId, vehicle.vehicleType, quoteInput.pickup, quoteInput.dropoff, request.routeQuoteId)
         val quote = quoteProvider.quote(quoteInput.copy(route = savedRoute.drivingRoute()))
-        val appliedVoucher = voucherService.calculate(actor, request.voucherCode, quote.estimatedFare, request.paymentMethod, request.voucherId)
+        val appliedVoucher = voucherService.calculate(
+            actor, request.voucherCode, quote.estimatedFare, request.paymentMethod, request.voucherId, request.scheduledAt,
+        )
         // Số tiền khách thực trả được làm tròn 1.000; fare_estimate vẫn giữ giá gốc để đối soát.
         val payableFare = (quote.estimatedFare - (appliedVoucher?.discountAmount ?: 0))
             .coerceAtLeast(0)
@@ -126,7 +132,9 @@ class RideService(
         if (key != null && requestHash != null) {
             idempotencyRepository.insert(actor.id, key, requestHash, pendingRide.id)
         }
-        appliedVoucher?.let { voucherService.consume(actor.id, it, pendingRide.id, request.paymentMethod) }
+        appliedVoucher?.let {
+            voucherService.consume(actor.id, it, pendingRide.id, request.paymentMethod, request.scheduledAt)
+        }
         stateMachine.recordCreated(pendingRide, actor.id)
 
         val ride = if (request.type == RideType.INSTANT) {

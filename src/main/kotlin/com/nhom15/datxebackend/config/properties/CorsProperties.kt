@@ -6,5 +6,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 data class CorsProperties(
     // Danh sách các domain frontend (App khách, App tài xế, Web Admin) được phép truy cập
     // Ví dụ: ["http://localhost:3000", "https://admin.potitgo.vn"]
-    val allowedOrigins: List<String> = emptyList()
-)
+    val allowedOrigins: List<String> = emptyList(),
+) {
+    fun frontendOrigins(): List<String> =
+        (listOf("https://go-admin-mu.vercel.app") + allowedOrigins)
+            .map(String::trim)
+            .filter { it.isNotEmpty() && '*' !in it }
+            .distinct()
+}

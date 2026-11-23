@@ -50,4 +50,6 @@ class WithdrawalRequest(
     @Column(name = "reviewed_at") var reviewedAt: Instant? = null,
     @Column(name = "created_at", nullable = false) val createdAt: Instant = Instant.now(),
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY) var id: Long = 0,
+    @Column(name = "bank_name_snapshot", updatable = false) val bankNameSnapshot: String? = null,
+    @Column(name = "bank_account_number_snapshot", updatable = false) val bankAccountNumberSnapshot: String? = null,
 )

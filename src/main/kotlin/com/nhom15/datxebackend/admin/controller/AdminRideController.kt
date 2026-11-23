@@ -1,6 +1,7 @@
 package com.nhom15.datxebackend.admin.controller
 
 import com.nhom15.datxebackend.chat.dto.MessagePage
+import com.nhom15.datxebackend.chat.service.AdminChatConversation
 import com.nhom15.datxebackend.chat.service.ChatService
 import com.nhom15.datxebackend.admin.dto.AdminAssignRideRequest
 import com.nhom15.datxebackend.ride.dto.request.RideListFilter
@@ -55,8 +56,13 @@ class AdminRideController(
         @RequestParam(required = false) beforeId: Long?,
         @RequestParam(required = false) afterId: Long?,
         @RequestParam(defaultValue = "30") size: Int,
+        @RequestParam(required = false) driverId: Long? = null,
     ): ApiResponse<MessagePage> =
-        ApiResponse.ok(chatService.adminMessages(id, actor, beforeId, afterId, size.coerceIn(1, 100)))
+        ApiResponse.ok(chatService.adminMessages(id, actor, beforeId, afterId, size.coerceIn(1, 100), driverId))
+
+    @GetMapping("/{id}/chat/conversations")
+    fun chatConversations(@CurrentUser actor: AuthUser, @PathVariable id: Long): ApiResponse<List<AdminChatConversation>> =
+        ApiResponse.ok(chatService.adminConversations(id, actor))
 
     @PostMapping("/{id}/assignable-drivers")
     fun assignableDrivers(

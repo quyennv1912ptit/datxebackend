@@ -2,8 +2,11 @@ package com.nhom15.datxebackend.admin
 
 import com.nhom15.datxebackend.admin.dto.*
 import com.nhom15.datxebackend.admin.repository.*
+import com.nhom15.datxebackend.admin.service.AdminRatingService
 import com.nhom15.datxebackend.common.enums.RideStatus
+import com.nhom15.datxebackend.common.enums.Role
 import com.nhom15.datxebackend.common.exception.BadRequestException
+import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.driver.dto.AdminDriverFilter
 import com.nhom15.datxebackend.payment.entity.WithdrawalStatus
 import com.nhom15.datxebackend.payment.repository.WithdrawalRepository
@@ -20,12 +23,15 @@ import org.springframework.data.domain.PageRequest
 import org.springframework.data.domain.Sort
 import org.springframework.data.jpa.repository.support.JpaRepositoryFactory
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.jdbc.datasource.DataSourceTransactionManager
 import org.springframework.jdbc.datasource.DriverManagerDataSource
 import org.springframework.orm.jpa.*
 import org.springframework.orm.jpa.vendor.HibernateJpaVendorAdapter
+import org.springframework.transaction.support.TransactionTemplate
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
+import java.time.LocalDate
 import java.util.Properties
 import java.util.UUID
 
@@ -72,7 +78,10 @@ class AdminFiltersPostgresTests {
                 VALUES(?,1,?,1,'COMPLETED','INSTANT','CAR','AUTO',100000,'CASH',21,105,'Đón',21,105,'Trả',?)""",id,driver,java.sql.Timestamp.from(created))
         }
         jdbc.update("INSERT INTO support_tickets(id,owner_id,owner_role,client_request_id,category,description,status,ride_id,created_at) VALUES(41,1,'CUSTOMER',?,'TRIP','Cần giúp','OPEN',11,?),(42,1,'DRIVER',?,'PAYMENT','Tiền','OPEN',12,?)",UUID.randomUUID(),java.sql.Timestamp.from(from),UUID.randomUUID(),java.sql.Timestamp.from(to))
-        jdbc.update("INSERT INTO withdrawal_requests(id,driver_id,amount,status,idempotency_key,created_at) VALUES(51,1,50000,'PENDING','filter-1',?),(52,2,60000,'PENDING','filter-2',?)",java.sql.Timestamp.from(from),java.sql.Timestamp.from(to))
+        jdbc.update("""
+            INSERT INTO withdrawal_requests(id,driver_id,amount,status,idempotency_key,created_at,bank_name_snapshot,bank_account_number_snapshot)
+            VALUES(51,1,50000,'PENDING','filter-1',?,'Vietcombank','001234'),(52,2,60000,'PENDING','filter-2',?,'ACB','009999')
+        """.trimIndent(), java.sql.Timestamp.from(from), java.sql.Timestamp.from(to))
         jdbc.update("INSERT INTO wallet_transactions(id,customer_id,wallet_type,amount,type,transaction_type,status,description,created_at) VALUES(61,1,'CUSTOMER',50000,'DEPOSIT','TOP_UP','SUCCESS','Nạp 100%_!',?),(62,1,'CUSTOMER',50000,'DEPOSIT','TOP_UP','SUCCESS','Nạp khác',?),(63,2,'CUSTOMER',50000,'DEPOSIT','TOP_UP','SUCCESS','Nạp 100%_!',?)",java.sql.Timestamp.from(from),java.sql.Timestamp.from(to),java.sql.Timestamp.from(from))
     }
 
@@ -136,5 +145,28 @@ class AdminFiltersPostgresTests {
         assertThrows(BadRequestException::class.java) { AdminSearchFilter(createdFrom=from,createdTo=from).validate() }
         assertThrows(BadRequestException::class.java) { AdminSearchFilter(q="x".repeat(201)).validate() }
         assertThrows(BadRequestException::class.java) { AdminWalletFilter(type="arbitrary").validate() }
+    }
+
+    @Test fun `admin rating dates include the full Vietnam business day`() {
+        for ((rideId, timestamp) in listOf(11 to from, 13 to to, 14 to from.minusSeconds(1))) {
+            jdbc.update(
+                """INSERT INTO ratings(ride_id, direction, rater_id, ratee_id, stars, created_at)
+                   VALUES (?, 'CUSTOMER_TO_DRIVER', 1, 1, 5, ?)""",
+                rideId, java.sql.Timestamp.from(timestamp),
+            )
+        }
+        val actor = AuthUser(1, "ratings-admin", Role.ADMIN, null, null, null, "ACTIVE")
+        val date = LocalDate.of(2026, 11, 8)
+
+        val result = TransactionTemplate(DataSourceTransactionManager(jdbc.dataSource!!)).execute {
+            jdbc.execute("SET LOCAL TIME ZONE 'UTC'")
+            AdminRatingService(jdbc).list(
+                actor, direction = null, stars = null, raterId = null, rateeId = null,
+                from = date, to = date, hidden = null, page = 0, size = 10,
+            )
+        }
+
+        assertEquals(listOf(11L), result.content.map { it.rideId })
+        assertEquals(1L, result.totalElements)
     }
 }

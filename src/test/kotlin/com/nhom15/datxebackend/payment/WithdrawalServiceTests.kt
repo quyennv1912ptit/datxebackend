@@ -39,7 +39,8 @@ class WithdrawalServiceTests {
         val transactions = mock(WalletTransactionRepository::class.java)
         val wallets = mock(WalletService::class.java)
         val events = mock(org.springframework.context.ApplicationEventPublisher::class.java)
-        val request = WithdrawalRequest(7, 500_000, "approve-1", id = 10)
+        val request = WithdrawalRequest(7, 500_000, "approve-1", id = 10,
+            bankNameSnapshot = "Vietcombank", bankAccountNumberSnapshot = "0123456789")
         val debit = WalletTransaction(driverId = 7, walletType = "CASH", amount = -500_000,
             legacyType = "WITHDRAW", transactionType = TransactionType.WITHDRAW,
             status = WalletStatus.PENDING, balanceAfter = 0, withdrawalId = 10)
@@ -70,18 +71,19 @@ class WithdrawalServiceTests {
         verifyNoInteractions(wallets, transactions)
     }
 
-    @Test fun `admin list filters by status and joins driver bank details`() {
+    @Test fun `admin list joins driver identity and returns the saved bank details`() {
         val requests = mock(WithdrawalRepository::class.java)
         val drivers = mock(DriverRepository::class.java)
         val service = WithdrawalService(requests, mock(WalletTransactionRepository::class.java), drivers,
             mock(WalletService::class.java), mock(org.springframework.context.ApplicationEventPublisher::class.java))
-        val request = WithdrawalRequest(7, 50_000, "pending-1", id = 9)
+        val request = WithdrawalRequest(7, 50_000, "pending-1", id = 9,
+            bankNameSnapshot = "Vietcombank", bankAccountNumberSnapshot = "0123456789")
         val driver = Driver().apply {
             id = 7
             fullName = "Tài xế A"
             phoneNumber = "0900000000"
-            bankName = "Vietcombank"
-            bankAccountNumber = "0123456789"
+            bankName = "ACB"
+            bankAccountNumber = "0099988877"
         }
         `when`(requests.findByStatus(WithdrawalStatus.PENDING, PageRequest.of(0, 20, Sort.by(Sort.Direction.DESC, "createdAt", "id"))))
             .thenReturn(PageImpl(listOf(request), PageRequest.of(0, 20), 1))

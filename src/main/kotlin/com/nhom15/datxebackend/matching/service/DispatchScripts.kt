@@ -168,7 +168,8 @@ object DispatchScripts {
     val ROLLBACK_ACCEPT = DefaultRedisScript<Long>(
         """
         if redis.call('HGET', KEYS[1], 'status') ~= 'DRIVER_ASSIGNED'
-           or redis.call('HGET', KEYS[1], 'driverId') ~= ARGV[1] then
+           or redis.call('HGET', KEYS[1], 'driverId') ~= ARGV[1]
+           or redis.call('HGET', KEYS[1], 'currentOfferId') ~= ARGV[5] then
             return 0
         end
 
@@ -178,8 +179,7 @@ object DispatchScripts {
             redis.call('HSET', KEYS[1], 'status', ARGV[3])
             redis.call('HDEL', KEYS[1], 'driverId', 'acceptedAt')
         end
-        local token = redis.call('HGET', KEYS[1], 'currentOfferId')
-        if token then redis.call('ZREM', KEYS[2], ARGV[2] .. ':' .. ARGV[1] .. ':' .. token) end
+        redis.call('ZREM', KEYS[2], ARGV[2] .. ':' .. ARGV[1] .. ':' .. ARGV[5])
         redis.call('DEL', 'ride:' .. ARGV[2] .. ':current_offer')
         if redis.call('GET', 'driver:' .. ARGV[1] .. ':lock') == ARGV[2] then redis.call('DEL', 'driver:' .. ARGV[1] .. ':lock') end
         redis.call('HINCRBY', 'driver:' .. ARGV[1] .. ':stats', 'accepted', -1)

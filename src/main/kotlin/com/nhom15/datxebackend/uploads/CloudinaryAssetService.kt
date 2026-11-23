@@ -35,6 +35,10 @@ class CloudinaryAssetService(private val cloudinary: Cloudinary) {
         validateCloudinaryImage(secureUrl, publicId)
     }
 
+    fun validateOwnedImage(actor: AuthUser, secureUrl: String) {
+        requireOwnedAsset(imagePublicId(secureUrl), CloudinaryFolders.forActor(actor))
+    }
+
     fun validateHandoverImage(rideId: Long, secureUrl: String, publicId: String) {
         requireOwnedAsset(publicId, "${CloudinaryFolders.handover(rideId)}/")
         validateCloudinaryImage(secureUrl, publicId)
@@ -54,11 +58,17 @@ class CloudinaryAssetService(private val cloudinary: Cloudinary) {
     }
 
     fun validateCloudinaryImage(secureUrl: String, publicId: String) {
-        val normalizedPublicId = publicId.trim()
+        if (imagePublicId(secureUrl) != publicId.trim()) {
+            throw BadRequestException(message = "secureUrl không khớp với publicId")
+        }
+    }
+
+    private fun imagePublicId(secureUrl: String): String {
         val uri = runCatching { URI(secureUrl.trim()) }.getOrNull()
             ?: throw BadRequestException(message = "secureUrl ảnh không hợp lệ")
         val cloudName = cloudinary.config.cloudName
         if (uri.scheme != "https" || uri.host != "res.cloudinary.com" ||
+            uri.rawUserInfo != null || uri.port !in setOf(-1, 443) ||
             uri.rawQuery != null || uri.rawFragment != null || cloudName.isNullOrBlank()
         ) {
             throw BadRequestException(message = "Ảnh phải là secure URL từ Cloudinary")
@@ -68,16 +78,15 @@ class CloudinaryAssetService(private val cloudinary: Cloudinary) {
         val uploadIndex = path.indexOf("upload")
         val versionIndex = path.indexOfFirst { it.matches(Regex("v\\d+")) }
         if (path.getOrNull(0) != cloudName || path.getOrNull(1) != "image" || uploadIndex != 2 ||
-            versionIndex <= uploadIndex || versionIndex == path.lastIndex
+            versionIndex <= uploadIndex || versionIndex == path.lastIndex ||
+            path.any { it == "." || it == ".." || it.contains('\\') }
         ) {
             throw BadRequestException(message = "secureUrl ảnh không khớp với Cloudinary")
         }
 
         val uploadedPath = path.drop(versionIndex + 1).joinToString("/")
-        val actualPublicId = uploadedPath.substringBeforeLast('.', missingDelimiterValue = "")
-        if (actualPublicId != normalizedPublicId) {
-            throw BadRequestException(message = "secureUrl không khớp với publicId")
-        }
+        return uploadedPath.substringBeforeLast('.', missingDelimiterValue = "").takeIf(String::isNotBlank)
+            ?: throw BadRequestException(message = "secureUrl ảnh không hợp lệ")
     }
 
     fun deleteAfterCommit(publicId: String?) {

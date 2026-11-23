@@ -13,11 +13,14 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.LocalDate
+import java.time.ZoneId
 
 @Service
 class AdminRatingService(
     private val jdbcTemplate: JdbcTemplate,
 ) {
+    private val businessZone = ZoneId.of("Asia/Ho_Chi_Minh")
+
     private val selectSql = """
         SELECT
             r.id,
@@ -204,12 +207,12 @@ class AdminRatingService(
 
         from?.let {
             conditions += "r.created_at >= ?"
-            params += it.atStartOfDay()
+            params += it.atStartOfDay(businessZone).toOffsetDateTime()
         }
 
         to?.let {
             conditions += "r.created_at < ?"
-            params += it.plusDays(1).atStartOfDay()
+            params += it.plusDays(1).atStartOfDay(businessZone).toOffsetDateTime()
         }
 
         hidden?.let {

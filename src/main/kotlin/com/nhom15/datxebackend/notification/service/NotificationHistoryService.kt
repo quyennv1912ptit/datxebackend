@@ -3,12 +3,14 @@ package com.nhom15.datxebackend.notification.service
 import com.nhom15.datxebackend.common.enums.Role
 import com.nhom15.datxebackend.common.exception.ForbiddenException
 import com.nhom15.datxebackend.common.security.AuthUser
+import com.nhom15.datxebackend.common.websocket.PayloadType
 import com.nhom15.datxebackend.notification.dto.NotificationHistoryItem
 import org.slf4j.LoggerFactory
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
+import tools.jackson.databind.node.ObjectNode
 
 @Service
 class NotificationHistoryService(
@@ -53,11 +55,15 @@ class NotificationHistoryService(
         readAt: java.time.Instant?,
     ): NotificationHistoryItem {
         val data = parseData(rawData, id)
+        val payload = data.payloadOrFallback(title = title, body = body)
+        if (type == PayloadType.RATING_RECEIVED.name && payload is ObjectNode) {
+            payload.remove("rideId")
+        }
         return NotificationHistoryItem(
             id = id,
             messageId = data.textOrNull("messageId") ?: id.toString(),
             type = type,
-            payload = data.payloadOrFallback(title = title, body = body),
+            payload = payload,
             createdAt = createdAt,
             readAt = readAt,
         )

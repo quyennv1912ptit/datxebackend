@@ -36,6 +36,21 @@ class PaymentMethodService(private val rides: RideRepository, private val paymen
         if (payment.method != expectedMethod.name || ride.paymentMethod.name != payment.method)
             throw ConflictException(message = "Phương thức thanh toán đã thay đổi. Vui lòng kiểm tra lại.")
         if (method == expectedMethod) throw BadRequestException(message = "Hãy chọn phương thức khác phương thức hiện tại")
+        val restrictedMethod = jdbc.query(
+            """SELECT v.allowed_payment_method
+               FROM voucher_usages vu
+               JOIN vouchers v ON v.id = vu.voucher_id
+               WHERE vu.ride_id = ? AND v.allowed_payment_method IS NOT NULL
+               LIMIT 1""".trimIndent(),
+            { row, _ -> row.getString(1) },
+            rideId,
+        ).firstOrNull()
+        if (restrictedMethod != null && restrictedMethod != method.name) {
+            throw BadRequestException(
+                ErrorCode.VOUCHER_INVALID,
+                "Voucher áp dụng cho chuyến chỉ hỗ trợ phương thức thanh toán $restrictedMethod",
+            )
+        }
         val driverId = ride.driverId ?: throw ConflictException(message = "Chuyến chưa có tài xế")
         if (method == PaymentMethod.WALLET) wallets.pendingCashToWallet(rideId, actor.id, driverId, payment.amount, ride.fareEstimate)
         else {

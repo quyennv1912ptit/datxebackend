@@ -1,6 +1,7 @@
 package com.nhom15.datxebackend.ride.service
 
 import com.nhom15.datxebackend.common.enums.RideStatus
+import com.nhom15.datxebackend.common.enums.UserStatus
 import com.nhom15.datxebackend.config.properties.ScheduledRideProperties
 import com.nhom15.datxebackend.customer.repository.CustomerRepository
 import com.nhom15.datxebackend.ride.entity.RideType
@@ -41,7 +42,8 @@ class ScheduledRideScheduler(
             try {
                 transactionTemplate.executeWithoutResult {
                     // Serialize activation with ride creation for this customer.
-                    if (customers.findByIdForUpdate(candidate.customerId).isEmpty) return@executeWithoutResult
+                    val customer = customers.findByIdForUpdate(candidate.customerId).orElse(null)
+                        ?: return@executeWithoutResult
                     val ride = rideRepository.findByIdForUpdate(candidate.id).orElse(null) ?: return@executeWithoutResult
                     if (ride.status != RideStatus.PENDING) return@executeWithoutResult
                     val scheduledAt = ride.scheduledAt ?: return@executeWithoutResult
@@ -59,7 +61,9 @@ class ScheduledRideScheduler(
                         return@executeWithoutResult
                     }
 
-                    if (rideRepository.existsByCustomerIdAndStatusIn(ride.customerId, ACTIVE_RIDE_STATUSES)) {
+                    if (customer.status != UserStatus.ACTIVE || customer.deletedAt != null ||
+                        rideRepository.existsByCustomerIdAndStatusIn(ride.customerId, ACTIVE_RIDE_STATUSES)
+                    ) {
                         return@executeWithoutResult
                     }
                     stateMachine.transition(

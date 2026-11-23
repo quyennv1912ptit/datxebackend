@@ -3,18 +3,23 @@ package com.nhom15.datxebackend.auth.service
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthException
 import com.nhom15.datxebackend.common.redis.RedisKeys
+import com.nhom15.datxebackend.customer.repository.CustomerRepository
+import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.uploads.CloudinaryAssetService
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 
 @Component
-class AccountCleanupOutboxWorker(
+class AccountCleanupOutboxWorker @Autowired constructor(
     private val outbox: AccountCleanupOutboxRepository,
     private val firebaseAuth: FirebaseAuth,
     private val redisTemplate: StringRedisTemplate,
     private val cloudinaryAssetService: CloudinaryAssetService,
+    private val customerRepository: CustomerRepository? = null,
+    private val driverRepository: DriverRepository? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -22,7 +27,9 @@ class AccountCleanupOutboxWorker(
     fun processPendingCleanup() {
         outbox.claimDue().forEach { task ->
             try {
-                deleteFirebaseUser(task.firebaseUid)
+                if (shouldDeleteFirebaseUser(task.firebaseUid)) {
+                    deleteFirebaseUser(task.firebaseUid)
+                }
                 task.cloudinaryPublicIds.forEach(cloudinaryAssetService::deleteNowOrThrow)
                 if (task.ownerRole == "DRIVER") clearDriverPresence(task.ownerId)
                 else redisTemplate.delete(RedisKeys.customerActiveRide(task.ownerId.toString()))
@@ -33,6 +40,17 @@ class AccountCleanupOutboxWorker(
                     .onFailure { log.error("Không lên lịch retry cleanup {}", task.id, it) }
             }
         }
+    }
+
+    private fun shouldDeleteFirebaseUser(firebaseUid: String): Boolean {
+        if (firebaseUid.isBlank()) return false
+        val hasActiveCustomer = customerRepository?.findByFirebaseUid(firebaseUid)
+            ?.map { it.deletedAt == null }
+            ?.orElse(false) == true
+        val hasActiveDriver = driverRepository?.findByFirebaseUid(firebaseUid)
+            ?.map { it.deletedAt == null }
+            ?.orElse(false) == true
+        return !hasActiveCustomer && !hasActiveDriver
     }
 
     private fun deleteFirebaseUser(firebaseUid: String) {

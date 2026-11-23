@@ -1,13 +1,33 @@
 package com.nhom15.datxebackend.matching
 
 import com.nhom15.datxebackend.ride.repository.*
+import com.nhom15.datxebackend.common.domain.GeoPoint
+import com.nhom15.datxebackend.common.domain.Location
+import com.nhom15.datxebackend.common.enums.PaymentMethod
+import com.nhom15.datxebackend.common.enums.RideStatus
+import com.nhom15.datxebackend.common.enums.Transmission
+import com.nhom15.datxebackend.common.enums.VehicleType
+import com.nhom15.datxebackend.common.redis.RedisKeys
+import com.nhom15.datxebackend.config.properties.MatchingProperties
+import com.nhom15.datxebackend.matching.service.OfferReleaseService
+import com.nhom15.datxebackend.notification.api.NotificationPort
+import com.nhom15.datxebackend.ride.entity.Ride
+import com.nhom15.datxebackend.ride.entity.RideType
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
+import org.springframework.data.redis.connection.RedisStandaloneConfiguration
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.datasource.SingleConnectionDataSource
+import org.springframework.jdbc.datasource.DriverManagerDataSource
+import org.springframework.jdbc.support.JdbcTransactionManager
+import org.springframework.data.redis.core.StringRedisTemplate
+import org.mockito.Mockito.mock
+import org.mockito.Mockito.`when`
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.Connection
@@ -15,8 +35,12 @@ import java.sql.DriverManager
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+import java.util.Properties
+import java.util.Optional
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /** Explicit opt-in to a disposable local database. Every test uses its own schema. */
 @EnabledIfEnvironmentVariable(named="TEST_DB_URL", matches=".+")
@@ -105,6 +129,114 @@ class DispatchPersistenceTests {
             } }
             start.countDown();assertEquals(1,futures.sumOf { it.get() })
         } finally { executor.shutdownNow() }
+    }
+
+    @Test fun `a concurrent offer release waits for and preserves the assigned ride and accepted offer`() {
+        val dataSource = DriverManagerDataSource(
+            System.getenv("TEST_DB_URL"), System.getenv("TEST_DB_USER"), System.getenv("TEST_DB_PASSWORD"),
+        ).apply {
+            connectionProperties = Properties().apply { setProperty("currentSchema", this@DispatchPersistenceTests.schema) }
+        }
+        val releaseJdbc = JdbcTemplate(dataSource)
+        val rides = mock(RideRepository::class.java)
+        `when`(rides.findByIdForUpdate(42)).thenAnswer {
+            val status = releaseJdbc.queryForObject("SELECT status FROM rides WHERE id=42 FOR UPDATE", String::class.java)!!
+            Optional.of(Ride(
+                customerId = 1, vehicleId = 2, status = RideStatus.valueOf(status), type = RideType.INSTANT,
+                pickup = Location(GeoPoint(21.03, 105.84), "Đón"), dropoff = Location(GeoPoint(21.04, 105.85), "Trả"),
+                vehicleType = VehicleType.CAR, transmission = Transmission.AUTO, fareEstimate = 30_000,
+                paymentMethod = PaymentMethod.CASH,
+            ))
+        }
+        val redis = mock(StringRedisTemplate::class.java)
+        val service = OfferReleaseService(
+            redis, MatchingProperties(), DispatchOfferRepository(releaseJdbc),
+            mock(NotificationPort::class.java), rides, JdbcTransactionManager(dataSource),
+        )
+        val offer = DispatchOffer(UUID.randomUUID().toString(), 42, 7, Instant.now().plusSeconds(30))
+        val offers = DispatchOfferRepository(jdbc)
+        assertTrue(offers.record(offer))
+
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            connection.autoCommit = false
+            jdbc.update("UPDATE rides SET driver_id=7, status='DRIVER_ASSIGNED' WHERE id=42")
+            val started = CountDownLatch(1)
+            val result = worker.submit<Boolean> {
+                started.countDown()
+                service.release(42, 7, "rejected", offer.offerId)
+            }
+            assertTrue(started.await(5, TimeUnit.SECONDS))
+            try {
+                assertThrows(TimeoutException::class.java) { result.get(500, TimeUnit.MILLISECONDS) }
+                assertTrue(offers.close(offer.offerId, "ACCEPTED"))
+                connection.commit()
+                assertFalse(result.get(5, TimeUnit.SECONDS))
+                assertFalse(service.release(42, 7, "rejected", offer.offerId))
+                assertTrue(offers.accepted(offer.offerId, 42, 7, 0))
+            } finally {
+                connection.rollback()
+                connection.autoCommit = true
+            }
+        } finally {
+            worker.shutdownNow()
+        }
+    }
+
+    @Test fun `reject reconciles an interrupted reservation and can release an orphan without a database offer`() {
+        val redisPort = System.getenv("TEST_REDIS_PORT")?.toIntOrNull()
+        assumeTrue(redisPort != null && redisPort != 6379, "Requires disposable Redis 7")
+        val factory = LettuceConnectionFactory(RedisStandaloneConfiguration("127.0.0.1", redisPort!!).apply { database = 12 })
+        factory.afterPropertiesSet()
+        try {
+            val redis = StringRedisTemplate(factory).apply { afterPropertiesSet() }
+            val rides = mock(RideRepository::class.java)
+            val searching = Ride(
+                customerId = 1, vehicleId = 2, status = RideStatus.SEARCHING, type = RideType.INSTANT,
+                pickup = Location(GeoPoint(21.03, 105.84), "Đón"), dropoff = Location(GeoPoint(21.04, 105.85), "Trả"),
+                vehicleType = VehicleType.CAR, transmission = Transmission.AUTO, fareEstimate = 30_000,
+                paymentMethod = PaymentMethod.CASH,
+            )
+            `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(searching))
+            `when`(rides.findByIdForUpdate(43)).thenReturn(Optional.of(searching))
+            val offers = DispatchOfferRepository(jdbc)
+            val service = OfferReleaseService(
+                redis, MatchingProperties(), offers, mock(NotificationPort::class.java),
+                rides, JdbcTransactionManager(jdbc.dataSource!!),
+            )
+            val token = UUID.randomUUID().toString()
+            assertTrue(offers.record(DispatchOffer(token, 42, 7, Instant.now().plusSeconds(30))))
+            val state = RedisKeys.rideState("42")
+            redis.opsForHash<String, String>().putAll(state, mapOf(
+                "status" to "DRIVER_ASSIGNED", "driverId" to "7", "currentOfferId" to token,
+            ))
+            redis.opsForValue().set(RedisKeys.driverCurrentRide("7"), "42")
+            redis.opsForValue().set(RedisKeys.driverStatus("7"), "BUSY")
+            redis.opsForValue().set(RedisKeys.driverAlive("7"), "1", Duration.ofSeconds(30))
+
+            assertFalse(service.release(42, 7, "rejected", "old-token"))
+            assertEquals("42", redis.opsForValue().get(RedisKeys.driverCurrentRide("7")))
+            assertTrue(service.release(42, 7, "rejected", token))
+            assertEquals("SEARCHING", redis.opsForHash<String, String>().get(state, "status"))
+            assertNull(redis.opsForValue().get(RedisKeys.driverCurrentRide("7")))
+            assertEquals("ONLINE", redis.opsForValue().get(RedisKeys.driverStatus("7")))
+            assertEquals("REJECTED", jdbc.queryForObject(
+                "SELECT status FROM ride_dispatch_offers WHERE offer_id=?", String::class.java, token,
+            ))
+            assertFalse(service.release(42, 7, "rejected", token))
+
+            val orphanState = RedisKeys.rideState("43")
+            val orphanToken = UUID.randomUUID().toString()
+            redis.opsForHash<String, String>().putAll(orphanState, mapOf(
+                "status" to "SEARCHING", "currentDriver" to "8", "currentOfferId" to orphanToken,
+            ))
+            redis.opsForValue().set(RedisKeys.driverLock("8"), "43")
+            assertTrue(service.release(43, 8, "ignored", orphanToken))
+            assertNull(redis.opsForValue().get(RedisKeys.driverLock("8")))
+            assertNull(offers.outstanding(43))
+        } finally {
+            factory.destroy()
+        }
     }
 
     @Test fun `actual assignment SQL refuses expired offer and expired search and succeeds once`() {

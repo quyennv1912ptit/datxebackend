@@ -233,7 +233,7 @@ class RideStateMachine(
 
         val ride = findRide(rideId)
         val driver = drivers.findByIdForUpdate(driverId).orElseThrow { NotFoundException(ErrorCode.USER_NOT_FOUND) }
-        if (driver.status != DriverStatus.ONLINE) throw ConflictException(ErrorCode.DRIVER_NOT_AVAILABLE)
+        if (driver.deletedAt != null || driver.status != DriverStatus.ONLINE) throw ConflictException(ErrorCode.DRIVER_NOT_AVAILABLE)
         if (!verification.mayDriveForRide(driver, ride, now = clock.instant())) throw ConflictException(ErrorCode.DRIVER_NOT_VERIFIED)
         val cashPayable = (ride.fareEstimate - ride.discountAmount).coerceAtLeast(0).roundToNearestThousandVnd()
             .takeIf { ride.paymentMethod == com.nhom15.datxebackend.common.enums.PaymentMethod.CASH }
@@ -286,6 +286,10 @@ class RideStateMachine(
 
         if (rideRepository.compareAndSetStatus(ride.id, previousStatus.name, RideStatus.DRIVER_ASSIGNED.name, ride.version) != 1) {
             throw ConflictException(ErrorCode.INVALID_RIDE_STATE)
+        }
+        if (previousStatus == RideStatus.NO_DRIVER_FOUND && ride.discountAmount > 0) {
+            // NO_DRIVER_FOUND already released the voucher/budget hold; zero discount to prevent double redemption.
+            ride.discountAmount = 0
         }
         drivers.findByIdForUpdate(driverId).orElseThrow { NotFoundException(ErrorCode.USER_NOT_FOUND) }.let { driver ->
             if (!verification.mayDriveForRide(driver, ride, now = clock.instant())) throw ConflictException(ErrorCode.DRIVER_NOT_VERIFIED)

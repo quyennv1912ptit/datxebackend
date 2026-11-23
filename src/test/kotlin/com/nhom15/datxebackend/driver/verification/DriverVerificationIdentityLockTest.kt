@@ -233,8 +233,14 @@ class DriverVerificationIdentityLockTest {
         val dbUrl = System.getenv("VERIFICATION_E2E_PG_URL")
         val dbUser = System.getenv("VERIFICATION_E2E_PG_USER") ?: "datxe"
         val dbPass = System.getenv("VERIFICATION_E2E_PG_PASSWORD") ?: "datxe"
-        val ds = DriverManagerDataSource(dbUrl, dbUser, dbPass)
-        Flyway.configure().dataSource(ds).load().migrate()
+        val schema = "idlock_" + UUID.randomUUID().toString().replace("-", "")
+        val admin = JdbcTemplate(DriverManagerDataSource(dbUrl, dbUser, dbPass))
+        admin.execute("CREATE SCHEMA $schema")
+        try {
+        val ds = DriverManagerDataSource(dbUrl, dbUser, dbPass).apply {
+            connectionProperties = java.util.Properties().apply { setProperty("currentSchema", schema) }
+        }
+        Flyway.configure().dataSource(ds).schemas(schema).defaultSchema(schema).load().migrate()
 
         val jdbc = JdbcTemplate(ds)
         val projection = VerificationProjectionRepository(jdbc, mapper, requireSyncCheckpoint = false)
@@ -534,5 +540,8 @@ class DriverVerificationIdentityLockTest {
             String::class.java, appId2, resubmitted2["revision"],
         )!!
         assertEquals(savedGplxQr, mapper.readValue(snapshot, Map::class.java)["gplxQrLiveScan"])
+        } finally {
+            admin.execute("DROP SCHEMA IF EXISTS $schema CASCADE")
+        }
     }
 }

@@ -6,4 +6,5 @@ import org.springframework.data.jpa.repository.JpaRepository
 interface ConversationRepository : JpaRepository<Conversation, Long> {
     fun findByRideIdAndDriverId(rideId: Long, driverId: Long): Conversation?
     fun findFirstByRideIdOrderByIdDesc(rideId: Long): Conversation?
+    fun findAllByRideIdOrderByIdDesc(rideId: Long): List<Conversation>
 }
