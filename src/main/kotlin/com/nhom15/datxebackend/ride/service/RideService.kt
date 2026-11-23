@@ -64,8 +64,11 @@ class RideService(
         val customer = customerRepository.findByIdForUpdate(actor.id).orElseThrow {
             com.nhom15.datxebackend.payment.exception.UserNotFoundException()
         }
-        if (customer.deletedAt != null || customer.status != UserStatus.ACTIVE) {
+        if (customer.deletedAt != null || customer.status == UserStatus.BANNED) {
             throw AppException(ErrorCode.ACCOUNT_LOCKED)
+        }
+        if (customer.status == UserStatus.INACTIVE) {
+            throw AppException(ErrorCode.ACCOUNT_SUSPENDED)
         }
 
         if (key != null && requestHash != null) {

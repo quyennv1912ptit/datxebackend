@@ -16,6 +16,7 @@ import org.springframework.web.filter.OncePerRequestFilter
 class FirebaseAuthFilter(
     private val firebaseAuth: FirebaseAuth,
     private val authService: AuthService,
+    private val onAccountLocked: ((HttpServletResponse) -> Unit)? = null,
 ) : OncePerRequestFilter() {
 
     override fun doFilterInternal(
@@ -50,6 +51,10 @@ class FirebaseAuthFilter(
                         SecurityContextHolder.getContext().authentication = authentication
                     } else {
                         SecurityContextHolder.clearContext()
+                        if (user == null && onAccountLocked != null && authService.isCustomerBanned(decodedToken.uid, routeRole ?: headerRole)) {
+                            onAccountLocked.invoke(response)
+                            return
+                        }
                     }
                 } catch (exception: FirebaseAuthException) {
                     log.debug("Rejected invalid or revoked Firebase ID token: {}", exception.message)

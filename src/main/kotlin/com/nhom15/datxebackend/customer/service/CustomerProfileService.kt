@@ -61,7 +61,7 @@ class CustomerProfileService(
     private fun getCustomerForUpdate(customerId: Long): Customer {
         val customer = customerRepository.findByIdForUpdate(customerId)
             .orElseThrow { NotFoundException(ErrorCode.USER_NOT_FOUND) }
-        if (customer.deletedAt != null || customer.status != UserStatus.ACTIVE) {
+        if (customer.deletedAt != null || customer.status == UserStatus.BANNED) {
             throw AppException(ErrorCode.ACCOUNT_LOCKED)
         }
         return customer
@@ -78,6 +78,7 @@ class CustomerProfileService(
             runCatching { PaymentMethod.valueOf(it) }.getOrNull()
         },
         avatarUrl = customer.avatarUrl,
+        status = customer.status,
     )
 
     private fun requireCustomer(actor: AuthUser) {
