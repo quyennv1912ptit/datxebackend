@@ -96,6 +96,7 @@ class ChatServiceTests {
         Mockito.`when`(rideRepository.findById(rideId)).thenReturn(Optional.of(ride))
         Mockito.`when`(rideRepository.findByIdForUpdate(rideId)).thenReturn(Optional.of(ride))
         Mockito.`when`(conversationRepository.findByRideIdAndDriverId(rideId, conversation.driverId)).thenReturn(conversation)
+        Mockito.`when`(conversationRepository.findAllByRideIdOrderByIdDesc(rideId)).thenReturn(listOf(conversation))
     }
 
     @Test
@@ -145,19 +146,22 @@ class ChatServiceTests {
             message(105L, UUID.randomUUID(), Role.DRIVER),
             message(106L, UUID.randomUUID(), Role.DRIVER),
         )
-        Mockito.`when`(messageRepository.after(conversationId, 104L, PageRequest.of(0, 3)))
-            .thenReturn(nextMessages)
+        Mockito.`when`(
+            messageRepository.afterVisible(listOf(conversationId), conversationId, "", 104L, PageRequest.of(0, 3)),
+        ).thenReturn(nextMessages)
 
         val result = service.messages(rideId, customer, beforeId = null, afterId = 104L, size = 2)
 
         assertEquals(listOf(105L, 106L), result.messages.map { it.id })
         assertFalse(result.hasMore)
-        Mockito.verify(messageRepository).after(conversationId, 104L, PageRequest.of(0, 3))
+        Mockito.verify(messageRepository)
+            .afterVisible(listOf(conversationId), conversationId, "", 104L, PageRequest.of(0, 3))
         Mockito.verifyNoMoreInteractions(messageRepository)
     }
 
     @Test
     fun `mark read only updates messages from the other role up to requested id`() {
+        Mockito.`when`(messageRepository.findMaxIdInConversation(conversationId)).thenReturn(106L)
         Mockito.`when`(messageRepository.markRead(conversationId, "CUSTOMER", 105L, now))
             .thenReturn(2)
 

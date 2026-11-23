@@ -7,6 +7,7 @@ import org.springframework.data.domain.Pageable
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Lock
 import org.springframework.data.jpa.repository.Query
+import java.util.UUID
 
 interface SupportTicketRepository : JpaRepository<SupportTicketEntity, Long> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
@@ -24,4 +25,6 @@ interface SupportTicketRepository : JpaRepository<SupportTicketEntity, Long> {
 
 interface TicketMessageRepository : JpaRepository<TicketMessageEntity, Long> {
     fun findByTicketIdOrderByCreatedAtAscIdAsc(ticketId: Long): List<TicketMessageEntity>
+
+    fun findByTicketIdAndClientRequestId(ticketId: Long, clientRequestId: UUID): TicketMessageEntity?
 }

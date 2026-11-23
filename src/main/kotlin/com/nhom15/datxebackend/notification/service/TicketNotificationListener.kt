@@ -22,10 +22,18 @@ class TicketNotificationListener(private val sender: TicketNotificationSender) {
         try {
             val result = sender.send(event)
             if (result == DeliveryResult.UNREACHABLE) {
-                log.warn("Ticket {} reply could not reach {} {}", event.ticketId, event.ownerRole, event.ownerId)
+                log.warn(
+                    "NOTIFICATION_DELIVERY_UNREACHABLE messageId={} payloadType=TICKET_REPLY recipientRole={} recipientId={} ticketCode={}",
+                    event.ticketCode, event.ownerRole, event.ownerId, event.ticketCode,
+                )
+                NotificationFailureMetrics.record("notification.delivery.unreachable", "TICKET_REPLY", event.ownerRole.name)
             }
         } catch (error: Exception) {
-            log.error("Cannot notify ticket {} to {} {}", event.ticketId, event.ownerRole, event.ownerId, error)
+            log.error(
+                "NOTIFICATION_DELIVERY_FAILED messageId={} payloadType=TICKET_REPLY recipientRole={} recipientId={} ticketCode={} error={}",
+                event.ticketCode, event.ownerRole, event.ownerId, event.ticketCode, error.toString(), error,
+            )
+            NotificationFailureMetrics.record("notification.delivery.failed", "TICKET_REPLY", event.ownerRole.name)
         }
     }
 }

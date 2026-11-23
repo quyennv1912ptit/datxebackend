@@ -24,7 +24,7 @@ class DriverLocationIngestService(
     fun ingest(driverId: Long, update: DriverLocation): Boolean {
         val now = Instant.now()
         if (!DriverLocationPolicy.valid(update, now)) return false
-        if (!locationService.saveDriverLocation(driverId, update.location, update.timestamp)) return false
+        if (!locationService.saveDriverLocation(driverId, update.location, update.timestamp, update.accuracy)) return false
         runCatching {
             activeRideQueryPort.findActiveRideForDriver(driverId)?.let { ride ->
                 messagingTemplate.convertAndSendToUser(

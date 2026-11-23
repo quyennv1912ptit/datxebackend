@@ -104,7 +104,12 @@ class JdbcVehicleRepository(private val jdbcTemplate: JdbcTemplate) {
                 }
             }, keyHolder)
         } catch (e: DataIntegrityViolationException) {
-            throw BadRequestException(message = "Biển số xe đã được đăng ký hoặc dữ liệu xe không hợp lệ")
+            val causeMessage = e.mostSpecificCause.message.orEmpty()
+            if ("vehicles_plate_number_key" in causeMessage) {
+                // Same mapping as updateByIdAndOwnerId: a duplicate plate is a conflict, not a bad request.
+                throw ConflictException(message = "Biển số xe đã được đăng ký")
+            }
+            throw BadRequestException(message = "Dữ liệu xe không hợp lệ")
         }
         val id = keyHolder.key?.toLong()
             ?: throw IllegalStateException("Không lấy được id xe mới")

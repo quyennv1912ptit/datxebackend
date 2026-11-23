@@ -15,7 +15,8 @@ class Conversation {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     var id: Long = 0
 
-    @Column(name = "ride_id", nullable = false, unique = true)
+    // V17 allows one thread per driver on a redispatched ride (uq ride_id, driver_id).
+    @Column(name = "ride_id", nullable = false)
     var rideId: Long = 0
 
     @Column(name = "customer_id", nullable = false)

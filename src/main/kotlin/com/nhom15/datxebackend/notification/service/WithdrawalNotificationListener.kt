@@ -19,9 +19,19 @@ class WithdrawalNotificationListener(private val sender: WithdrawalNotificationS
         // Notification history uses its own transaction. A delivery failure must never undo a payout/refund.
         try {
             val result = sender.send(event)
-            if (result == DeliveryResult.UNREACHABLE) log.warn("Withdrawal {} notification could not reach driver {}", event.requestId, event.driverId)
+            if (result == DeliveryResult.UNREACHABLE) {
+                log.warn(
+                    "NOTIFICATION_DELIVERY_UNREACHABLE messageId={} payloadType=WITHDRAWAL_REVIEWED recipientRole=DRIVER recipientId={} requestId={}",
+                    event.requestId, event.driverId, event.requestId,
+                )
+                NotificationFailureMetrics.record("notification.delivery.unreachable", "WITHDRAWAL_REVIEWED", "DRIVER")
+            }
         } catch (error: Exception) {
-            log.error("Cannot notify withdrawal {} to driver {}", event.requestId, event.driverId, error)
+            log.error(
+                "NOTIFICATION_DELIVERY_FAILED messageId={} payloadType=WITHDRAWAL_REVIEWED recipientRole=DRIVER recipientId={} requestId={} error={}",
+                event.requestId, event.driverId, event.requestId, error.toString(), error,
+            )
+            NotificationFailureMetrics.record("notification.delivery.failed", "WITHDRAWAL_REVIEWED", "DRIVER")
         }
     }
 }

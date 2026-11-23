@@ -90,6 +90,43 @@ class VerificationProjectionPostgresTest {
     }
 
     @Test
+    fun `a late decision for a deleted driver never recreates an approved projection`() {
+        val source = DriverManagerDataSource(
+            System.getenv("VERIFICATION_SYNC_TEST_DB"), "sync_test", System.getenv("VERIFICATION_SYNC_TEST_PASSWORD"),
+        )
+        Flyway.configure().dataSource(source).load().migrate()
+        val jdbc = JdbcTemplate(source)
+        val repo = VerificationProjectionRepository(jdbc, JsonMapper.builder().findAndAddModules().build())
+        val tx = TransactionTemplate(DataSourceTransactionManager(source))
+        val owner = "deleted-driver-verification-uid"
+        // Roll everything back: this test shares the database with the checkpoint tests
+        // and must not leave a tombstone, a cursor advance or a new stream id behind.
+        tx.executeWithoutResult { transaction ->
+            transaction.setRollbackOnly()
+            jdbc.update("INSERT INTO deleted_firebase_uids(firebase_uid) VALUES (?) ON CONFLICT DO NOTHING", owner)
+            val start = repo.cursor()
+            // Reuse the existing stream so the test also works when it runs after the
+            // checkpoint replay test, which commits its own stream id.
+            val stream = jdbc.query(
+                "SELECT stream_id FROM verification_sync_checkpoint WHERE singleton",
+                { rs, _ -> rs.getObject(1, UUID::class.java) },
+            ).single() ?: UUID.randomUUID()
+            val event = VerificationEvent(
+                seq = start + 1,
+                applicationId = UUID.randomUUID(),
+                revision = 9,
+                ownerUid = owner,
+                status = VerificationStatus.APPROVED,
+                entitlements = listOf(LicenseEntitlement("A1", LicenseValidity.NO_EXPIRY, null)),
+            )
+            repo.applyPage(start, VerificationFeed(stream, start + 1, listOf(event), false))
+
+            assertNull(repo.current(owner))
+            assertEquals(start + 1, repo.cursor())
+        }
+    }
+
+    @Test
     fun `checkpoint retry replay and stale revisions remain fail closed`() {
         val source = DriverManagerDataSource(
             System.getenv("VERIFICATION_SYNC_TEST_DB"), "sync_test", System.getenv("VERIFICATION_SYNC_TEST_PASSWORD"),

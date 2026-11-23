@@ -62,13 +62,17 @@ class RideRatingService(
         val ride = rideRepository.findById(rideId).orElseThrow { NotFoundException(ErrorCode.RIDE_NOT_FOUND) }
         if (ride.driverId != actor.id) throw NotFoundException(ErrorCode.RIDE_NOT_FOUND)
         val customerId = ride.customerId
+        // V28: ẩn đánh giá chỉ ảnh hưởng đến danh sách nội dung hiển thị, KHÔNG ảnh hưởng
+        // đến điểm trung bình/tổng số (phải khớp với average_rating được tính ở rate()).
         val distribution = jdbcTemplate.query(
             """SELECT stars, COUNT(*) AS total FROM ratings
-               WHERE ratee_id = ? AND direction = 'DRIVER_TO_CUSTOMER' AND is_hidden = false GROUP BY stars""",
+               WHERE ratee_id = ? AND direction = 'DRIVER_TO_CUSTOMER' GROUP BY stars""",
             { rs, _ -> rs.getInt("stars") to rs.getLong("total") }, customerId,
         ).toMap()
         val total = distribution.values.sum()
         val average = if (total == 0L) null else distribution.entries.sumOf { (stars, count) -> stars * count }.toDouble() / total
+        // recent là danh sách nội dung hiển thị nên vẫn lọc is_hidden; total/average ở trên
+        // được tính từ toàn bộ đánh giá, không suy ra từ danh sách đã lọc này.
         val recent = jdbcTemplate.query(
             """SELECT id, stars, comment, created_at FROM ratings
                WHERE ratee_id = ? AND direction = 'DRIVER_TO_CUSTOMER' AND is_hidden = false
@@ -347,9 +351,11 @@ class RideRatingService(
             ((visibleTotal + size - 1) / size).toInt()
         }
 
+        // totalRatings phải khớp averageRating (đều tính trên mọi đánh giá, kể cả bị ẩn).
+        // visibleTotal chỉ dùng để phân trang danh sách nội dung đã lọc ẩn.
         return RatingReceivedResponse(
             averageRating = average,
-            totalRatings = visibleTotal,
+            totalRatings = total,
             ratings = items,
             page = page,
             size = size,

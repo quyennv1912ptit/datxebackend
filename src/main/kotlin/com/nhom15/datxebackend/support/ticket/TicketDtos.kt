@@ -1,7 +1,10 @@
 package com.nhom15.datxebackend.support.ticket
 
+import com.fasterxml.jackson.annotation.JsonCreator
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.nhom15.datxebackend.support.SupportImage
 import jakarta.validation.constraints.NotBlank
+import jakarta.validation.constraints.NotNull
 import jakarta.validation.constraints.Size
 import java.time.Instant
 import java.util.UUID
@@ -50,16 +53,28 @@ data class TicketDetail(
     val messages: List<TicketMessageDto>,
 )
 
-data class SendTicketMessageRequest(
+/**
+ * @param clientRequestId Khoá idempotency. App khách/tài xế hiện tại chưa gửi field này nên server
+ * sinh UUID mặc định (gửi tin vẫn thành công, chưa có idempotency). Client mới gửi khoá rõ thì retry
+ * cùng khoá trả về đúng tin nhắn cũ, không chèn thêm row timeline và không lặp side effect.
+ */
+data class SendTicketMessageRequest @JsonCreator constructor(
     /** Có thể rỗng nếu chỉ gửi ảnh; service kiểm tra "text hoặc ảnh". */
     @field:Size(max = 4_000)
+    @JsonProperty("body")
     val body: String = "",
 
     /** ADMIN dùng để đổi trạng thái ticket khi gửi; app khách/tài xế bỏ qua. */
+    @JsonProperty("status")
     val status: TicketStatus? = null,
 
     @field:Size(max = 2_048)
+    @JsonProperty("imageUrl")
     val imageUrl: String? = null,
+
+    @field:NotNull
+    @JsonProperty(value = "clientRequestId", required = true)
+    val clientRequestId: UUID = UUID.randomUUID(),
 )
 
 data class AdminTicketSummary(

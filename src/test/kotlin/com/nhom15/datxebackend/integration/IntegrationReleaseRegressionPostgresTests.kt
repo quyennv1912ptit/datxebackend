@@ -23,7 +23,7 @@ import java.util.Optional
 import java.util.Properties
 import java.util.UUID
 
-/** Kiểm thử nâng cấp Flyway V1..V33 -> V34..V42 trên dữ liệu tổng hợp và tương tác các tính năng tích hợp. */
+/** Kiểm thử nâng cấp Flyway V1..V33 -> V34..V46 trên dữ liệu tổng hợp và tương tác các tính năng tích hợp. */
 @EnabledIfEnvironmentVariable(named = "TEST_DB_URL", matches = ".+")
 class IntegrationReleaseRegressionPostgresTests {
     @Test
@@ -85,7 +85,7 @@ class IntegrationReleaseRegressionPostgresTests {
                    VALUES (601, 401, 'CUSTOMER_TO_DRIVER', 201, 101, 2, 'Bình luận cần ẩn', TRUE)""",
             )
 
-            // 3. Chạy nâng cấp Flyway lên phiên bản mới nhất V34..V42
+            // 3. Chạy nâng cấp Flyway lên phiên bản mới nhất V34..V46
             val result = Flyway.configure()
                 .dataSource(ds)
                 .schemas(schema)
@@ -99,7 +99,10 @@ class IntegrationReleaseRegressionPostgresTests {
             )
             assertTrue(appliedVersions.contains("39"))
             assertTrue(appliedVersions.contains("40"))
-            assertEquals("42", appliedVersions.last())
+            assertTrue(appliedVersions.contains("43"))
+            assertTrue(appliedVersions.contains("44"))
+            assertTrue(appliedVersions.contains("45"))
+            assertEquals("46", appliedVersions.last())
 
             // 4. Dữ liệu avatar_url, rating moderation và voucher campaign được bảo toàn nguyên vẹn
             assertEquals(
@@ -145,7 +148,9 @@ class IntegrationReleaseRegressionPostgresTests {
 
             val driverActor = AuthUser(201, "upg-d1", Role.DRIVER, "Tài Xế Đã Duyệt", null, null, "ACTIVE")
             val received = ratingService.received(driverActor, 0, 20)
-            assertEquals(0L, received.totalRatings)
+            // totalRatings must match averageRating and therefore counts hidden ratings;
+            // only the paged content list filters them out.
+            assertEquals(1L, received.totalRatings)
             assertTrue(received.ratings.isEmpty())
 
             // Tài xế đánh giá lại khách -> phát thông báo ẩn danh + hasRatedCustomer = true

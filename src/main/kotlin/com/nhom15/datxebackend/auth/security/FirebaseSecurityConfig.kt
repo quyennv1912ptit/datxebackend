@@ -61,6 +61,8 @@ class FirebaseSecurityConfig(
                     .requestMatchers("/api/location/nearby-drivers").hasRole("ADMIN")
                     .requestMatchers("/api/location/geocode", "/api/location/directions", "/api/location/places/**")
                     .hasAnyRole("CUSTOMER", "DRIVER")
+                    // Alias của /me dùng chung DRIVER + ADMIN; phải đứng trước /api/driver/**.
+                    .requestMatchers("/api/driver/verification/v1/me").hasAnyRole("DRIVER", "ADMIN")
                     .requestMatchers("/api/driver/**").hasRole("DRIVER")
                     .requestMatchers("/api/customer/**").hasRole("CUSTOMER")
                     .requestMatchers("/api/notifications", "/api/notifications/**", "/api/device-tokens", "/api/device-tokens/**")
@@ -85,24 +87,19 @@ class FirebaseSecurityConfig(
 
     @Bean
     fun corsConfigurationSource(): CorsConfigurationSource {
+        val allowedOrigins = AppCorsOrigins.resolve(corsProperties)
         val config = CorsConfiguration().apply {
-            allowedOriginPatterns = listOf(
-                "https://go-admin-mu.vercel.app",
-                "http://localhost:3000",
-                "http://localhost:5173",
-                *corsProperties.allowedOrigins.toTypedArray()
-            )
+            allowedOriginPatterns = allowedOrigins
 
             allowedMethods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
             allowedHeaders = listOf("*")
             allowCredentials = true
             maxAge = 3600
         }
-        // Handshake WebSocket của app mobile có thể mang Origin do proxy/tunnel (Cloudflare)
-        // thêm vào. Xác thực nằm ở token trong STOMP CONNECT chứ không dùng cookie, nên chỉ
-        // nới CORS cho đúng endpoint handshake; CORS của HTTP API giữ nguyên.
+        // Dùng chung allowlist với HTTP API. Xác thực vẫn nằm ở token trong STOMP CONNECT
+        // (không dùng cookie), nên không cần mở Origin "*" cho handshake.
         val websocketConfig = CorsConfiguration().apply {
-            allowedOriginPatterns = listOf("*")
+            allowedOriginPatterns = allowedOrigins
             allowedMethods = listOf("GET")
             allowedHeaders = listOf("*")
             allowCredentials = true
@@ -123,4 +120,16 @@ class FirebaseSecurityConfig(
         res.characterEncoding = "UTF-8"
         res.writer.write(objectMapper.writeValueAsString(ApiResponse.fail(errorCode, message)))
     }
+}
+
+/** Single source of truth for HTTP and WebSocket handshake origins. */
+object AppCorsOrigins {
+    private val BASE_ORIGINS = listOf(
+        "https://go-admin-mu.vercel.app",
+        "http://localhost:3000",
+        "http://localhost:5173",
+    )
+
+    fun resolve(corsProperties: CorsProperties): List<String> =
+        (BASE_ORIGINS + corsProperties.allowedOrigins).distinct()
 }

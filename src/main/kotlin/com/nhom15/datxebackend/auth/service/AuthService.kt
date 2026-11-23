@@ -24,6 +24,7 @@ import com.nhom15.datxebackend.driver.entity.Driver
 import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.notification.token.DeviceTokenService
 import org.slf4j.LoggerFactory
+import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -35,6 +36,7 @@ class AuthService(
     private val adminRepository: AdminRepository,
     private val deviceTokenService: DeviceTokenService,
     private val authenticatedUserCache: AuthenticatedUserCache,
+    private val jdbcTemplate: JdbcTemplate,
 ) : AuthenticatedUserProvider {
     @Transactional
     fun loginCustomer(request: AuthLoginRequest): AuthProfileResponse {
@@ -218,6 +220,14 @@ class AuthService(
     }
 
     private fun ensureUidAvailableFor(firebaseUid: String, requestedRole: Role) {
+        // V45: a driver UID whose account was deleted stays blocked forever, even if the
+        // Firebase user is still live and its ID token has not expired yet.
+        if (requestedRole == Role.DRIVER && isTombstonedDriverUid(firebaseUid)) {
+            throw AppException(
+                ErrorCode.ACCOUNT_LOCKED,
+                "Firebase account đã bị xoá và không thể dùng để đăng nhập tài xế",
+            )
+        }
         val existsForAnotherRole = when (requestedRole) {
             // Customer and driver profiles may share a Firebase identity; admin stays exclusive.
             Role.CUSTOMER -> adminRepository.existsByFirebaseUid(firebaseUid)
@@ -228,6 +238,12 @@ class AuthService(
             throw AppException(ErrorCode.ACCOUNT_ALREADY_EXISTS, "Firebase account đã được liên kết với role khác")
         }
     }
+
+    private fun isTombstonedDriverUid(firebaseUid: String): Boolean = jdbcTemplate.queryForObject(
+        "SELECT EXISTS (SELECT 1 FROM deleted_firebase_uids WHERE firebase_uid = ?)",
+        Boolean::class.java,
+        firebaseUid,
+    ) == true
 
     /**
      * A Firebase identity can be recreated (for example after the account is removed in the

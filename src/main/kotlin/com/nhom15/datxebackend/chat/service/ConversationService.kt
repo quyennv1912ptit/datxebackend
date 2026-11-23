@@ -49,15 +49,24 @@ class ConversationService(
         }
         val isParticipant = when (actor.role) {
             Role.CUSTOMER -> ride.customerId == actor.id
-            Role.DRIVER -> ride.driverId == actor.id
+            // A redispatched ride keeps the previous driver's conversation (V17).
+            // He remains a participant of his own preserved thread.
+            Role.DRIVER -> ride.driverId == actor.id ||
+                conversationRepository.existsByRideIdAndDriverId(rideId, actor.id)
             Role.ADMIN -> false
         }
         if (!isParticipant) throw NotFoundException(ErrorCode.RIDE_NOT_FOUND)
-        return ParticipantConversationContext(ride, forAssignment(ride))
+        return ParticipantConversationContext(ride, forActor(ride, actor))
     }
 
     fun forAssignment(ride: Ride): Conversation? =
         ride.driverId?.let { conversationRepository.findByRideIdAndDriverId(ride.id, it) }
+
+    /** Resolve the thread belonging to this actor, not just the current assignment. */
+    fun forActor(ride: Ride, actor: AuthUser): Conversation? = when (actor.role) {
+        Role.DRIVER -> conversationRepository.findByRideIdAndDriverId(ride.id, actor.id)
+        else -> forAssignment(ride)
+    }
 
     fun requireOpen(context: ParticipantConversationContext): Conversation {
         val conversation = context.conversation

@@ -33,8 +33,13 @@ class PromoBudgetService(private val jdbc: JdbcTemplate) {
         if (amount < current.heldAmount + current.spentAmount + current.issuanceReserved) {
             throw BadRequestException(message = "Hạn mức không được thấp hơn ngân sách đang giữ, đã chi và đã phân bổ")
         }
+        val delta = amount - current.budgetLimit
+        val sign = if (delta >= 0) "+" else ""
+        // promo_budget_ledger.amount có CHECK (amount >= 0) nên không lưu được delta âm.
+        // Lưu độ lớn delta ở amount và mã hoá dấu + giá trị cũ/mới trong note để admin vẫn tái dựng được.
+        val note = "Admin cập nhật hạn mức quỹ tổng: ${current.budgetLimit}đ -> ${amount}đ (delta $sign${delta}đ)"
         jdbc.update("UPDATE promo_budget SET budget_limit = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1", amount)
-        jdbc.update("INSERT INTO promo_budget_ledger(action, amount, note) VALUES ('BUDGET_SET', ?, 'Admin cập nhật hạn mức quỹ tổng')", amount)
+        jdbc.update("INSERT INTO promo_budget_ledger(action, amount, note) VALUES ('BUDGET_SET', ?, ?)", kotlin.math.abs(delta), note)
     }
 
     @Transactional
@@ -279,58 +284,85 @@ class PromoBudgetService(private val jdbc: JdbcTemplate) {
             }
         }
 
-        if (budget.availableAmount + forecast < amount) {
+        // forecast_amount của dòng HOLD là số tiền THỰC bị trừ khỏi issuance_reserved,
+        // không phải forecast danh nghĩa: consumed = min(issuance_reserved, forecast).
+        // release() đọc lại chính giá trị này để hoàn đúng số đã trích (legacy forecast = 0 -> không trích).
+        val consumedReserve = budget.issuanceReserved.coerceAtMost(forecast).coerceAtLeast(0L)
+        if (budget.availableAmount + consumedReserve < amount) {
             throw BadRequestException(ErrorCode.VOUCHER_INVALID, "Voucher không khả dụng do ngân sách khuyến mãi không đủ")
         }
         jdbc.update(
-            "UPDATE promo_budget SET issuance_reserved = GREATEST(issuance_reserved - ?, 0), held_amount = held_amount + ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
-            forecast,
+            "UPDATE promo_budget SET issuance_reserved = issuance_reserved - ?, held_amount = held_amount + ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+            consumedReserve,
             amount,
         )
         jdbc.update(
-            "INSERT INTO promo_budget_ledger(ride_id, voucher_id, campaign_id, action, amount, forecast_amount) VALUES (?, ?, ?, 'HOLD', ?, ?)",
+            "INSERT INTO promo_budget_ledger(ride_id, voucher_id, campaign_id, action, amount, forecast_amount, note) VALUES (?, ?, ?, 'HOLD', ?, ?, ?)",
             rideId,
             voucherId,
             campaignId,
             amount,
-            forecast,
+            consumedReserve,
+            "Dự kiến ${forecast}đ, thực trích ${consumedReserve}đ từ quỹ dự phòng cho giữ chỗ thanh toán",
         )
     }
 
     @Transactional
     fun release(rideId: Long) {
+        // Khoá đúng dòng ngân sách: release/spend cùng một HOLD phải nối hàng, không được cùng trừ held.
+        // Đọc luôn snapshot để clamp số hoàn trả (HOLD cũ có thể ghi forecast danh nghĩa lớn hơn số thực đã trích).
+        val budget = jdbc.queryForObject(
+            "SELECT budget_limit, held_amount, spent_amount, issuance_reserved FROM promo_budget WHERE id = 1 FOR UPDATE",
+        ) { rs, _ -> PromoBudgetSummary(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getLong(4)) }!!
         val hold = jdbc.query(
             "SELECT amount, forecast_amount, voucher_id, campaign_id FROM promo_budget_ledger WHERE ride_id = ? AND action = 'HOLD'",
             { rs, _ -> arrayOf<Any?>(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getObject(4, Long::class.javaObjectType)) },
             rideId,
         ).firstOrNull() ?: return
 
+        // SPEND và RELEASE loại trừ nhau cho cùng một ride: đã chi thì không hoàn held/reserve lần nữa.
+        val alreadySpent = jdbc.queryForObject(
+            "SELECT EXISTS(SELECT 1 FROM promo_budget_ledger WHERE ride_id = ? AND action = 'SPEND')",
+            Boolean::class.java,
+            rideId,
+        ) ?: false
+        if (alreadySpent) return
+
+        val campaignId = hold[3] as Long?
+        val canRestore = if (campaignId != null) {
+            jdbc.queryForObject(
+                "SELECT EXISTS(SELECT 1 FROM vouchers v JOIN vouchers camp ON camp.id = v.campaign_id WHERE v.id = ? AND v.active AND v.valid_to > CURRENT_TIMESTAMP AND camp.active AND camp.valid_to > CURRENT_TIMESTAMP)",
+                Boolean::class.java,
+                hold[2],
+            ) ?: false
+        } else {
+            jdbc.queryForObject(
+                "SELECT EXISTS(SELECT 1 FROM vouchers WHERE id = ? AND active AND valid_to > CURRENT_TIMESTAMP)",
+                Boolean::class.java,
+                hold[2],
+            ) ?: false
+        }
+
+        val holdAmount = hold[0] as Long
+        // forecast_amount trên dòng HOLD luôn là số thực đã trừ khỏi issuance_reserved:
+        // campaign = amount, non-campaign = min(issuance_reserved trước hold, forecast).
+        val consumedReserve = hold[1] as Long
+
         val released = jdbc.update(
-            "INSERT INTO promo_budget_ledger(ride_id, voucher_id, campaign_id, action, amount, forecast_amount) VALUES (?, ?, ?, 'RELEASE', ?, ?) ON CONFLICT DO NOTHING",
+            "INSERT INTO promo_budget_ledger(ride_id, voucher_id, campaign_id, action, amount, forecast_amount, note) VALUES (?, ?, ?, 'RELEASE', ?, ?, ?) ON CONFLICT DO NOTHING",
             rideId,
             hold[2],
             hold[3],
-            hold[0],
-            hold[1],
+            holdAmount,
+            consumedReserve,
+            if (canRestore) "Hoàn ${consumedReserve}đ quỹ dự phòng đã trích khi giữ chỗ" else "Không hoàn quỹ dự phòng: voucher không còn hiệu lực",
         )
         if (released == 1) {
-            val campaignId = hold[3] as Long?
-            val canRestore = if (campaignId != null) {
-                jdbc.queryForObject(
-                    "SELECT EXISTS(SELECT 1 FROM vouchers v JOIN vouchers camp ON camp.id = v.campaign_id WHERE v.id = ? AND v.active AND v.valid_to > CURRENT_TIMESTAMP AND camp.active AND camp.valid_to > CURRENT_TIMESTAMP)",
-                    Boolean::class.java,
-                    hold[2],
-                ) ?: false
-            } else {
-                jdbc.queryForObject(
-                    "SELECT EXISTS(SELECT 1 FROM vouchers WHERE id = ? AND active AND valid_to > CURRENT_TIMESTAMP)",
-                    Boolean::class.java,
-                    hold[2],
-                ) ?: false
-            }
-
-            val holdAmount = hold[0] as Long
-            val canRestoreAmount = if (canRestore) holdAmount else 0L
+            // HOLD rows do cũ (trước khi sửa H2) lưu forecast danh nghĩa dù GREATEST(...,0)
+            // đã chặn một phần trích. clamp theo available hiện tại + held vừa được hoàn để
+            // không bao giờ "tạo tiền" vượt budget_limit khi release các row lịch sử này.
+            val maxSafeRestore = (budget.availableAmount + holdAmount).coerceAtLeast(0L)
+            val canRestoreAmount = if (canRestore) minOf(consumedReserve, maxSafeRestore) else 0L
             jdbc.update(
                 "UPDATE promo_budget SET held_amount = GREATEST(held_amount - ?, 0), issuance_reserved = issuance_reserved + ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
                 holdAmount,
@@ -357,20 +389,32 @@ class PromoBudgetService(private val jdbc: JdbcTemplate) {
 
     @Transactional
     fun spend(rideId: Long) {
+        // Khoá đúng dòng ngân sách: release/spend cùng một HOLD phải nối hàng, không được cùng trừ held.
+        jdbc.queryForObject("SELECT id FROM promo_budget WHERE id = 1 FOR UPDATE", Long::class.java)
         val hold = jdbc.query(
-            "SELECT amount, campaign_id, voucher_id FROM promo_budget_ledger WHERE ride_id = ? AND action = 'HOLD'",
-            { rs, _ -> arrayOf<Any?>(rs.getLong(1), rs.getObject(2, Long::class.javaObjectType), rs.getLong(3)) },
+            "SELECT amount, forecast_amount, campaign_id, voucher_id FROM promo_budget_ledger WHERE ride_id = ? AND action = 'HOLD'",
+            { rs, _ -> arrayOf<Any?>(rs.getLong(1), rs.getLong(2), rs.getObject(3, Long::class.javaObjectType), rs.getLong(4)) },
             rideId,
         ).firstOrNull() ?: return
 
-        val amount = hold[0] as Long
-        val campaignId = hold[1] as Long?
-        val spent = jdbc.update(
-            "INSERT INTO promo_budget_ledger(ride_id, voucher_id, campaign_id, action, amount) VALUES (?, ?, ?, 'SPEND', ?) ON CONFLICT DO NOTHING",
+        // Đã hoàn (cancel) thì không được chuyển tiếp held -> spent lần nữa.
+        val alreadyReleased = jdbc.queryForObject(
+            "SELECT EXISTS(SELECT 1 FROM promo_budget_ledger WHERE ride_id = ? AND action = 'RELEASE')",
+            Boolean::class.java,
             rideId,
-            hold[2],
+        ) ?: false
+        if (alreadyReleased) return
+
+        val amount = hold[0] as Long
+        val consumedReserve = hold[1] as Long
+        val campaignId = hold[2] as Long?
+        val spent = jdbc.update(
+            "INSERT INTO promo_budget_ledger(ride_id, voucher_id, campaign_id, action, amount, forecast_amount) VALUES (?, ?, ?, 'SPEND', ?, ?) ON CONFLICT DO NOTHING",
+            rideId,
+            hold[3],
             campaignId,
             amount,
+            consumedReserve,
         )
         if (spent == 1) {
             jdbc.update(

@@ -45,16 +45,37 @@ class VerificationProjectionRepository @Autowired constructor(
         require(current.stream == null || current.stream == feed.streamId) { "Verification stream changed" }
         require(feed.head >= start)
         val owners = feed.events.map { it.ownerUid }.distinct()
-        if (owners.isNotEmpty()) {
-            val marks = owners.joinToString(",") { "?" }
-            jdbc.queryForList("SELECT id FROM drivers WHERE firebase_uid IN ($marks) ORDER BY id FOR UPDATE", *owners.toTypedArray())
-        }
+        val ownerMarks = owners.joinToString(",") { "?" }
+        val liveOwners = if (owners.isEmpty()) emptySet() else jdbc.queryForList(
+            "SELECT firebase_uid FROM drivers WHERE firebase_uid IN ($ownerMarks) AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+            String::class.java, *owners.toTypedArray(),
+        ).toSet()
+        val tombstonedOwners = if (owners.isEmpty()) emptySet() else jdbc.queryForList(
+            "SELECT firebase_uid FROM deleted_firebase_uids WHERE firebase_uid IN ($ownerMarks)",
+            String::class.java, *owners.toTypedArray(),
+        ).toSet()
+        val applicationIds = feed.events.map { it.applicationId }.distinct()
+        val applicationMarks = applicationIds.joinToString(",") { "?" }
+        val liveApplications = if (applicationIds.isEmpty()) emptySet() else jdbc.queryForList(
+            "SELECT id FROM driver_verification_applications WHERE id IN ($applicationMarks)",
+            UUID::class.java, *applicationIds.toTypedArray(),
+        ).toSet()
         var cursor = start
         val today = capabilityToday()
         for (event in feed.events) {
             require(event.seq > cursor && event.seq <= feed.head && event.revision >= 0)
             require(event.ownerUid.isNotBlank() && event.ownerUid.length <= 128)
             require(event.entitlements.size <= 20)
+            // A late/re-reviewed decision for an account deleted locally must not recreate
+            // an APPROVED projection. Only apply events tied to a live driver or to an
+            // application that still exists here. The cursor still advances so the feed
+            // cannot stall on an event we intentionally ignore.
+            if (event.ownerUid in tombstonedOwners ||
+                (event.ownerUid !in liveOwners && event.applicationId !in liveApplications)
+            ) {
+                cursor = event.seq
+                continue
+            }
             val existingApplication = jdbc.query(
                 "SELECT application_id FROM driver_verification_projection WHERE owner_uid=? AND synced_workflow",
                 { rs, _ -> rs.getObject(1, UUID::class.java) }, event.ownerUid,
@@ -202,7 +223,10 @@ class VerificationProjectionRepository @Autowired constructor(
                FROM driver_verification_projection p
                LEFT JOIN drivers d ON d.firebase_uid=p.owner_uid
                LEFT JOIN driver_capability_preferences prefs ON prefs.driver_id=d.id AND prefs.approval_revision=p.revision
-               WHERE $column=? AND $provenanceClause""",
+               WHERE $column=? AND $provenanceClause
+                  AND NOT EXISTS (
+                      SELECT 1 FROM deleted_firebase_uids t WHERE t.firebase_uid = p.owner_uid
+                  )""",
             { rs, _ ->
                 val factory = mapper.typeFactory
                 fun <T> readList(columnName: String, element: Class<T>): List<T> =

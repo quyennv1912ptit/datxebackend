@@ -106,6 +106,16 @@ class AccountDeletionService(
 
         val firebaseUid = driver.firebaseUid
         val avatarPublicId = driver.avatarPublicId
+        // eKYC rows are keyed by the original Firebase UID (V38 owner_uid), which is about
+        // to be tombstoned. Collect every capture key (active AND retired) before purging.
+        val verificationStorageKeys = jdbcTemplate.query(
+            """SELECT c.storage_key
+               FROM driver_verification_captures c
+               JOIN driver_verification_applications a ON a.id = c.application_id
+               WHERE a.owner_uid = ?""".trimIndent(),
+            { row, _ -> row.getString("storage_key") },
+            firebaseUid,
+        )
         driver.deletedAt = Instant.now()
         driver.firebaseUid = tombstoneUid("driver", driverId)
         driver.fullName = null
@@ -113,6 +123,7 @@ class AccountDeletionService(
         driver.phoneNumber = tombstoneUid("driver-phone", driverId)
         driver.avatarUrl = null
         driver.avatarPublicId = null
+        driver.bankName = null
         driver.bankAccountNumber = null
         driver.licenseClass = null
         driver.licenseNumber = null
@@ -129,11 +140,29 @@ class AccountDeletionService(
         deviceTokenRepository.deleteAllByRoleAndOwnerId(Role.DRIVER, driverId)
         jdbcTemplate.update("DELETE FROM notifications WHERE recipient_driver_id = ?", driverId)
         jdbcTemplate.update("DELETE FROM driver_vehicle_skills WHERE driver_id = ?", driverId)
+
+        // V38: captures, submissions, submit_keys and audit all reference applications with
+        // ON DELETE CASCADE, so deleting the parent by owner_uid purges CCCD/DOB/address PII
+        // and the UNIQUE(owner_uid) row in one statement. Upload attempts and the projection
+        // have no FK and must be removed explicitly before the UID disappears.
+        jdbcTemplate.update("DELETE FROM driver_verification_applications WHERE owner_uid = ?", firebaseUid)
+        jdbcTemplate.update("DELETE FROM driver_verification_upload_attempts WHERE owner_uid = ?", firebaseUid)
+        jdbcTemplate.update("DELETE FROM driver_verification_projection WHERE owner_uid = ?", firebaseUid)
+        jdbcTemplate.update("DELETE FROM driver_capability_preferences WHERE driver_id = ?", driverId)
+        // V45: keep the original UID permanently blocked. A stale upstream verification
+        // decision or a re-registration with a still-valid token must not resurrect the
+        // deleted driver's APPROVED state under a new local account.
+        jdbcTemplate.update(
+            "INSERT INTO deleted_firebase_uids (firebase_uid) VALUES (?) ON CONFLICT DO NOTHING",
+            firebaseUid,
+        )
+
         cleanupOutbox.enqueue(
             firebaseUid = firebaseUid,
             ownerRole = Role.DRIVER.name,
             ownerId = driverId,
             publicIds = listOfNotNull(avatarPublicId),
+            verificationStorageKeys = verificationStorageKeys,
         )
     }
 

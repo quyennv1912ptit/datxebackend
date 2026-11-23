@@ -31,7 +31,7 @@ class AuthController(
         @Valid @RequestBody request: AuthLoginRequest,
         servletRequest: HttpServletRequest,
     ): ApiResponse<AuthProfileResponse> {
-        loginRateLimiter.check(servletRequest.remoteAddr)
+        loginRateLimiter.check("customer-login", servletRequest.remoteAddr, request.phoneNumber)
         return ApiResponse.ok(authService.loginCustomer(request))
     }
 
@@ -40,7 +40,7 @@ class AuthController(
         @Valid @RequestBody request: AuthRegisterRequest,
         servletRequest: HttpServletRequest,
     ): ApiResponse<AuthProfileResponse> {
-        loginRateLimiter.check(servletRequest.remoteAddr)
+        loginRateLimiter.check("customer-register", servletRequest.remoteAddr, request.phoneNumber)
         return ApiResponse.ok(authService.registerCustomer(request))
     }
 
@@ -49,7 +49,7 @@ class AuthController(
         @Valid @RequestBody request: AuthLoginRequest,
         servletRequest: HttpServletRequest,
     ): ApiResponse<AuthProfileResponse> {
-        loginRateLimiter.check(servletRequest.remoteAddr)
+        loginRateLimiter.check("driver-login", servletRequest.remoteAddr, request.phoneNumber)
         return ApiResponse.ok(authService.loginDriver(request))
     }
 
@@ -58,7 +58,7 @@ class AuthController(
         @Valid @RequestBody request: AuthRegisterRequest,
         servletRequest: HttpServletRequest,
     ): ApiResponse<AuthProfileResponse> {
-        loginRateLimiter.check(servletRequest.remoteAddr)
+        loginRateLimiter.check("driver-register", servletRequest.remoteAddr, request.phoneNumber)
         return ApiResponse.ok(authService.registerDriver(request))
     }
 
@@ -67,7 +67,7 @@ class AuthController(
         @Valid @RequestBody request: AuthLoginRequest,
         servletRequest: HttpServletRequest,
     ): ApiResponse<AuthProfileResponse> {
-        loginRateLimiter.check(servletRequest.remoteAddr)
+        loginRateLimiter.check("admin-login", servletRequest.remoteAddr, request.phoneNumber)
         return ApiResponse.ok(authService.loginAdmin(request))
     }
 

@@ -3,6 +3,8 @@ package com.nhom15.datxebackend.customer.service
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.enums.PaymentMethod
 import com.nhom15.datxebackend.common.enums.Role
+import com.nhom15.datxebackend.common.enums.UserStatus
+import com.nhom15.datxebackend.common.exception.AppException
 import com.nhom15.datxebackend.common.exception.ForbiddenException
 import com.nhom15.datxebackend.common.exception.NotFoundException
 import com.nhom15.datxebackend.common.security.AuthUser
@@ -12,6 +14,7 @@ import com.nhom15.datxebackend.customer.dto.UpdateCustomerProfileRequest
 import com.nhom15.datxebackend.customer.entity.Customer
 import com.nhom15.datxebackend.customer.repository.CustomerRepository
 import com.nhom15.datxebackend.uploads.CloudinaryAssetService
+import com.nhom15.datxebackend.uploads.CloudinaryFolders
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -29,7 +32,7 @@ class CustomerProfileService(
     @Transactional
     fun update(actor: AuthUser, request: UpdateCustomerProfileRequest): CustomerProfileResponse {
         requireCustomer(actor)
-        val customer = getCustomer(actor.id)
+        val customer = getCustomerForUpdate(actor.id)
         customer.fullName = request.fullName.trim()
         customer.email = request.email?.trim()?.takeIf(String::isNotEmpty)
         customer.dateOfBirth = request.dateOfBirth
@@ -44,17 +47,31 @@ class CustomerProfileService(
     fun updateAvatar(actor: AuthUser, request: UpdateCustomerAvatarRequest): CustomerProfileResponse {
         requireCustomer(actor)
         cloudinaryAssetService.validateCustomerImage(actor, request.secureUrl, request.publicId)
-        val customer = getCustomer(actor.id)
+        val customer = getCustomerForUpdate(actor.id)
         val oldPublicId = customer.avatarPublicId
         customer.avatarUrl = request.secureUrl.trim()
         customer.avatarPublicId = request.publicId.trim()
         val saved = customerRepository.save(customer)
-        if (oldPublicId != saved.avatarPublicId) cloudinaryAssetService.deleteAfterCommit(oldPublicId)
+        if (oldPublicId != saved.avatarPublicId) {
+            cloudinaryAssetService.deleteAfterCommit(
+                oldPublicId,
+                CloudinaryFolders.forActor(Role.CUSTOMER, actor.id),
+            )
+        }
         return response(saved)
     }
 
     private fun getCustomer(customerId: Long): Customer = customerRepository.findById(customerId)
         .orElseThrow { NotFoundException(ErrorCode.USER_NOT_FOUND) }
+
+    private fun getCustomerForUpdate(customerId: Long): Customer {
+        val customer = customerRepository.findByIdForUpdate(customerId)
+            .orElseThrow { NotFoundException(ErrorCode.USER_NOT_FOUND) }
+        if (customer.deletedAt != null || customer.status != UserStatus.ACTIVE) {
+            throw AppException(ErrorCode.ACCOUNT_LOCKED)
+        }
+        return customer
+    }
 
     private fun response(customer: Customer): CustomerProfileResponse = CustomerProfileResponse(
         id = requireNotNull(customer.id),

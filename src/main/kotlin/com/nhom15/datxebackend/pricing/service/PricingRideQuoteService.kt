@@ -76,7 +76,8 @@ class PricingRideQuoteService(
             estimatedDurationMinutes = estimatedDurationMinutes,
             baseFare = rule.baseFare,
             distanceFare = distanceFare,
-            // Chưa có dữ liệu phút chờ; duration tuyến đường chỉ dùng để ước tính thời gian lái xe.
+            // Chưa có telemetry phút chờ: DTO cấu hình từ chối perMinuteWaiting != 0 nên phí này luôn là 0.
+            // duration tuyến đường chỉ dùng để ước tính thời gian lái xe, không phải thời gian chờ thực tế.
             waitingFare = 0L,
             nightSurcharge = nightSurcharge,
             returnFee = rule.returnFeeForDriver,

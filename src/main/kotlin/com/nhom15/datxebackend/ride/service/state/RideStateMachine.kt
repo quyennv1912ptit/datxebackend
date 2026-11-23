@@ -134,15 +134,16 @@ class RideStateMachine(
         }
         if (nextStatus == RideStatus.SEARCHING) {
             ride.searchExpiresAt = scheduledDeadline ?: now.plus(matching.searchTimeout)
-            if (retryDispatch) {
-                ride.redispatchCount++
-                ride.lastRedispatchReason = command.cancelReason?.trim()?.takeIf { it.isNotEmpty() }
-                    ?: command.note?.trim()?.takeIf { it.isNotEmpty() }
-                ride.lastRedispatchAt = Instant.now()
-                ride.lastRedispatchDriverId = oldDriver
-                ride.driverId = null
-                ride.acceptedAt = null
-            }
+            if (retryDispatch) ride.redispatchCount++
+        }
+        if (retryDispatch) {
+            // A terminal NO_DRIVER_FOUND must not expose the cancelled driver either.
+            ride.lastRedispatchReason = command.cancelReason?.trim()?.takeIf { it.isNotEmpty() }
+                ?: command.note?.trim()?.takeIf { it.isNotEmpty() }
+            ride.lastRedispatchAt = Instant.now()
+            ride.lastRedispatchDriverId = oldDriver
+            ride.driverId = null
+            ride.acceptedAt = null
         }
 
         if (command.event == RideTransitionEvent.CANCEL && !retryDispatch) {

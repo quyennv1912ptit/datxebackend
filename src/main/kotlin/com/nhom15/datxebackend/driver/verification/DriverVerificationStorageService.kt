@@ -128,6 +128,11 @@ class DriverVerificationStorageService(
         runCatching { Files.deleteIfExists(resolveSafe(objectKey)) }
     }
 
+    /** Account cleanup must retry on I/O or malformed-key failures instead of marking the task done. */
+    fun deleteOrThrow(objectKey: String) {
+        Files.deleteIfExists(resolveSafe(objectKey))
+    }
+
     private fun resolveSafe(objectKey: String): Path {
         if (!objectKey.matches(Regex("^[A-Za-z0-9_-]{8,128}$"))) {
             throw VerificationWorkflowException(400, "INVALID_REQUEST", "Khóa lưu trữ không hợp lệ.")

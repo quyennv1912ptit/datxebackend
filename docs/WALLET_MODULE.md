@@ -44,7 +44,7 @@ Bearer token bắt buộc. Các API của khách/tài xế lấy ID từ token �
 | POST | `/api/driver/withdrawals` | DRIVER | Tạo yêu cầu rút, header `Idempotency-Key` |
 | GET | `/api/driver/withdrawals?page=0` | DRIVER | Yêu cầu rút của mình |
 | POST | `/api/admin/withdrawals/{id}/review` | ADMIN | APPROVE hoặc REJECT |
-| POST | `/api/mock/wallet/top-up` | ADMIN + dev/test | Nạp giả lập |
+| POST | `/api/mock/wallet/top-up` | ADMIN + dev/test/demo | Nạp giả lập, bắt buộc `Idempotency-Key` hoặc `request_key` |
 
 Ví dụ tạo yêu cầu rút:
 
@@ -69,19 +69,22 @@ Content-Type: application/json
 
 APPROVE: PENDING → SUCCESS, không trừ lại. REJECT: PENDING → REJECTED, cộng lại CASH và ghi REFUND. Mọi lần review khi không còn PENDING, kể cả cùng action, đều trả 409 INVALID_WITHDRAWAL_ACTION. Khóa request ngăn hai admin hoàn/duyệt đồng thời. Đây là phê duyệt mô phỏng, không gọi ngân hàng.
 
-Bật mock top-up bằng profile `dev` hoặc `test` **và** `wallet.mock-topup-enabled=true` (mặc định tắt):
+Bật mock top-up bằng profile `dev`, `test` hoặc `demo` **và** `wallet.mock-topup-enabled=true` (mặc định tắt):
 
 ```http
 POST /api/mock/wallet/top-up
 Authorization: Bearer <admin-token>
+Idempotency-Key: admin-topup-2026-001
 Content-Type: application/json
 
-{"userId":7,"userType":"DRIVER","walletType":"CREDIT","amount":100000}
+{"userId":7,"userType":"DRIVER","walletType":"CREDIT","amount":100000,"requestKey":"admin-topup-2026-001"}
 ```
 
-Có thể gửi tên trường `user_id`, `wallet_type`, `user_type`; `userType` được suy ra từ `walletType` nếu không truyền.
+Có thể gửi tên trường `user_id`, `wallet_type`, `user_type`, `request_key`; `userType` được suy ra từ `walletType` nếu không truyền. Key lấy từ header `Idempotency-Key`, nếu thiếu thì lấy từ `request_key`; thiếu cả hai trả 400.
 
-Ví khách: `userType=CUSTOMER`, `walletType=CUSTOMER`. Ví nhận công tài xế: `userType=DRIVER`, `walletType=CASH`. Endpoint mock coi mỗi request là một lần nạp mới; không retry tự động.
+Ví khách: `userType=CUSTOMER`, `walletType=CUSTOMER`. Ví nhận công tài xế: `userType=DRIVER`, `walletType=CASH` (hoặc `CREDIT`). `userType` phải khớp `walletType`, nếu không trả 400.
+
+Endpoint **không** cộng trực tiếp qua WalletService mà đi qua receipt `(owner_id, request_key)` của `CustomerMockTopUpService`/`DriverMockTopUpService` (V20/V21): gửi lại cùng key và số tiền trả về kết quả cũ, không cộng lần hai; cùng key khác số tiền hoặc khác ví trả 409. Response là `ApiResponse.ok()` rỗng (không có `data.transactionId`); dev script cũ đọc trường này cần cập nhật. Đây là tiền giả lập, profile production không bao giờ có endpoint này.
 
 ## Kiểm thử và triển khai
 

@@ -1,8 +1,11 @@
 package com.nhom15.datxebackend.voucher.service
 
+import com.nhom15.datxebackend.common.websocket.PayloadType
+import com.nhom15.datxebackend.notification.api.DeliveryResult
 import com.nhom15.datxebackend.notification.api.NotificationPort
 import com.nhom15.datxebackend.notification.api.Recipient
 import com.nhom15.datxebackend.notification.dto.VoucherCampaignPayload
+import com.nhom15.datxebackend.notification.service.NotificationFailureMetrics
 import org.slf4j.LoggerFactory
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Component
@@ -27,8 +30,10 @@ class VoucherCampaignPublishedListener(
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     fun onCampaignPublished(event: VoucherCampaignPublished) {
+        // V1__init.sql tạo bảng "customers", không có bảng/view "users".
+        // Trạng thái hợp lệ: ACTIVE / INACTIVE / BANNED (customers_status_check).
         val customerIds = jdbc.queryForList(
-            "SELECT id FROM users WHERE role = 'CUSTOMER' AND active = TRUE",
+            "SELECT id FROM customers WHERE status = 'ACTIVE'",
             Long::class.java,
         )
         val fullBody = buildString {
@@ -41,7 +46,7 @@ class VoucherCampaignPublishedListener(
         }
         customerIds.filterNotNull().forEach { customerId ->
             try {
-                notifications.send(
+                val result = notifications.send(
                     Recipient.Customer(customerId),
                     VoucherCampaignPayload(
                         campaignId = event.id,
@@ -52,8 +57,16 @@ class VoucherCampaignPublishedListener(
                         body = fullBody,
                     ),
                 )
+                if (result == DeliveryResult.UNREACHABLE) {
+                    NotificationFailureMetrics.record(
+                        "notification.delivery.unreachable", PayloadType.VOUCHER_CAMPAIGN.name, "CUSTOMER",
+                    )
+                }
             } catch (ex: Exception) {
                 log.warn("Could not notify customer {} about voucher campaign {}", customerId, event.id, ex)
+                NotificationFailureMetrics.record(
+                    "notification.delivery.failed", PayloadType.VOUCHER_CAMPAIGN.name, "CUSTOMER",
+                )
             }
         }
     }

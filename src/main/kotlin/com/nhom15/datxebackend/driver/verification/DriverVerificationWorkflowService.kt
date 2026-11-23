@@ -72,6 +72,8 @@ private val NON_OVERRIDABLE_BLOCKER_CODES = setOf(
     "DOCUMENT_REQUIRED",
     "DUPLICATE_CCCD_ACROSS_ACCOUNTS",
     "DUPLICATE_GPLX_ACROSS_ACCOUNTS",
+    // A face mismatch is an identity conflict, not a mere document-quality warning.
+    "FACE_POSSIBLE_MISMATCH",
 )
 
 data class VerificationDecisionRequest(
@@ -267,6 +269,8 @@ class DriverVerificationWorkflowService @Autowired constructor(
                 }
                 data["submittedAt"] = row.submittedAt?.toString() ?: snapshotMap["submittedAt"]
                 data["warningCount"] = snapshotMap["warningCount"] ?: 0
+                // Per-occurrence count for the admin UI; warningCount stays as the distinct-code count for old clients.
+                data["affectedWarnings"] = snapshotMap["affectedWarnings"] ?: data["warningCount"]
                 data["resubmissionCount"] = row.resubmissionCount
                 data["faceComparisonAvailable"] = ekycClient?.faceComparisonEnabled == true
             }
@@ -284,12 +288,12 @@ class DriverVerificationWorkflowService @Autowired constructor(
         val warningRevision = (warningSourceDoc["revision"] as? Number)?.toLong() ?: row.revision
         @Suppress("UNCHECKED_CAST")
         val warningConfirmed = warningSourceDoc["confirmed"] as? Map<String, Any?>
-        @Suppress("UNCHECKED_CAST")
-        val snapshotFaceStatuses = (warningSourceDoc["faceStatuses"] as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
+        val snapshotFaceQuality = faceQualityFrom(warningSourceDoc)
         data["verificationWarnings"] = DriverVerificationWarnings.build(
             payload = warningSourceDoc,
             revision = warningRevision,
-            faceStatuses = snapshotFaceStatuses,
+            faceStatuses = faceStatusesFrom(warningSourceDoc),
+            faceQuality = snapshotFaceQuality.takeIf { it.isNotEmpty() },
             identityContext = buildIdentityContext(row, warningConfirmed, warningSourceDoc),
         )
         data["eligibilityStatus"] = buildEligibilitySummary(row)
@@ -380,6 +384,10 @@ class DriverVerificationWorkflowService @Autowired constructor(
         val approvedCapIds = approvedCaps.values.mapNotNull { (it as? Map<*, *>)?.get("id") as? String }
             .mapNotNull { runCatching { UUID.fromString(it) }.getOrNull() }
             .toSet()
+        // These draft captures stay retired after the approved ones are restored; their files are orphans.
+        val discardedStorageKeys = loadActiveCaptures(row.id).values
+            .filter { it.id !in approvedCapIds }
+            .map { it.storageKey }
 
         jdbc.update(
             "UPDATE driver_verification_captures SET retired_at = CURRENT_TIMESTAMP WHERE application_id = ? AND retired_at IS NULL",
@@ -406,6 +414,9 @@ class DriverVerificationWorkflowService @Autowired constructor(
             row.id,
         )
         audit(row.id, nextRevision, actor, "CANCEL_REVERIFICATION", emptyMap(), review = false)
+        if (discardedStorageKeys.isNotEmpty()) {
+            afterCommit { discardedStorageKeys.forEach(storage::deleteQuietly) }
+        }
         return buildDetailResponse(requireById(row.id), review = false)
     }
 
@@ -464,6 +475,11 @@ class DriverVerificationWorkflowService @Autowired constructor(
         } catch (ex: Exception) {
             storage.deleteQuietly(objectKey)
             throw ex
+        }
+        // Only remove the retired file after the replacement transaction commits; a rollback
+        // must keep the old evidence intact.
+        previous?.storageKey?.let { retiredKey ->
+            afterCommit { storage.deleteQuietly(retiredKey) }
         }
 
         val nextRevision = expectedRevision + 1L
@@ -973,9 +989,12 @@ class DriverVerificationWorkflowService @Autowired constructor(
         }
 
         val identityCtx = buildIdentityContext(row, confirmed, workingDoc)
+        val workingFaceQuality = faceQualityFrom(workingDoc)
         val structuredWarnings = DriverVerificationWarnings.build(
             payload = workingDoc,
             revision = expectedRevision,
+            faceStatuses = faceStatusesFrom(workingDoc),
+            faceQuality = workingFaceQuality.takeIf { it.isNotEmpty() },
             identityContext = identityCtx,
         )
         val requiresReviewCodes = structuredWarnings.filter { it.requiresReview }.map { it.code }.distinct().sorted()
@@ -1013,6 +1032,8 @@ class DriverVerificationWorkflowService @Autowired constructor(
             "submittedAt" to submittedAt.toString(),
             "warningCodes" to DriverVerificationWarnings.comparisonWarnings(confirmed),
             "warningCount" to requiresReviewCodes.size,
+            // Distinct codes above are kept for RN compatibility; this counts every field-level occurrence.
+            "affectedWarnings" to structuredWarnings.size,
             "verificationWarnings" to structuredWarnings,
             "warningAcknowledgement" to acknowledgement,
             "identityHold" to applyIdentityHold,
@@ -1151,6 +1172,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
             { rs, _ ->
                 val snap = readMap(rs.getString("snapshot_json"))
                 val wCount = (snap["warningCount"] as? Number)?.toInt() ?: 0
+                val affectedCount = (snap["affectedWarnings"] as? Number)?.toInt() ?: wCount
                 mapOf(
                     "id" to rs.getObject("id", UUID::class.java).toString(),
                     "status" to rs.getString("status"),
@@ -1161,6 +1183,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
                     "driverName" to rs.getString("full_name"),
                     "driverPhone" to rs.getString("phone_number"),
                     "warningCount" to wCount,
+                    "affectedWarnings" to affectedCount,
                     "resubmissionCount" to rs.getInt("resubmission_count"),
                 )
             },
@@ -1224,7 +1247,38 @@ class DriverVerificationWorkflowService @Autowired constructor(
                 images[slot] = it
             }
         }
-        return client.evaluateFace(images, qualityOnly = false)
+        val result = client.evaluateFace(images, qualityOnly = false)
+        val signals = DriverVerificationWarnings.normalizedFaceSignals(result)
+        val updated = LinkedHashMap(snapshot)
+        updated["faceStatuses"] = signals.statuses
+        updated["faceQuality"] = signals.quality
+        updated["faceComparison"] = linkedMapOf<String, Any?>(
+            "mode" to result.path("mode").asString(""),
+            "liveness" to result.path("liveness").asString(""),
+            "evaluatedAt" to Instant.now().toString(),
+        )
+        // The application row is locked (FOR UPDATE) and the submission revision re-checked above;
+        // the UPDATE is still revision-guarded so a concurrent write can never be overwritten.
+        val written = jdbc.update(
+            """UPDATE driver_verification_submissions
+               SET snapshot_json = ?
+               WHERE application_id = ? AND revision = ?""",
+            mapper.writeValueAsString(updated),
+            row.id,
+            submissionRevision,
+        )
+        if (written != 1) {
+            throw VerificationWorkflowException(409, "REVISION_CONFLICT", "Bản nộp đã thay đổi trong lúc đối chiếu.")
+        }
+        audit(
+            row.id,
+            revision,
+            actor,
+            "FACE_COMPARISON",
+            mapOf("submissionRevision" to submissionRevision, "statuses" to signals.statuses),
+            review = true,
+        )
+        return result
     }
 
     @Transactional
@@ -1272,12 +1326,12 @@ class DriverVerificationWorkflowService @Autowired constructor(
         @Suppress("UNCHECKED_CAST")
         val confirmed = snapshot["confirmed"] as? Map<String, Any?> ?: emptyMap()
         if (targetStatus == "APPROVED") {
-            @Suppress("UNCHECKED_CAST")
-            val snapshotFaceStatuses = (snapshot["faceStatuses"] as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
+            val snapshotFaceQuality = faceQualityFrom(snapshot)
             val warnings = DriverVerificationWarnings.build(
                 payload = snapshot,
                 revision = request.revision,
-                faceStatuses = snapshotFaceStatuses,
+                faceStatuses = faceStatusesFrom(snapshot),
+                faceQuality = snapshotFaceQuality.takeIf { it.isNotEmpty() },
                 identityContext = buildIdentityContext(row, confirmed, snapshot),
             )
             val blockers = warnings.filter { it.blocksActivation }
@@ -1669,7 +1723,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
         return doc
     }
 
-    private fun shouldClearQrLiveScan(
+    internal fun shouldClearQrLiveScan(
         qrLiveScanJson: String?,
         slot: String,
         oldCaptureId: UUID?,
@@ -1682,8 +1736,10 @@ class DriverVerificationWorkflowService @Autowired constructor(
         val boundId = live["attachmentId"] as? String
         if (oldCaptureId != null && boundId == oldCaptureId.toString()) return true
         val side = if (slot == frontSlot) "FRONT" else "BACK"
-        val docSide = live["documentSide"] as? String
-        return docSide == null || docSide == side || docSide == "UNKNOWN"
+        val docSide = (live["documentSide"] as? String)?.trim()?.uppercase()
+        // UNKNOWN/null means "no side information": it must not clear a QR bound to a different capture.
+        if (docSide.isNullOrEmpty() || docSide == "UNKNOWN") return false
+        return docSide == side
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -2105,6 +2161,17 @@ class DriverVerificationWorkflowService @Autowired constructor(
         }
         return result
     }
+
+    /** Face signals are stored in the submission snapshot; documents without a comparison simply yield no signals. */
+    @Suppress("UNCHECKED_CAST")
+    private fun faceStatusesFrom(doc: Map<String, Any?>): List<String> =
+        (doc["faceStatuses"] as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
+
+    @Suppress("UNCHECKED_CAST")
+    private fun faceQualityFrom(doc: Map<String, Any?>): Map<String, String> =
+        (doc["faceQuality"] as? Map<*, *>)?.mapNotNull { (key, value) ->
+            (key as? String)?.let { k -> (value as? String)?.let { k to it } }
+        }?.toMap() ?: emptyMap()
 
     private fun afterCommit(action: () -> Unit) {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {

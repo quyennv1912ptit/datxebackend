@@ -16,7 +16,11 @@ object CloudinaryFolders {
     fun forActor(role: Role, id: Long): String = "app_dat_xe/${role.name.lowercase()}/$id"
 
 
-    fun chat(rideId: Long): String = "datxe/chat/$rideId"
+    /** Chat images are scoped per conversation AND sender (V17 keeps several threads per ride). */
+    fun chat(conversationId: Long, role: Role, actorId: Long): String =
+        "datxe/chat/$conversationId/${role.name}/$actorId"
+
+    fun chatPrefix(conversationId: Long, role: Role, actorId: Long): String = "${chat(conversationId, role, actorId)}/"
 
     fun handover(rideId: Long): String = "datxe/handover/$rideId"
 }
@@ -80,16 +84,25 @@ class CloudinaryAssetService(private val cloudinary: Cloudinary) {
         }
     }
 
-    fun deleteAfterCommit(publicId: String?) {
+    /**
+     * @param expectedFolder when supplied by the caller, the asset must belong to that owner.
+     * Legacy callers that cannot supply it still get structural validation (no traversal).
+     */
+    fun deleteAfterCommit(publicId: String?, expectedFolder: String? = null) {
         if (publicId.isNullOrBlank()) return
+        val normalizedPublicId = if (expectedFolder != null) {
+            requireOwnedAsset(publicId, expectedFolder)
+        } else {
+            requireStructuredPublicId(publicId)
+        }
         val deletion = Runnable {
             try {
                 cloudinary.uploader().destroy(
-                    publicId,
+                    normalizedPublicId,
                     mapOf("invalidate" to true, "resource_type" to "image"),
                 )
             } catch (e: Exception) {
-                log.warn("Không xóa được ảnh Cloudinary {} sau commit", publicId, e)
+                log.warn("Không xóa được ảnh Cloudinary {} sau commit", normalizedPublicId, e)
             }
         }
 
@@ -100,6 +113,15 @@ class CloudinaryAssetService(private val cloudinary: Cloudinary) {
         } else {
             deletion.run()
         }
+    }
+
+    private fun requireStructuredPublicId(publicId: String): String {
+        val normalized = publicId.trim()
+        val segments = normalized.split('/')
+        if (segments.any { it == "." || it == ".." } || normalized.contains('\\')) {
+            throw BadRequestException(message = "publicId ảnh không hợp lệ")
+        }
+        return normalized
     }
 
     fun deleteNowOrThrow(publicId: String) {

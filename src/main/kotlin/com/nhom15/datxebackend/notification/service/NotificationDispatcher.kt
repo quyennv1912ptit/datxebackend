@@ -17,6 +17,8 @@ import com.nhom15.datxebackend.notification.channel.FcmChannel
 import com.nhom15.datxebackend.notification.channel.NotificationChannel
 import com.nhom15.datxebackend.notification.channel.StompChannel
 import com.nhom15.datxebackend.notification.dto.NotificationPayload
+import io.micrometer.core.instrument.Metrics
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.springframework.jdbc.core.JdbcTemplate
 import tools.jackson.databind.ObjectMapper
 import org.slf4j.LoggerFactory
@@ -92,12 +94,12 @@ class NotificationDispatcher(
         envelope: WsEnvelope<*>,
         result: DeliveryResult,
     ) {
+        val deliveryStatus = if (result == SENT_WS || result == SENT_PUSH) "SENT" else "FAILED"
         try {
             val recipientColumn = when (to) {
                 is Recipient.Customer -> "recipient_customer_id"
                 is Recipient.Driver -> "recipient_driver_id"
             }
-            val deliveryStatus = if (result == SENT_WS || result == SENT_PUSH) "SENT" else "FAILED"
             jdbcTemplate.update(
                 """INSERT INTO notifications
                    ($recipientColumn, ride_id, notification_type, title, body, data, delivery_status, sent_at)
@@ -112,7 +114,31 @@ class NotificationDispatcher(
                 deliveryStatus,
             )
         } catch (e: Exception) {
-            log.warn("Không thể lưu lịch sử thông báo cho {}: {}", to, e.message)
+            // Lịch sử là side-effect: lỗi ở đây không được làm REST/after-commit flow thất bại,
+            // nhưng phải nhìn thấy được trên log/metric để có retry/outbox xử lý sau.
+            log.error(
+                "NOTIFICATION_HISTORY_WRITE_FAILED messageId={} recipientRole={} recipientId={} payloadType={} deliveryStatus={} error={}",
+                envelope.messageId, to.role.name, to.id, envelope.type.name, deliveryStatus, e.toString(), e,
+            )
+            NotificationFailureMetrics.record("notification.history.write.failed", envelope.type.name, to.role.name)
+        }
+    }
+}
+
+/** Dùng chung cho mọi after-commit listener: metric vẫn được ghi khi listener chạy ngoài Spring context. */
+internal object NotificationFailureMetrics {
+    // CompositeMeterRegistry không có registry con thì counter() trả về 0 dù đã increment.
+    // Đính kèm một registry in-memory làm fallback để metric luôn observable (kể cả unit test),
+    // trong khi app Spring vẫn ghi vào registry thật do Boot đăng ký vào globalRegistry.
+    private val fallback = SimpleMeterRegistry()
+
+    init {
+        if (fallback !in Metrics.globalRegistry.registries) Metrics.addRegistry(fallback)
+    }
+
+    fun record(metric: String, payloadType: String, recipientRole: String) {
+        runCatching {
+            Metrics.globalRegistry.counter(metric, "payloadType", payloadType, "recipientRole", recipientRole).increment()
         }
     }
 }

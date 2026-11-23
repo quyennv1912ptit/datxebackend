@@ -8,22 +8,46 @@ import com.nhom15.datxebackend.support.SupportService
 import com.nhom15.datxebackend.support.SupportTicket
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
-import org.mockito.ArgumentMatchers.any
-import org.mockito.Mockito.*
+import org.mockito.Mockito.mock
+import org.mockito.invocation.InvocationOnMock
+import org.mockito.stubbing.Answer
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.jdbc.core.JdbcTemplate
 import java.time.Instant
 import java.util.UUID
 
 class TicketServiceTests {
+    private var insertRows = 1
+    private var storedMessage: TicketMessageEntity? = null
+    private val jdbcCalls = mutableListOf<InvocationOnMock>()
+    private val published = mutableListOf<Any>()
+
+    // Kotlin non-null params + Mockito any()/eq() => null NPE / leftover matcher. Dùng defaultAnswer ghi nhận lời gọi.
     private val support = mock(SupportService::class.java)
     private val tickets = mock(SupportTicketRepository::class.java)
-    private val messages = mock(TicketMessageRepository::class.java)
-    private val jdbc = mock(JdbcTemplate::class.java)
-    private val events = mock(ApplicationEventPublisher::class.java)
-    private val service = TicketService(support, tickets, messages, jdbc, events)
+    private val messages = mock(TicketMessageRepository::class.java, Answer { invocation ->
+        when (invocation.method.name) {
+            "findByTicketIdAndClientRequestId" -> storedMessage
+            "findByTicketIdOrderByCreatedAtAscIdAsc" -> emptyList<TicketMessageEntity>()
+            else -> null
+        }
+    })
+    private val jdbc = mock(JdbcTemplate::class.java, Answer { invocation ->
+        jdbcCalls += invocation
+        if (invocation.isMessageInsert()) insertRows else 0
+    })
+    private val events = mock(ApplicationEventPublisher::class.java, Answer { invocation ->
+        invocation.arguments.firstOrNull()?.let { published += it }
+        null
+    })
+    private val service = TicketService(support, tickets, messages, jdbc, events, "cloudinary://key:secret@demo")
     private val customer = AuthUser(11, "customer", Role.CUSTOMER, "Khách", null, null, "ACTIVE")
     private val admin = customer.copy(id = 3, role = Role.ADMIN)
+
+    private fun InvocationOnMock.isMessageInsert(): Boolean =
+        method.name == "update" && (arguments.firstOrNull() as? String)?.contains("INSERT INTO support_ticket_messages") == true
+
+    private fun messageInserts() = jdbcCalls.filter { it.isMessageInsert() }
 
     private fun entity(status: TicketStatus = TicketStatus.OPEN, handledBy: Long? = null) = SupportTicketEntity(
         ownerId = 11,
@@ -42,76 +66,93 @@ class TicketServiceTests {
         ownerId = 11, ownerRole = "CUSTOMER",
     )
 
+    private fun persisted(
+        ticketId: Long = 42,
+        senderId: Long = 11,
+        role: TicketSenderRole = TicketSenderRole.CUSTOMER,
+        body: String,
+        imageUrl: String? = null,
+        key: UUID = UUID.randomUUID(),
+        id: Long = 1,
+    ) = TicketMessageEntity(ticketId, senderId, role, body, imageUrl, key).apply { this.id = id }
+
+    private fun stubInsert(message: TicketMessageEntity, rows: Int = 1) {
+        insertRows = rows
+        storedMessage = message
+    }
+
     @Test fun `user reply reopens ticket and frees the admin claim`() {
-        `when`(support.detail(customer, 42)).thenReturn(legacyTicket())
-        `when`(messages.save(any(TicketMessageEntity::class.java))).thenAnswer {
-            (it.arguments[0] as TicketMessageEntity).apply { id = 1 }
-        }
+        org.mockito.Mockito.`when`(support.detail(customer, 42)).thenReturn(legacyTicket())
+        val message = persisted(body = "Cần hỗ trợ thêm")
+        stubInsert(message)
 
-        val message = service.sendUserMessage(customer, 42, SendTicketMessageRequest("Cần hỗ trợ thêm"))
+        val result = service.sendUserMessage(
+            customer, 42, SendTicketMessageRequest("Cần hỗ trợ thêm", clientRequestId = message.clientRequestId),
+        )
 
-        assertEquals(TicketSenderRole.CUSTOMER, message.senderRole)
-        assertEquals("Cần hỗ trợ thêm", message.body)
-        verify(messages).save(any(TicketMessageEntity::class.java))
+        assertEquals(TicketSenderRole.CUSTOMER, result.senderRole)
+        assertEquals("Cần hỗ trợ thêm", result.body)
+        assertEquals(1, messageInserts().size)
     }
 
     @Test fun `admin reply updates status and publishes the push event`() {
         val ticket = entity()
-        `when`(tickets.findForUpdate(42)).thenReturn(ticket)
-        `when`(messages.save(any(TicketMessageEntity::class.java))).thenAnswer {
-            (it.arguments[0] as TicketMessageEntity).apply { id = 2 }
-        }
+        org.mockito.Mockito.`when`(tickets.findForUpdate(42)).thenReturn(ticket)
+        val message = persisted(senderId = 3, role = TicketSenderRole.ADMIN, body = "Đã xử lý yêu cầu")
+        stubInsert(message)
 
-        val message = service.sendAdminMessage(
-            admin, 42, SendTicketMessageRequest("Đã xử lý yêu cầu", TicketStatus.WAITING_FOR_USER),
+        val result = service.sendAdminMessage(
+            admin, 42,
+            SendTicketMessageRequest("Đã xử lý yêu cầu", TicketStatus.WAITING_FOR_USER, clientRequestId = message.clientRequestId),
         )
 
-        assertEquals(TicketSenderRole.ADMIN, message.senderRole)
+        assertEquals(TicketSenderRole.ADMIN, result.senderRole)
         assertEquals(TicketStatus.WAITING_FOR_USER, ticket.status)
         assertEquals(3L, ticket.handledBy)
         assertEquals("Đã xử lý yêu cầu", ticket.response)
-        verify(events).publishEvent(any(TicketReplied::class.java))
+        assertTrue(published.any { it is TicketReplied })
     }
 
     @Test fun `another admin cannot reply while the ticket is in progress`() {
-        `when`(tickets.findForUpdate(42)).thenReturn(entity(TicketStatus.IN_PROGRESS, handledBy = 99))
+        org.mockito.Mockito.`when`(tickets.findForUpdate(42)).thenReturn(entity(TicketStatus.IN_PROGRESS, handledBy = 99))
 
         assertThrows(ConflictException::class.java) {
             service.sendAdminMessage(admin, 42, SendTicketMessageRequest("Tôi chen vào"))
         }
-        verify(messages, never()).save(any(TicketMessageEntity::class.java))
+        assertTrue(messageInserts().isEmpty())
     }
 
     @Test fun `image-only message is accepted and stores the image url`() {
-        `when`(support.detail(customer, 42)).thenReturn(legacyTicket())
-        `when`(messages.save(any(TicketMessageEntity::class.java))).thenAnswer {
-            (it.arguments[0] as TicketMessageEntity).apply { id = 3 }
-        }
+        org.mockito.Mockito.`when`(support.detail(customer, 42)).thenReturn(legacyTicket())
         val url = "https://res.cloudinary.com/demo/image/upload/v1/app_dat_xe/customer/11/photo.jpg"
+        val message = persisted(body = "", imageUrl = url)
+        stubInsert(message)
 
-        val message = service.sendUserMessage(customer, 42, SendTicketMessageRequest("", imageUrl = url))
+        val result = service.sendUserMessage(
+            customer, 42, SendTicketMessageRequest("", imageUrl = url, clientRequestId = message.clientRequestId),
+        )
 
-        assertEquals("", message.body)
-        assertEquals(url, message.imageUrl)
-        verify(messages).save(any(TicketMessageEntity::class.java))
+        assertEquals("", result.body)
+        assertEquals(url, result.imageUrl)
+        assertEquals(1, messageInserts().size)
     }
 
     @Test fun `image from another account is rejected`() {
-        `when`(support.detail(customer, 42)).thenReturn(legacyTicket())
+        org.mockito.Mockito.`when`(support.detail(customer, 42)).thenReturn(legacyTicket())
         val foreign = "https://res.cloudinary.com/demo/image/upload/v1/app_dat_xe/customer/99/photo.jpg"
 
         assertThrows(BadRequestException::class.java) {
             service.sendUserMessage(customer, 42, SendTicketMessageRequest("", imageUrl = foreign))
         }
-        verify(messages, never()).save(any(TicketMessageEntity::class.java))
+        assertTrue(messageInserts().isEmpty())
     }
 
     @Test fun `empty message is rejected before writing`() {
-        `when`(support.detail(customer, 42)).thenReturn(legacyTicket())
+        org.mockito.Mockito.`when`(support.detail(customer, 42)).thenReturn(legacyTicket())
 
         assertThrows(BadRequestException::class.java) {
             service.sendUserMessage(customer, 42, SendTicketMessageRequest("   "))
         }
-        verify(messages, never()).save(any(TicketMessageEntity::class.java))
+        assertTrue(messageInserts().isEmpty())
     }
 }

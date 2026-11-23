@@ -12,7 +12,9 @@ data class UpdatePricingRuleRequest(
     @field:PositiveOrZero
     val perKm: Long,
 
+    // No wait telemetry exists yet; accepting a non-zero rate would store a fee we never bill.
     @field:PositiveOrZero
+    @field:Max(value = 0, message = "perMinuteWaiting chưa được hỗ trợ; phải bằng 0")
     val perMinuteWaiting: Long,
 
     @field:Min(0)

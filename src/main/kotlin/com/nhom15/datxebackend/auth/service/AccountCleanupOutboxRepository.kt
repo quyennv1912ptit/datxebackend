@@ -11,12 +11,25 @@ data class AccountCleanupTask(
     val ownerRole: String,
     val ownerId: Long,
     val cloudinaryPublicIds: List<String>,
+    /** Locally encrypted eKYC capture files, decoded from the namespaced outbox entries. */
+    val verificationStorageKeys: List<String> = emptyList(),
 )
 
 @Repository
 class AccountCleanupOutboxRepository(private val jdbcTemplate: JdbcTemplate) {
+    /**
+     * No migration is owned here, so local storage keys share the existing text[] column.
+     * The prefix cannot collide with a Cloudinary public id (those always start with a folder
+     * such as `app_dat_xe/` or `datxe/`).
+     */
     @Transactional
-    fun enqueue(firebaseUid: String, ownerRole: String, ownerId: Long, publicIds: List<String>) {
+    fun enqueue(
+        firebaseUid: String,
+        ownerRole: String,
+        ownerId: Long,
+        publicIds: List<String>,
+        verificationStorageKeys: List<String> = emptyList(),
+    ) {
         jdbcTemplate.execute(ConnectionCallback<Int> { connection ->
             connection.prepareStatement(
                 """
@@ -28,7 +41,10 @@ class AccountCleanupOutboxRepository(private val jdbcTemplate: JdbcTemplate) {
                 statement.setString(1, firebaseUid)
                 statement.setString(2, ownerRole)
                 statement.setLong(3, ownerId)
-                statement.setArray(4, connection.createArrayOf("text", publicIds.filter(String::isNotBlank).distinct().toTypedArray()))
+                val encoded = publicIds.filter(String::isNotBlank).distinct() +
+                    verificationStorageKeys.filter(String::isNotBlank).distinct()
+                        .map(::encodeVerificationStorageKey)
+                statement.setArray(4, connection.createArrayOf("text", encoded.distinct().toTypedArray()))
                 statement.executeUpdate()
             }
         })
@@ -63,7 +79,9 @@ class AccountCleanupOutboxRepository(private val jdbcTemplate: JdbcTemplate) {
                 firebaseUid = row.getString("firebase_uid"),
                 ownerRole = row.getString("owner_role"),
                 ownerId = row.getLong("owner_id"),
-                cloudinaryPublicIds = ids,
+                cloudinaryPublicIds = ids.filterNot { it.startsWith(VERIFICATION_STORAGE_PREFIX) },
+                verificationStorageKeys = ids.filter { it.startsWith(VERIFICATION_STORAGE_PREFIX) }
+                    .map { it.removePrefix(VERIFICATION_STORAGE_PREFIX) },
             )
         },
         limit,
@@ -90,5 +108,11 @@ class AccountCleanupOutboxRepository(private val jdbcTemplate: JdbcTemplate) {
             error.take(4_000),
             id,
         )
+    }
+
+    companion object {
+        const val VERIFICATION_STORAGE_PREFIX = "verification-storage:"
+
+        fun encodeVerificationStorageKey(storageKey: String): String = "$VERIFICATION_STORAGE_PREFIX$storageKey"
     }
 }

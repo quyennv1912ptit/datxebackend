@@ -3,6 +3,7 @@ package com.nhom15.datxebackend.payment.controller
 import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
 import com.nhom15.datxebackend.common.api.ApiResponse
 import com.nhom15.datxebackend.common.api.PageResponse
+import com.nhom15.datxebackend.common.exception.BadRequestException
 import com.nhom15.datxebackend.common.security.*
 import com.nhom15.datxebackend.payment.entity.*
 import com.nhom15.datxebackend.payment.dto.*
@@ -25,6 +26,7 @@ data class TopUpBody(
     val amount: Long,
     @param:JsonAlias("user_type") val userType: WalletOwner =
         if (walletType == WalletType.CUSTOMER) WalletOwner.CUSTOMER else WalletOwner.DRIVER,
+    @param:JsonAlias("request_key") val requestKey: String? = null,
 )
 
 @RestController
@@ -63,10 +65,36 @@ class AdminWithdrawalController(private val service: WithdrawalService) {
 @ConditionalOnProperty(name = ["wallet.mock-topup-enabled"], havingValue = "true")
 @RequestMapping("/api/mock/wallet")
 @PreAuthorize("hasRole('ADMIN')")
-class MockWalletController(private val service: WalletService) {
+class MockWalletController(
+    private val driverMockTopUps: DriverMockTopUpService,
+    private val customerMockTopUps: CustomerMockTopUpService,
+) {
+    /** Đi qua receipt (owner_id, request_key) của từng service để retry không cộng tiền lần hai. */
     @PostMapping("/top-up")
-    fun topUp(@Valid @RequestBody body: TopUpBody) =
-        ApiResponse.ok(service.topUp(body.userId, body.userType, body.walletType, body.amount).toDto())
+    fun topUp(
+        @RequestHeader(value = "Idempotency-Key", required = false) idempotencyKey: String?,
+        @Valid @RequestBody body: TopUpBody,
+    ): ApiResponse<Unit> {
+        val key = idempotencyKey?.takeIf(String::isNotBlank) ?: body.requestKey
+        if (key.isNullOrBlank()) {
+            throw BadRequestException(message = "Idempotency-Key hoặc request_key là bắt buộc")
+        }
+        when (body.walletType) {
+            WalletType.CUSTOMER -> {
+                if (body.userType != WalletOwner.CUSTOMER) {
+                    throw BadRequestException(message = "user_type phải là CUSTOMER khi wallet_type là CUSTOMER")
+                }
+                customerMockTopUps.topUpForOwner(body.userId, body.amount, key)
+            }
+            WalletType.CREDIT, WalletType.CASH -> {
+                if (body.userType != WalletOwner.DRIVER) {
+                    throw BadRequestException(message = "user_type phải là DRIVER khi wallet_type là CREDIT hoặc CASH")
+                }
+                driverMockTopUps.topUpForOwner(body.userId, body.amount, key, body.walletType)
+            }
+        }
+        return ApiResponse.ok()
+    }
 }
 
 @RestController

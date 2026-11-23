@@ -229,7 +229,7 @@ Người gọi phải là khách hoặc tài xế của chuyến; người ngoà
 | GET | `/swagger-ui.html`, `/swagger-ui/**` | Công khai | Swagger UI. |
 | GET | `/v3/api-docs/**` | Công khai | OpenAPI document. |
 
-Ở profile production (`SPRING_PROFILES_ACTIVE=prod`), Swagger UI và OpenAPI bị tắt. Health endpoint vẫn công khai nhưng chỉ trả trạng thái, không trả chi tiết component.
+Ở profile production (`SPRING_PROFILES_ACTIVE=production`, giá trị được script deploy cố định), Swagger UI và OpenAPI bị tắt. Health endpoint vẫn công khai nhưng chỉ trả trạng thái, không trả chi tiết component.
 
 ## STOMP / WebSocket
 

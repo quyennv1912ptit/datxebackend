@@ -9,6 +9,7 @@ import com.google.firebase.messaging.Notification
 import com.nhom15.datxebackend.common.websocket.PayloadType
 import com.nhom15.datxebackend.common.websocket.WsEnvelope
 import com.nhom15.datxebackend.notification.api.Recipient
+import com.nhom15.datxebackend.notification.dto.NotificationPayload
 import com.nhom15.datxebackend.notification.dto.RideOfferPayload
 
 /** Notification+data lets Android/APNs display alerts without waiting for background JS. */
@@ -19,8 +20,13 @@ object FcmMessageFactory {
         val ttl = deadline - now
         if (ttl <= 0) return null
         val channel = if (offer) "datxe-offers-v1" else "datxe-updates-v1"
+        // Payload có localized title/body (rút tiền, vé, đánh giá, ticket...) thì dùng nguyên chuỗi đó
+        // trên lock-screen. Payload chỉ có default type.name thì giữ copy generic tiếng Việt.
+        val localized = envelope.payload as? NotificationPayload
+        // Payload có thể là mock/không khai báo type: vẫn ưu tiên localized copy thật, nhưng không NPE.
+        val localizedTitle = localized?.let { p -> p.type?.name?.let { name -> p.title.takeIf { it != name } } }
+        val localizedBody = localized?.let { p -> p.type?.name?.let { name -> p.body.takeIf { it != name } } }
         val title = when (envelope.type) {
-            PayloadType.WITHDRAWAL_REVIEWED, PayloadType.PAYMENT_UPDATED, PayloadType.TICKET_REPLY -> (envelope.payload as? com.nhom15.datxebackend.notification.dto.NotificationPayload)?.title ?: "Có cập nhật mới"
             PayloadType.RIDE_OFFER -> "Có yêu cầu chuyến mới"
             PayloadType.CHAT_MESSAGE -> "Có tin nhắn mới"
             PayloadType.RIDE_ASSIGNED -> "Đã có tài xế nhận chuyến"
@@ -32,12 +38,14 @@ object FcmMessageFactory {
             PayloadType.HANDOVER_CONFIRMED -> "Biên bản đã được xác nhận"
             PayloadType.DRIVER_VERIFICATION_UPDATED -> "Hồ sơ tài xế có cập nhật"
             PayloadType.DRIVER_FORCE_OFFLINE -> "Đã tạm ngừng nhận chuyến"
-            else -> "Cập nhật chuyến đi"
+            else -> localizedTitle ?: "Cập nhật chuyến đi"
         }
-        val body = if (envelope.type in setOf(PayloadType.WITHDRAWAL_REVIEWED, PayloadType.PAYMENT_UPDATED, PayloadType.TICKET_REPLY))
-            (envelope.payload as? com.nhom15.datxebackend.notification.dto.NotificationPayload)?.body ?: "Mở ứng dụng để xem kết quả rút tiền."
-            else if (offer) "Mở ứng dụng để xem và nhận chuyến trước khi hết hạn."
-            else "Mở ứng dụng để xem thông tin mới nhất."
+        val body = when {
+            offer -> "Mở ứng dụng để xem và nhận chuyến trước khi hết hạn."
+            envelope.type in VISIBLE_RESULT_TYPES -> localizedBody ?: if (envelope.type == PayloadType.WITHDRAWAL_REVIEWED)
+                "Mở ứng dụng để xem kết quả rút tiền." else "Mở ứng dụng để xem kết quả."
+            else -> localizedBody ?: "Mở ứng dụng để xem thông tin mới nhất."
+        }
         val androidNotification = AndroidNotification.builder()
             .setChannelId(channel)
             .setTag(envelope.messageId)
@@ -61,4 +69,13 @@ object FcmMessageFactory {
                 .setAps(Aps.builder().setSound("default").setContentAvailable(true).build()).build())
             .build()
     }
+
+    private val VISIBLE_RESULT_TYPES = setOf(
+        PayloadType.WITHDRAWAL_REVIEWED,
+        PayloadType.PAYMENT_UPDATED,
+        PayloadType.TICKET_REPLY,
+        PayloadType.VOUCHER_GRANTED,
+        PayloadType.VOUCHER_CAMPAIGN,
+        PayloadType.RATING_RECEIVED,
+    )
 }

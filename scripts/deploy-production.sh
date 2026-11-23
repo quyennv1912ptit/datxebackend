@@ -24,6 +24,52 @@ printf '%s\n' "$ENV_FILE" > "$DATXE_DEPLOY_ENV_FILE"
 printf '%s\n' "$FIREBASE_JSON" > "$DATXE_FIREBASE_FILE"
 unset ENV_FILE FIREBASE_JSON
 
+# Only the production profiles may load the production controller set. A dev/test/demo
+# profile enables mock top-up, and Spring can be pointed at one through profile groups,
+# indexed includes, SPRING_APPLICATION_JSON, external config or JVM options. Reject every
+# profile-shaping key instead of trusting just SPRING_PROFILES_ACTIVE.
+python3 - "$DATXE_DEPLOY_ENV_FILE" <<'PY' || fail 'ENV_FILE may only declare prod/production Spring profiles and no config overrides.'
+import sys
+
+active_values = []
+include_values = []
+with open(sys.argv[1], encoding="utf-8") as env_file:
+    for line in env_file:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().upper().replace(".", "_").replace("-", "_").replace("[", "_").replace("]", "")
+        value = value.strip().strip('"').strip("'")
+        if key == "SPRING_PROFILES_ACTIVE":
+            active_values.append(value)
+        elif key == "SPRING_PROFILES_INCLUDE":
+            include_values.append(value)
+        elif (key.startswith("SPRING_PROFILES_INCLUDE_") or key.startswith("SPRING_PROFILES_GROUP_")
+              or key.startswith("SPRING_CONFIG_") or key in {
+                  "SPRING_APPLICATION_JSON", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS",
+                  "JAVA_OPTS", "_JAVA_OPTIONS"
+              }):
+            sys.exit(1)
+        elif key == "WALLET_MOCK_TOPUP_ENABLED" and value.lower() in {"true", "1", "yes", "on"}:
+            sys.exit(1)
+
+def split_profiles(text):
+    return {p.strip().lower() for p in text.replace(",", " ").split() if p.strip()}
+
+active = set().union(*(split_profiles(v) for v in active_values)) if active_values else set()
+included = set().union(*(split_profiles(v) for v in include_values)) if include_values else set()
+allowed = {"prod", "production"}
+# Multiple ACTIVE assignments mean different precedence for Spring and Compose; reject them.
+# An absent ACTIVE is fine: the production Compose override pins it to "production".
+if len(active_values) > 1 or not active <= allowed or not included <= allowed:
+    sys.exit(1)
+PY
+
 python3 - "$DATXE_FIREBASE_FILE" <<'PY' || fail 'Invalid Firebase service-account JSON.'
 import json
 import sys
@@ -73,6 +119,52 @@ compose=(docker compose --project-name "$project" --env-file "$DATXE_DEPLOY_ENV_
 if ! "${compose[@]}" config --quiet 2>/dev/null; then
   fail 'Compose validation failed. Verify release configuration without printing secrets.'
 fi
+
+# The raw env file is not the resolved model: shell variables win over --env-file during
+# interpolation, and Compose merges env_file into the container environment. Validate the
+# final backend environment so neither vector can activate a mock-enabled profile.
+"${compose[@]}" config --format json 2>/dev/null | python3 -c '
+import json
+import sys
+
+environment = json.load(sys.stdin)["services"]["backend"]["environment"]
+
+def normalized(key):
+    return key.strip().upper().replace(".", "_").replace("-", "_").replace("[", "_").replace("]", "")
+
+blocked = {
+    "SPRING_APPLICATION_JSON", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS",
+    "JAVA_OPTS", "_JAVA_OPTIONS",
+}
+blocked_prefixes = (
+    "SPRING_PROFILES_INCLUDE_", "SPRING_PROFILES_GROUP", "SPRING_CONFIG_",
+)
+allowed = {"prod", "production"}
+truthy = {"true", "1", "yes", "on"}
+profiles = set()
+for key, value in environment.items():
+    name = normalized(key)
+    if name in blocked or name.startswith(blocked_prefixes):
+        sys.exit(1)
+    if name == "WALLET_MOCK_TOPUP_ENABLED" and str(value or "").strip().lower() in truthy:
+        sys.exit(1)
+    if name == "SPRING_PROFILES_ACTIVE":
+        profiles = {
+            profile.strip().lower()
+            for profile in str(value or "").replace(",", " ").split()
+            if profile.strip()
+        }
+    elif name == "SPRING_PROFILES_INCLUDE":
+        included = {
+            profile.strip().lower()
+            for profile in str(value or "").replace(",", " ").split()
+            if profile.strip()
+        }
+        if not included <= allowed:
+            sys.exit(1)
+if not profiles or not profiles <= allowed:
+    sys.exit(1)
+' || fail 'Resolved production configuration may not activate a non-production profile.'
 
 capture_root=$("${compose[@]}" config --format json 2>/dev/null | python3 -c '
 import json

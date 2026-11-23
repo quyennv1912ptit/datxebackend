@@ -54,6 +54,7 @@ class DriverOnlineVehicleTypeTests {
             admins,
             Mockito.mock(DeviceTokenService::class.java),
             cache,
+            Mockito.mock(org.springframework.jdbc.core.JdbcTemplate::class.java),
         )
 
         val driver = Driver().apply {

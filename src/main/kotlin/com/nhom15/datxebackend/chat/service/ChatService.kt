@@ -10,6 +10,7 @@ import com.nhom15.datxebackend.chat.dto.MessagePage
 import com.nhom15.datxebackend.chat.dto.SendMessageRequest
 import com.nhom15.datxebackend.chat.entity.ChatMessage
 import com.nhom15.datxebackend.chat.entity.ChatMessageType
+import com.nhom15.datxebackend.chat.entity.Conversation
 import com.nhom15.datxebackend.chat.event.ChatMessageCreated
 import com.nhom15.datxebackend.chat.event.ChatMessagesRead
 import com.nhom15.datxebackend.chat.repository.ChatMessageRepository
@@ -59,8 +60,14 @@ class ChatService(
     fun send(rideId: Long, actor: AuthUser, request: SendMessageRequest): ChatSendResult {
         val context = conversationService.requireParticipant(rideId, actor, lockRide = true)
         val conversation = conversationService.requireOpen(context)
+        // V17 preserves one thread per driver. A redispatched driver keeps read access to
+        // his own history, but the customer only reads the current assignment's thread:
+        // letting the former driver write there creates messages nobody will ever see.
+        if (actor.role == Role.DRIVER && context.ride.driverId != conversation.driverId) {
+            throw ForbiddenException(message = "Cuộc hội thoại đã kết thúc khi chuyến xe được giao lại")
+        }
         rateLimiter.check(actor)
-        val (content, attachmentUrl, publicId) = validateMessage(rideId, request)
+        val (content, attachmentUrl, publicId) = validateMessage(conversation, actor, request)
 
         messageRepository.findByConversationIdAndClientMessageId(conversation.id, request.clientMessageId)?.let {
             return ChatSendResult(ChatMessageDto.from(it), duplicated = true)
@@ -107,8 +114,21 @@ class ChatService(
         size: Int,
     ): MessagePage {
         val context = conversationService.requireParticipant(rideId, actor)
-        val conversation = context.conversation ?: return MessagePage(rideId, emptyList(), false)
-        return readPage(rideId, conversation.id, beforeId, afterId, size)
+        val ownConversation = context.conversation ?: return MessagePage(rideId, emptyList(), false)
+        // V17 keeps one thread per driver. A message a customer sent just before a redispatch
+        // can land in the previous thread, so the customer must see the ride-wide timeline;
+        // the current driver sees its customer messages without other drivers' replies. A
+        // former driver is confined to his own preserved thread and has no cross-thread view.
+        val threads = conversationRepository.findAllByRideIdOrderByIdDesc(rideId)
+            .takeIf { it.isNotEmpty() }
+            ?: return MessagePage(rideId, emptyList(), false)
+        val (conversationIds, me) = when {
+            actor.role == Role.DRIVER && context.ride.driverId != ownConversation.driverId ->
+                listOf(ownConversation.id) to ""
+            actor.role == Role.DRIVER -> threads.map(Conversation::id) to Role.DRIVER.name
+            else -> threads.map(Conversation::id) to ""
+        }
+        return readPage(rideId, conversationIds, ownConversation.id, me, beforeId, afterId, size)
     }
 
     @Transactional(readOnly = true)
@@ -121,11 +141,15 @@ class ChatService(
     ): MessagePage {
         if (actor.role != Role.ADMIN) throw ForbiddenException(message = "Chỉ admin được xem hội thoại")
         if (rideId <= 0) throw BadRequestException(message = "rideId phải lớn hơn 0")
-        val ride = rideRepository.findById(rideId).orElseThrow { NotFoundException(ErrorCode.RIDE_NOT_FOUND) }
-        val conversation = (if (ride.driverId != null) conversationService.forAssignment(ride)
-            else conversationRepository.findFirstByRideIdOrderByIdDesc(rideId))
+        rideRepository.findById(rideId).orElseThrow { NotFoundException(ErrorCode.RIDE_NOT_FOUND) }
+        // V17 preserves a thread per driver on a redispatched ride. Merge all of
+        // them globally by message id so admin never loses the old driver's page.
+        val conversationIds = conversationRepository.findAllByRideIdOrderByIdDesc(rideId)
+            .takeIf { it.isNotEmpty() }
+            ?.map(Conversation::id)
             ?: return MessagePage(rideId, emptyList(), false)
-        return readPage(rideId, conversation.id, beforeId, afterId, size)
+        // Admin sees every thread; ownCid is irrelevant because me = "" disables the filter.
+        return readPage(rideId, conversationIds, -1L, "", beforeId, afterId, size)
     }
 
     @Transactional
@@ -133,12 +157,34 @@ class ChatService(
         if (upToMessageId <= 0) throw BadRequestException(message = "upToMessageId phải lớn hơn 0")
         val context = conversationService.requireParticipant(rideId, actor)
         val conversation = context.conversation ?: return MarkReadResponse(rideId, 0)
-        val marked = messageRepository.markRead(conversation.id, actor.role.name, upToMessageId, clock.instant())
-        if (marked > 0) {
+        // The customer reads the ride-wide timeline, so his receipt must cover every
+        // preserved thread. Drivers keep receipts scoped to their own thread.
+        val conversationIds = if (actor.role == Role.CUSTOMER) {
+            conversationRepository.findAllByRideIdOrderByIdDesc(rideId).map(Conversation::id)
+        } else {
+            listOf(conversation.id)
+        }
+        var marked = 0
+        var highestAcknowledged = 0L
+        conversationIds.forEach { conversationId ->
+            // A client may hold an id from a different ride/thread. Never let it become
+            // a read receipt for this thread: bound it by the thread's own newest id.
+            // Treat a non-positive max (e.g. Mockito's 0L default) as unknown.
+            val maxIdInConversation = messageRepository.findMaxIdInConversation(conversationId)
+                ?.takeIf { it > 0 }
+            val effectiveUpTo = maxIdInConversation?.let { minOf(upToMessageId, it) } ?: upToMessageId
+            marked += messageRepository.markRead(conversationId, actor.role.name, effectiveUpTo, clock.instant())
+            // Without a real thread max there is no trustworthy id to acknowledge: a
+            // client-supplied id may come from another ride. Never publish it as a receipt.
+            if (maxIdInConversation != null) {
+                highestAcknowledged = maxOf(highestAcknowledged, effectiveUpTo)
+            }
+        }
+        if (marked > 0 && highestAcknowledged > 0) {
             eventPublisher.publishEvent(
                 ChatMessagesRead(
                     rideId = rideId,
-                    upToMessageId = upToMessageId,
+                    upToMessageId = highestAcknowledged,
                     recipient = conversationService.otherParty(conversation, actor),
                 ),
             )
@@ -149,18 +195,31 @@ class ChatService(
     @Transactional(readOnly = true)
     fun unreadCount(ride: Ride, actor: AuthUser): Long {
         if (actor.role == Role.ADMIN) return 0
-        val conversation = conversationService.forAssignment(ride) ?: return 0
-        return messageRepository.countUnreadFor(conversation.id, actor.role.name)
+        val conversation = conversationService.forActor(ride, actor) ?: return 0
+        if (actor.role != Role.CUSTOMER) {
+            return messageRepository.countUnreadFor(conversation.id, actor.role.name)
+        }
+        // Customer history is ride-wide after a redispatch; count every preserved thread.
+        return conversationRepository.findAllByRideIdOrderByIdDesc(ride.id)
+            .sumOf { messageRepository.countUnreadFor(it.id, actor.role.name) }
     }
 
     @Transactional(readOnly = true)
     fun loadPushData(messageId: Long, rideId: Long): ChatPushData? {
         val message = messageRepository.findById(messageId).orElse(null) ?: return null
         val conversation = conversationRepository.findById(message.conversationId).orElse(null) ?: return null
-        if (conversation.rideId != rideId || rideRepository.findById(rideId).orElse(null)?.driverId != conversation.driverId) return null
+        val ride = rideRepository.findById(rideId).orElse(null) ?: return null
+        if (conversation.rideId != rideId) return null
         val currentRecipient = when (message.senderRole) {
-            Role.CUSTOMER.name -> Recipient.Driver(conversation.driverId)
-            Role.DRIVER.name -> Recipient.Customer(conversation.customerId)
+            // A customer's message can land in the previous thread if a redispatch committed
+            // just after send(); notify the driver actually assigned now.
+            Role.CUSTOMER.name -> ride.driverId?.let { Recipient.Driver(it) } ?: return null
+            // A former driver's preserved-thread message must never reach the new assignment.
+            Role.DRIVER.name -> if (ride.driverId == conversation.driverId) {
+                Recipient.Customer(conversation.customerId)
+            } else {
+                return null
+            }
             else -> return null
         }
         val senderName = jdbcTemplate.query(
@@ -201,7 +260,9 @@ class ChatService(
 
     private fun readPage(
         rideId: Long,
-        conversationId: Long,
+        conversationIds: Collection<Long>,
+        ownConversationId: Long,
+        me: String,
         beforeId: Long?,
         afterId: Long?,
         size: Int,
@@ -212,19 +273,32 @@ class ChatService(
             throw BadRequestException(message = "beforeId và afterId phải lớn hơn 0")
         }
         val pageable = PageRequest.of(0, size + 1)
+        // Visibility is applied by the query BEFORE paging. Filtering after a per-thread
+        // PageRequest would drop excluded rows first and make hasMore false / hide older
+        // messages that sit just beyond the truncated page (F1). Chat message ids are
+        // globally increasing, so one ride-wide query yields a correct merged page.
         val rows = when {
-            afterId != null -> messageRepository.after(conversationId, afterId, pageable)
-            beforeId != null -> messageRepository.before(conversationId, beforeId, pageable)
-            else -> messageRepository.latest(conversationId, pageable)
+            afterId != null -> messageRepository.afterVisible(
+                conversationIds, ownConversationId, me, afterId, pageable,
+            )
+            beforeId != null -> messageRepository.beforeVisible(
+                conversationIds, ownConversationId, me, beforeId, pageable,
+            )
+            else -> messageRepository.latestVisible(conversationIds, ownConversationId, me, pageable)
         }
+        val ordered = if (afterId != null) rows.sortedBy(ChatMessage::id) else rows.sortedByDescending(ChatMessage::id)
         return MessagePage(
             rideId = rideId,
-            messages = rows.take(size).map(ChatMessageDto::from),
+            messages = ordered.take(size).map(ChatMessageDto::from),
             hasMore = rows.size > size,
         )
     }
 
-    private fun validateMessage(rideId: Long, request: SendMessageRequest): Triple<String, String?, String?> {
+    private fun validateMessage(
+        conversation: Conversation,
+        actor: AuthUser,
+        request: SendMessageRequest,
+    ): Triple<String, String?, String?> {
         val text = request.content?.trim()?.takeIf(String::isNotEmpty)
         return when (request.messageType) {
             ChatMessageType.TEXT -> {
@@ -240,7 +314,13 @@ class ChatService(
                     ?: throw BadRequestException(message = "Tin nhắn IMAGE cần attachmentUrl")
                 val publicId = request.attachmentPublicId?.trim()?.takeIf(String::isNotEmpty)
                     ?: throw BadRequestException(message = "Tin nhắn IMAGE cần attachmentPublicId")
-                cloudinaryAssetService.requireOwnedAsset(publicId, "datxe/chat/$rideId/")
+                // Uploads must be scoped to the thread and the sender. A ride-scoped
+                // folder alone lets another driver on a redispatched ride attach
+                // his image to this thread (V17 keeps multiple threads per ride).
+                cloudinaryAssetService.requireOwnedAsset(
+                    publicId,
+                    "datxe/chat/${conversation.id}/${actor.role.name}/${actor.id}/",
+                )
                 cloudinaryAssetService.validateCloudinaryImage(url, publicId)
                 Triple(text.orEmpty(), url, publicId)
             }

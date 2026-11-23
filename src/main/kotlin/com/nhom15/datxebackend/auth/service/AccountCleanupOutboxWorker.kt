@@ -3,6 +3,7 @@ package com.nhom15.datxebackend.auth.service
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthException
 import com.nhom15.datxebackend.common.redis.RedisKeys
+import com.nhom15.datxebackend.driver.verification.DriverVerificationStorageService
 import com.nhom15.datxebackend.uploads.CloudinaryAssetService
 import org.slf4j.LoggerFactory
 import org.springframework.data.redis.core.StringRedisTemplate
@@ -15,6 +16,7 @@ class AccountCleanupOutboxWorker(
     private val firebaseAuth: FirebaseAuth,
     private val redisTemplate: StringRedisTemplate,
     private val cloudinaryAssetService: CloudinaryAssetService,
+    private val verificationStorage: DriverVerificationStorageService,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -24,6 +26,8 @@ class AccountCleanupOutboxWorker(
             try {
                 deleteFirebaseUser(task.firebaseUid)
                 task.cloudinaryPublicIds.forEach(cloudinaryAssetService::deleteNowOrThrow)
+                // Encrypted eKYC capture files outlive the DB rows; delete them after commit.
+                task.verificationStorageKeys.forEach(verificationStorage::deleteOrThrow)
                 if (task.ownerRole == "DRIVER") clearDriverPresence(task.ownerId)
                 else redisTemplate.delete(RedisKeys.customerActiveRide(task.ownerId.toString()))
                 outbox.markCompleted(task.id)

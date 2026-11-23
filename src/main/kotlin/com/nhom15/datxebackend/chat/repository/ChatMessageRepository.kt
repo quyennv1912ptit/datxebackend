@@ -12,22 +12,58 @@ import java.util.UUID
 interface ChatMessageRepository : JpaRepository<ChatMessage, Long> {
     fun findByConversationIdAndClientMessageId(conversationId: Long, clientMessageId: UUID): ChatMessage?
 
-    @Query("select m from ChatMessage m where m.conversationId = :cid order by m.id desc")
-    fun latest(@Param("cid") conversationId: Long, pageable: Pageable): List<ChatMessage>
+    /**
+     * Ride-wide read with the visibility rule applied by the database, before paging.
+     * A caller passes `me = ""` to see every message; a current driver passes "DRIVER"
+     * to see his own thread plus customer messages left in preserved threads, and a
+     * former driver is given only his own thread id.
+     */
+    @Query(
+        """select m from ChatMessage m
+           where m.conversationId in :cids
+             and (m.conversationId = :ownCid or :me = '' or m.senderRole <> :me)
+           order by m.id desc""",
+    )
+    fun latestVisible(
+        @Param("cids") conversationIds: Collection<Long>,
+        @Param("ownCid") ownConversationId: Long,
+        @Param("me") senderRole: String,
+        pageable: Pageable,
+    ): List<ChatMessage>
 
-    @Query("select m from ChatMessage m where m.conversationId = :cid and m.id < :before order by m.id desc")
-    fun before(
-        @Param("cid") conversationId: Long,
+    @Query(
+        """select m from ChatMessage m
+           where m.conversationId in :cids
+             and (m.conversationId = :ownCid or :me = '' or m.senderRole <> :me)
+             and m.id < :before
+           order by m.id desc""",
+    )
+    fun beforeVisible(
+        @Param("cids") conversationIds: Collection<Long>,
+        @Param("ownCid") ownConversationId: Long,
+        @Param("me") senderRole: String,
         @Param("before") beforeId: Long,
         pageable: Pageable,
     ): List<ChatMessage>
 
-    @Query("select m from ChatMessage m where m.conversationId = :cid and m.id > :after order by m.id asc")
-    fun after(
-        @Param("cid") conversationId: Long,
+    @Query(
+        """select m from ChatMessage m
+           where m.conversationId in :cids
+             and (m.conversationId = :ownCid or :me = '' or m.senderRole <> :me)
+             and m.id > :after
+           order by m.id asc""",
+    )
+    fun afterVisible(
+        @Param("cids") conversationIds: Collection<Long>,
+        @Param("ownCid") ownConversationId: Long,
+        @Param("me") senderRole: String,
         @Param("after") afterId: Long,
         pageable: Pageable,
     ): List<ChatMessage>
+
+    /** Newest message id that actually belongs to this thread; used to bound markRead. */
+    @Query("select max(m.id) from ChatMessage m where m.conversationId = :cid")
+    fun findMaxIdInConversation(@Param("cid") conversationId: Long): Long?
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(

@@ -11,12 +11,15 @@ import com.nhom15.datxebackend.support.CreateSupportTicket
 import com.nhom15.datxebackend.support.SupportImage
 import com.nhom15.datxebackend.support.SupportService
 import com.nhom15.datxebackend.support.SupportTicket
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import java.net.URI
 import java.sql.ResultSet
 import java.time.Instant
+import java.util.UUID
 
 @Service
 class TicketService(
@@ -25,6 +28,8 @@ class TicketService(
     private val messages: TicketMessageRepository,
     private val jdbc: JdbcTemplate,
     private val events: ApplicationEventPublisher,
+    /** cloudinary.url dạng cloudinary://key:secret@cloudName; giá trị mặc định chỉ dùng trong unit test. */
+    @Value("\${cloudinary.url:}") private val cloudinaryUrl: String = "",
 ) {
     @Transactional
     fun create(actor: AuthUser, request: CreateTicketRequest): TicketSummary {
@@ -63,7 +68,10 @@ class TicketService(
         support.detail(actor, id)
         val (body, imageUrl) = validateMessage(actor, request.body, request.imageUrl)
         val senderRole = if (actor.role == Role.DRIVER) TicketSenderRole.DRIVER else TicketSenderRole.CUSTOMER
-        val message = messages.save(TicketMessageEntity(id, actor.id, senderRole, body, imageUrl))
+        val (inserted, message) = writeMessage(
+            id, actor.id, senderRole, body, imageUrl, request.clientRequestId, null,
+        )
+        if (!inserted) return message.toDto()
         jdbc.update(
             """UPDATE support_tickets
                SET status = 'OPEN', handled_by = NULL,
@@ -106,7 +114,19 @@ class TicketService(
         if (status !in ADMIN_STATUSES) throw BadRequestException(message = "Trạng thái ticket không hợp lệ")
         val (body, imageUrl) = validateMessage(admin, request.body, request.imageUrl)
 
-        val message = messages.save(TicketMessageEntity(id, admin.id, TicketSenderRole.ADMIN, body, imageUrl))
+        // Retry cùng clientRequestId trả về message cũ: không đổi status, không gửi lại push.
+        val (inserted, message) = writeMessage(
+            id, admin.id, TicketSenderRole.ADMIN, body, imageUrl, request.clientRequestId, status,
+        )
+        if (!inserted) {
+            // Compare with the status recorded by the first write, not the current ticket
+            // status: a later message may legitimately have advanced the ticket since then.
+            // Legacy rows have no recorded intent and keep the permissive replay behaviour.
+            if (message.requestedStatus != null && message.requestedStatus != status) {
+                throw ConflictException(message = "Mã gửi tin nhắn đã được dùng với trạng thái khác. Vui lòng tải lại.")
+            }
+            return message.toDto()
+        }
         ticket.status = status
         ticket.handledBy = admin.id
         ticket.response = body // giữ cột response cũ cho màn admin/app cũ
@@ -183,6 +203,39 @@ class TicketService(
     private fun messageDtos(ticketId: Long): List<TicketMessageDto> =
         messages.findByTicketIdOrderByCreatedAtAscIdAsc(ticketId).map { it.toDto() }
 
+    /**
+     * Ghi timeline theo khoá idempotency (ticket_id, client_request_id). INSERT ... ON CONFLICT DO NOTHING
+     * chạy trong cùng transaction với việc cập nhật ticket; khi bị retry thì trả về row cũ và caller bỏ qua
+     * mọi side effect (đổi status, publish FCM).
+     */
+    private fun writeMessage(
+        ticketId: Long,
+        senderId: Long,
+        senderRole: TicketSenderRole,
+        body: String,
+        imageUrl: String?,
+        clientRequestId: UUID,
+        requestedStatus: TicketStatus?,
+    ): Pair<Boolean, TicketMessageEntity> {
+        val inserted = jdbc.update(
+            """INSERT INTO support_ticket_messages
+                    (ticket_id, sender_id, sender_role, body, image_url, client_request_id, requested_status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT (ticket_id, client_request_id) DO NOTHING""".trimIndent(),
+            ticketId, senderId, senderRole.name, body, imageUrl, clientRequestId,
+            requestedStatus?.name,
+        )
+        val message = messages.findByTicketIdAndClientRequestId(ticketId, clientRequestId)
+            ?: throw ConflictException(message = "Không tìm thấy tin nhắn đã lưu của mã gửi này")
+        if (inserted > 0) return true to message
+        if (message.senderId != senderId || message.senderRole != senderRole ||
+            message.body != body || message.imageUrl != imageUrl
+        ) {
+            throw ConflictException(message = "Mã gửi tin nhắn đã được dùng cho nội dung khác. Vui lòng tải lại.")
+        }
+        return false to message
+    }
+
     /** Một tin nhắn hợp lệ phải có text hoặc ảnh; nếu có ảnh, ảnh phải thuộc thư mục Cloudinary của chính người gửi. */
     private fun validateMessage(actor: AuthUser, body: String, imageUrl: String?): Pair<String, String?> {
         val text = body.trim()
@@ -193,16 +246,45 @@ class TicketService(
         if (text.length > 4_000) throw BadRequestException(message = "Nội dung tin nhắn tối đa 4000 ký tự")
         if (image != null) {
             if (image.length > 2_048) throw BadRequestException(message = "Đường dẫn ảnh quá dài")
-            val uri = runCatching { java.net.URI(image) }.getOrNull()
-            if (uri?.scheme != "https" || uri.host != "res.cloudinary.com") {
-                throw BadRequestException(message = "Ảnh phải được tải lên Cloudinary bằng API upload của hệ thống")
-            }
-            val folder = "/app_dat_xe/${actor.role.name.lowercase()}/${actor.id}/"
-            if (uri.path?.contains(folder) != true) {
-                throw BadRequestException(message = "Ảnh không thuộc tài khoản đang đăng nhập")
-            }
+            validateOwnedCloudinaryImage(actor, image)
         }
         return text to image
+    }
+
+    /**
+     * So khớp toàn bộ path: /{cloudName}/image/upload/v{n}/app_dat_xe/{role}/{actorId}/{file}.
+     * Không chấp nhận query/fragment, path traversal, cloud khác hoặc thư mục khác của cùng cloud.
+     */
+    private fun validateOwnedCloudinaryImage(actor: AuthUser, image: String) {
+        val uri = runCatching { URI(image) }.getOrNull()
+        val cloudName = configuredCloudName()
+        if (uri == null || uri.scheme != "https" || uri.host != "res.cloudinary.com" ||
+            uri.rawQuery != null || uri.rawFragment != null || cloudName.isNullOrBlank()
+        ) {
+            throw BadRequestException(message = "Ảnh phải được tải lên Cloudinary bằng API upload của hệ thống")
+        }
+        val path = uri.path.orEmpty().split('/').filter { it.isNotEmpty() }
+        if (path.any { it == "." || it == ".." || it.contains('\\') }) {
+            throw BadRequestException(message = "Đường dẫn ảnh không hợp lệ")
+        }
+        val expectedPrefix = listOf(
+            cloudName, "image", "upload",
+            "app_dat_xe", actor.role.name.lowercase(), actor.id.toString(),
+        )
+        val version = path.getOrNull(3).orEmpty()
+        if (path.size < expectedPrefix.size + 2 ||
+            !version.matches(Regex("v\\d+")) ||
+            path[0] != expectedPrefix[0] || path[1] != expectedPrefix[1] || path[2] != expectedPrefix[2] ||
+            path.drop(4).take(expectedPrefix.size - 3) != expectedPrefix.drop(3)
+        ) {
+            throw BadRequestException(message = "Ảnh không thuộc tài khoản đang đăng nhập")
+        }
+    }
+
+    private fun configuredCloudName(): String? {
+        val raw = cloudinaryUrl.trim()
+        val fromUrl = runCatching { URI(raw).host }.getOrNull()
+        return (fromUrl?.takeIf { it.isNotBlank() } ?: raw).takeIf { it.isNotBlank() }
     }
 
     private fun SupportTicket.toSummary() = TicketSummary(

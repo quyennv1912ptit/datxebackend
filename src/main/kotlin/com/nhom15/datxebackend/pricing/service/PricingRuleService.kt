@@ -179,8 +179,9 @@ class PricingRuleService(
         if (perKm < 0) {
             throw BadRequestException(message = "Giá mỗi km không được âm")
         }
-        if (perMinuteWaiting < 0) {
-            throw BadRequestException(message = "Giá mỗi phút chờ không được âm")
+        // No wait telemetry exists yet; a positive rate would be stored but never billed.
+        if (perMinuteWaiting != 0L) {
+            throw BadRequestException(message = "Giá mỗi phút chờ chưa được hỗ trợ; phải bằng 0")
         }
         if (returnFeeForDriver < 0) {
             throw BadRequestException(message = "Phí quay về cho tài xế không được âm")

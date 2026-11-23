@@ -44,7 +44,12 @@ class DriverPresenceService(
             NotFoundException(ErrorCode.USER_NOT_FOUND, "Không tìm thấy tài xế")
         }
 
-        if (driver.status == DriverStatus.BLOCKED) throw com.nhom15.datxebackend.payment.exception.CreditWalletBelowMinimumException()
+        if (driver.status == DriverStatus.BLOCKED) {
+            // The transaction will roll back, so Redis cleanup must happen now (not afterCommit).
+            runCatching { locationService.removeDriver(driverId) }
+                .onFailure { log.warn("Không xóa được tài xế bị khóa {} khỏi Redis", driverId, it) }
+            throw ForbiddenException(ErrorCode.ACCOUNT_LOCKED, "Tài khoản tài xế đã bị khóa")
+        }
         val firebaseUid = driver.firebaseUid
         if (online) {
             wallets.requireEligibleDriver(driverId)

@@ -72,4 +72,26 @@ class DriverBankProfileTests {
         verify(cloudinary).validateOwnedImage(Role.DRIVER, 7L, url, publicId)
         verify(cloudinary).deleteAfterCommit("app_dat_xe/driver/7/old")
     }
+
+    @Test fun `legacy avatar key outside the owner folder does not block an avatar change`() {
+        val driver = Driver().apply {
+            id = 7
+            firebaseUid = "driver-7"
+            avatarUrl = "https://res.cloudinary.com/demo/image/upload/v1/legacy/old-avatar"
+            avatarPublicId = "legacy/old-avatar"
+        }
+        val repo = mock(DriverRepository::class.java)
+        `when`(repo.findByIdForUpdate(7)).thenReturn(Optional.of(driver))
+        `when`(repo.save(any(Driver::class.java))).thenAnswer { it.arguments[0] }
+        val cloudinary = mock(CloudinaryAssetService::class.java)
+        val service = DriverProfileService(repo, mock(AuthenticatedUserCache::class.java), cloudinary)
+        val url = "https://res.cloudinary.com/demo/image/upload/v1/app_dat_xe/driver/7/new"
+        val publicId = "app_dat_xe/driver/7/new"
+
+        val result = service.updateAvatar(7, UpdateDriverAvatarRequest(url, publicId))
+
+        assertEquals(publicId, driver.avatarPublicId)
+        verify(cloudinary).validateOwnedImage(Role.DRIVER, 7L, url, publicId)
+        verify(cloudinary).deleteAfterCommit("legacy/old-avatar")
+    }
 }

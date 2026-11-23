@@ -1,5 +1,6 @@
 package com.nhom15.datxebackend.driver.verification
 
+import tools.jackson.databind.JsonNode
 import java.text.Normalizer
 import java.time.LocalDate
 import java.time.ZoneId
@@ -29,10 +30,23 @@ data class VerificationWarningDto(
     val blocksActivation: Boolean,
 )
 
+/** Normalized, persistable signal extracted from an eKYC face-comparison response. */
+data class FaceSignals(
+    val statuses: List<String>,
+    val quality: Map<String, String>,
+)
+
 object DriverVerificationWarnings {
     val ALL_SLOTS = setOf("cccd_front", "cccd_back", "gplx_front", "gplx_back", "selfie")
     val REQUIRED_SLOTS = listOf("cccd_front", "cccd_back", "gplx_front", "gplx_back", "selfie")
     val FACE_SLOTS = setOf("cccd_front", "gplx_front", "selfie")
+
+    /** Every comparison must report all three pairs; a partial response is never persisted. */
+    val FACE_EXPECTED_PAIRS = listOf(
+        "cccd_front" to "selfie",
+        "gplx_front" to "selfie",
+        "cccd_front" to "gplx_front",
+    )
 
     val LICENSE_CLASSES = setOf(
         "A1", "A2", "A3", "A4", "A",
@@ -142,6 +156,44 @@ object DriverVerificationWarnings {
         if (name == "DIACRITIC_MISMATCH" || name == "NAME_MISMATCH") list.add(name)
         if (dobMismatch) list.add("DOB_MISMATCH")
         return list
+    }
+
+    /**
+     * Normalizes the upstream face-comparison payload into the persisted snapshot fields.
+     * Fails closed when any expected pair is missing or has no status, so a partial
+     * response can never be mistaken for a completed comparison.
+     */
+    fun normalizedFaceSignals(result: JsonNode): FaceSignals {
+        val statusByPair = linkedMapOf<Pair<String, String>, String>()
+        val pairs = result.path("pairs")
+        if (pairs.isArray) {
+            for (index in 0 until pairs.size()) {
+                val pair = pairs.get(index)
+                val left = pair.path("left").asString("").trim()
+                val right = pair.path("right").asString("").trim()
+                val status = pair.path("status").asString("").trim().uppercase()
+                if (left.isNotEmpty() && right.isNotEmpty() && status.isNotEmpty()) {
+                    statusByPair[left to right] = status
+                }
+            }
+        }
+        val missing = FACE_EXPECTED_PAIRS.filterNot(statusByPair::containsKey)
+        if (missing.isNotEmpty()) {
+            throw VerificationWorkflowException(
+                502,
+                "EKYC_UNAVAILABLE",
+                "Kết quả đối chiếu khuôn mặt thiếu cặp ảnh bắt buộc: " +
+                    missing.joinToString(", ") { "${it.first}|${it.second}" } + ".",
+            )
+        }
+        val qualityNode = result.path("quality")
+        val quality = linkedMapOf<String, String>()
+        if (qualityNode.isObject) {
+            for (entry in qualityNode.properties()) {
+                if (entry.value.isString) quality[entry.key] = entry.value.asString()
+            }
+        }
+        return FaceSignals(statusByPair.values.toSet().sorted(), quality)
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -549,7 +601,13 @@ object DriverVerificationWarnings {
         }
 
         if ("POSSIBLE_MISMATCH" in faceStatuses) {
-            add("FACE_POSSIBLE_MISMATCH", "FACE_COMPARISON", slot = "selfie", severity = "CRITICAL")
+            add(
+                "FACE_POSSIBLE_MISMATCH",
+                "FACE_COMPARISON",
+                slot = "selfie",
+                severity = "CRITICAL",
+                block = true,
+            )
         }
         val flaggedSlots = faceQuality?.entries
             ?.filter { (slot, code) -> slot in FACE_SLOTS && code in FACE_QUALITY_MESSAGES }

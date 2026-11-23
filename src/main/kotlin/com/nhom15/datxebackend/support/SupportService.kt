@@ -12,6 +12,7 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.sql.ResultSet
+import java.util.UUID
 
 @Service
 class SupportService(private val jdbc: JdbcTemplate, private val rides: RideRepository, private val assets: CloudinaryAssetService) {
@@ -43,10 +44,12 @@ class SupportService(private val jdbc: JdbcTemplate, private val rides: RideRepo
                 jdbc.update("INSERT INTO support_ticket_images(ticket_id,file_url,public_id) VALUES (?,?,?)", id, it.fileUrl, it.publicId)
             }
             // Tin nhắn đầu tiên của timeline chat chính là mô tả ban đầu của người tạo.
+            // Dùng cùng clientRequestId với ticket để retry tạo ticket không seed lại timeline.
             jdbc.update(
-                """INSERT INTO support_ticket_messages(ticket_id,sender_id,sender_role,body,created_at)
-                   VALUES (?,?,?,?, (SELECT created_at FROM support_tickets WHERE id=?))""".trimIndent(),
-                id, actor.id, actor.role.name, request.description.trim(), id,
+                """INSERT INTO support_ticket_messages(ticket_id,sender_id,sender_role,body,client_request_id,created_at)
+                   SELECT ?,?,?,?,?, (SELECT created_at FROM support_tickets WHERE id=?)
+                   ON CONFLICT (ticket_id, client_request_id) DO NOTHING""".trimIndent(),
+                id, actor.id, actor.role.name, request.description.trim(), request.clientRequestId, id,
             )
         }
         val ticket = detail(actor, id)
@@ -96,14 +99,28 @@ class SupportService(private val jdbc: JdbcTemplate, private val rides: RideRepo
         if (jdbc.update("UPDATE support_tickets SET status=?,response=?,handled_by=?,updated_at=GREATEST(clock_timestamp(),updated_at + interval '1 microsecond') WHERE id=?",
                 request.status, response, actor.id, id) == 0) throw NotFoundException()
         if (!response.isNullOrEmpty()) {
-            // Màn admin cũ vẫn dùng endpoint này: đồng bộ phản hồi vào timeline chat.
-            jdbc.update(
-                "INSERT INTO support_ticket_messages(ticket_id,sender_id,sender_role,body) VALUES (?,?,?,?)",
-                id, actor.id, "ADMIN", response,
-            )
+            // Màn admin cũ không gửi expectedUpdatedAt/clientRequestId: retry cùng nội dung phải
+            // dùng chung một khoá idempotency. Kiểm tra cả các row ADMIN cũ do V25 backfill.
+            val duplicate = (jdbc.queryForObject(
+                """SELECT COUNT(*) FROM support_ticket_messages
+                   WHERE ticket_id=? AND client_request_id=?
+                      OR (ticket_id=? AND sender_role='ADMIN' AND body=?)""".trimIndent(),
+                Long::class.java, id, legacyAdminMessageKey(id, response), id, response,
+            ) ?: 0L) > 0
+            if (!duplicate) {
+                jdbc.update(
+                    """INSERT INTO support_ticket_messages(ticket_id,sender_id,sender_role,body,client_request_id)
+                       VALUES (?,?,?,?,?) ON CONFLICT (ticket_id, client_request_id) DO NOTHING""".trimIndent(),
+                    id, actor.id, "ADMIN", response, legacyAdminMessageKey(id, response),
+                )
+            }
         }
         return detail(actor, id)
     }
+
+    /** Khoá ổn định cho endpoint admin legacy: cùng (ticket, response) thì cùng một tin nhắn. */
+    private fun legacyAdminMessageKey(ticketId: Long, response: String): UUID =
+        UUID.nameUUIDFromBytes("ticket-admin-message|$ticketId|$response".toByteArray(Charsets.UTF_8))
 
     private fun requireMember(actor: AuthUser) { if (actor.role !in setOf(Role.CUSTOMER, Role.DRIVER)) throw ForbiddenException() }
     private fun map(r: ResultSet): SupportTicket {

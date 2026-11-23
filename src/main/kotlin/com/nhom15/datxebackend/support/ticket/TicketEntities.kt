@@ -80,6 +80,15 @@ class TicketMessageEntity(
     @Column(name = "image_url", length = 2048)
     val imageUrl: String? = null,
 
+    /** Idempotency key: unique together with ticket_id (V43). */
+    @Column(name = "client_request_id", nullable = false)
+    val clientRequestId: UUID = UUID.randomUUID(),
+
+    /** Status requested by this message; NULL on legacy rows with no recorded intent (V44). */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "requested_status", length = 32)
+    val requestedStatus: TicketStatus? = null,
+
     @Column(name = "created_at", nullable = false)
     val createdAt: Instant = Instant.now(),
 

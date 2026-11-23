@@ -30,9 +30,10 @@ class UploadSignatureService(
                 val id = rideId?.takeIf { it > 0 }
                     ?: throw BadRequestException(message = "rideId bắt buộc cho ảnh chat")
                 val context = conversationService.requireParticipant(id, actor)
-                conversationService.requireOpen(context)
+                val conversation = conversationService.requireOpen(context)
                 allowedFormats = CHAT_IMAGE_FORMATS
-                CloudinaryFolders.chat(id)
+                // ChatService validates against datxe/chat/{conversationId}/{ROLE}/{actorId}/.
+                CloudinaryFolders.chat(conversation.id, actor.role, actor.id)
             }
             "HANDOVER", "HANDOVER_IMAGE" -> {
                 if (actor.role != Role.DRIVER) {
@@ -48,6 +49,13 @@ class UploadSignatureService(
             else -> throw BadRequestException(message = "Mục đích upload không hợp lệ")
         }
         val cloudinaryConfig = cloudinary.config
+        // Chỉ ký đúng các tham số mà client hiện tại gửi kèm (folder, timestamp,
+        // allowed_formats). Cloudinary yêu cầu tập tham số được ký phải KHỚP CHÍNH XÁC
+        // với tập client gửi lên: nếu thêm public_id/overwrite vào signature trong khi
+        // RN client chưa gửi hai field này, mọi upload sẽ bị từ chối "Signature mismatch".
+        // Ranh giới bảo mật nằm ở CloudinaryAssetService.validateOwnedImage (kiểm tra
+        // cloud name, owner folder và publicId/URL tương ứng khi lưu kết quả), đã được
+        // giữ nguyên. Có thể ký thêm public_id/overwrite sau khi client được cập nhật.
         val params = mapOf<String, Any>(
             "folder" to folder,
             "timestamp" to timestamp
