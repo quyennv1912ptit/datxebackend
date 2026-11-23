@@ -70,6 +70,7 @@ class ChatService(
         val (content, attachmentUrl, publicId) = validateMessage(conversation, actor, request)
 
         messageRepository.findByConversationIdAndClientMessageId(conversation.id, request.clientMessageId)?.let {
+            requireSameMessage(it, actor, request, content, attachmentUrl, publicId)
             return ChatSendResult(ChatMessageDto.from(it), duplicated = true)
         }
 
@@ -88,8 +89,10 @@ class ChatService(
                 IllegalStateException("Không đọc lại được tin nhắn vừa lưu")
             }
         } else {
-            messageRepository.findByConversationIdAndClientMessageId(conversation.id, request.clientMessageId)
+            val stored = messageRepository.findByConversationIdAndClientMessageId(conversation.id, request.clientMessageId)
                 ?: throw ConflictException(ErrorCode.CONFLICT, "Tin nhắn trùng đang được lưu, vui lòng thử lại")
+            requireSameMessage(stored, actor, request, content, attachmentUrl, publicId)
+            stored
         }
         val duplicated = insertedId == null
         if (!duplicated) {
@@ -292,6 +295,34 @@ class ChatService(
             messages = ordered.take(size).map(ChatMessageDto::from),
             hasMore = rows.size > size,
         )
+    }
+
+    /**
+     * clientMessageId do client tạo ra cũng nằm trong ChatMessageDto, nên participant khác
+     * có thể nhìn thấy và dùng lại UUID đó với nội dung khác. Idempotency chỉ được trả về
+     * "duplicate" khi cùng một người gửi lại đúng payload cũ; nếu khác thì báo conflict
+     * thay vì nuốt tin mới im lặng (không insert, không publish event/push).
+     */
+    private fun requireSameMessage(
+        stored: ChatMessage,
+        actor: AuthUser,
+        request: SendMessageRequest,
+        content: String,
+        attachmentUrl: String?,
+        publicId: String?,
+    ) {
+        val sameSender = when (actor.role) {
+            Role.CUSTOMER -> stored.senderRole == Role.CUSTOMER.name && stored.senderCustomerId == actor.id
+            Role.DRIVER -> stored.senderRole == Role.DRIVER.name && stored.senderDriverId == actor.id
+            else -> false
+        }
+        val samePayload = stored.messageType == request.messageType.name &&
+            stored.content == content &&
+            stored.attachmentUrl == attachmentUrl &&
+            stored.cloudinaryPublicId == publicId
+        if (!sameSender || !samePayload) {
+            throw ConflictException(ErrorCode.CONFLICT, "Mã tin nhắn đã được dùng cho nội dung hoặc người gửi khác")
+        }
     }
 
     private fun validateMessage(

@@ -14,6 +14,7 @@ import com.nhom15.datxebackend.ride.entity.RideType
 import com.nhom15.datxebackend.ride.repository.RideRepository
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.mock
 import org.springframework.jdbc.core.JdbcTemplate
@@ -112,6 +113,30 @@ class CustomerReviewsTests {
         assertEquals(1L, afterHiding.distribution[1])
         assertEquals(1, visible.recent.size)
         assertEquals(0, afterHiding.recent.size)
+    }
+
+    @Test
+    fun `driver reviews hide moderated content but keep the aggregate from all ratings`() {
+        val jdbc = JdbcHarness()
+        jdbc.distribution = listOf(5 to 5L, 1 to 1L)
+        jdbc.recent = listOf(
+            row(
+                longs = mapOf("id" to 201L, "stars" to 5L),
+                strings = mapOf("comment" to "Tốt"),
+                timestamp = Timestamp.from(Instant.now()),
+            ),
+        )
+        val service = RideRatingService(mock(RideRepository::class.java), jdbc.jdbc, mock(NotificationPort::class.java))
+
+        val result = service.driverReviews(7)
+
+        assertEquals(6L, result.total)
+        assertEquals(26.0 / 6, result.averageRating!!, 1e-9)
+        assertEquals(2, jdbc.sqlSeen.size)
+        val aggregate = jdbc.sqlSeen.single { it.contains("COUNT(*)") }
+        assertEquals(false, aggregate.contains("is_hidden"))
+        val visible = jdbc.sqlSeen.single { it.contains("CUSTOMER_TO_DRIVER") && !it.contains("COUNT(*)") }
+        assertTrue(visible.contains("is_hidden = false"))
     }
 }
 

@@ -72,7 +72,10 @@ class StompAuthInterceptor(
 
     private fun extractBearerToken(accessor: StompHeaderAccessor): String? {
         val raw = accessor.getFirstNativeHeader(AUTH_HEADER) ?: return null
-        return raw.removePrefix(BEARER_PREFIX).trim().takeIf { it.isNotEmpty() }
+        // RFC 7235: the auth-scheme is case-insensitive. The HTTP filter already accepts
+        // "bearer <token>"; STOMP CONNECT must behave the same way.
+        if (!raw.startsWith(BEARER_PREFIX, ignoreCase = true)) return null
+        return raw.substring(BEARER_PREFIX.length).trim().takeIf { it.isNotEmpty() }
     }
 
     private fun extractRoleHint(accessor: StompHeaderAccessor): Role? {

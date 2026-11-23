@@ -46,9 +46,11 @@ class RideRatingService(
         ).toMap()
         val total = distribution.values.sum()
         val average = if (total == 0L) null else distribution.entries.sumOf { (stars, count) -> stars * count }.toDouble() / total
+        // recent là danh sách nội dung hiển thị nên phải lọc is_hidden như customerReviewsForRide().
+        // distribution/total/average ở trên vẫn tính trên mọi đánh giá (kể cả bị ẩn).
         val recent = jdbcTemplate.query(
             """SELECT id, stars, comment, created_at FROM ratings
-               WHERE ratee_id = ? AND direction = 'CUSTOMER_TO_DRIVER'
+               WHERE ratee_id = ? AND direction = 'CUSTOMER_TO_DRIVER' AND is_hidden = false
                ORDER BY created_at DESC, id DESC LIMIT 10""",
             { rs, _ -> DriverReview(rs.getLong("id"), rs.getInt("stars"), rs.getString("comment"), rs.getTimestamp("created_at").toInstant()) },
             driverId,

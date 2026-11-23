@@ -1,8 +1,11 @@
 package com.nhom15.datxebackend.notification.service
 
 import com.nhom15.datxebackend.notification.dto.RideOfferPayload
+import java.util.concurrent.Callable
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
+import java.util.concurrent.FutureTask
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import org.springframework.beans.factory.annotation.Qualifier
@@ -72,8 +75,28 @@ class NotificationDispatcher(
 
     private fun asyncSend(channel: NotificationChannel, to: Recipient, envelope: WsEnvelope<*>): CompletableFuture<Boolean> =
         try {
-            CompletableFuture.supplyAsync({ trySend(channel, to, envelope) }, executor)
-                .completeOnTimeout(false, deliveryTimeoutMs, TimeUnit.MILLISECONDS)
+            val result = CompletableFuture<Boolean>()
+            // FutureTask (unlike CompletableFuture.supplyAsync) honours cancel(true) by
+            // interrupting the worker running channel.send(). completeOnTimeout() alone only
+            // completes the future, so without this a late push could still be delivered after
+            // the caller already recorded UNREACHABLE/FAILED.
+            val task = object : FutureTask<Boolean>(Callable { trySend(channel, to, envelope) }) {
+                override fun done() {
+                    if (isCancelled) {
+                        result.complete(false)
+                    } else {
+                        try {
+                            result.complete(get())
+                        } catch (e: ExecutionException) {
+                            result.completeExceptionally(e.cause)
+                        }
+                    }
+                }
+            }
+            executor.execute(task)
+            result.whenComplete { _, _ -> if (!task.isDone) task.cancel(true) }
+            result.completeOnTimeout(false, deliveryTimeoutMs, TimeUnit.MILLISECONDS)
+            result
         } catch (e: RejectedExecutionException) {
             log.warn("Notification executor saturated for {}", to)
             CompletableFuture.completedFuture(false)

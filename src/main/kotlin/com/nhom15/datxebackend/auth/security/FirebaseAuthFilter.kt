@@ -36,11 +36,11 @@ class FirebaseAuthFilter(
                     val headerRole = requestedRole(request)
 
                     // X-Role is only a profile disambiguator for routes shared by several roles.
-                    // It never grants a role, and ADMIN is never accepted outside an admin route.
-                    // The dual-role verification endpoints are explicitly available to admins;
-                    // their clients commonly send X-Role: ADMIN on every request.
+                    // It never grants a role. ADMIN is accepted on admin routes, on the dual-role
+                    // verification endpoints and on shared routes where the security chain already
+                    // permits ADMIN; admins commonly send X-Role: ADMIN on every request.
                     val dualRoleVerificationMe = request.requestURI in DUAL_ROLE_VERIFICATION_ME
-                    val adminHeaderAllowed = routeRole == Role.ADMIN || dualRoleVerificationMe
+                    val adminHeaderAllowed = routeRole == Role.ADMIN || dualRoleVerificationMe || isAdminSharedRoute(request.requestURI)
                     val user = if (headerRole == Role.ADMIN && !adminHeaderAllowed) {
                         log.debug("Rejected X-Role ADMIN on non-admin route {}", request.requestURI)
                         null
@@ -109,6 +109,10 @@ class FirebaseAuthFilter(
         }
     }
 
+    /** Shared routes that Spring Security also opens to ADMIN (upload signature, profile, support). */
+    private fun isAdminSharedRoute(uri: String): Boolean =
+        ADMIN_SHARED_ROUTE_PREFIXES.any { uri.startsWith(it) }
+
     private fun requestedRole(request: HttpServletRequest): Role? {
         val roleHeader = request.getHeader(ROLE_HEADER)?.trim()?.uppercase()
         if (!roleHeader.isNullOrEmpty()) {
@@ -147,6 +151,11 @@ class FirebaseAuthFilter(
         val DUAL_ROLE_VERIFICATION_ME = setOf(
             "/ekyc/driver-verification/v1/me",
             "/api/driver/verification/v1/me",
+        )
+        val ADMIN_SHARED_ROUTE_PREFIXES = listOf(
+            "/api/auth/",
+            "/api/uploads",
+            "/api/support/",
         )
         const val DRIVER_EKYC_PREFIX = "/ekyc/driver-verification/v1/"
         const val CUSTOMER_NEARBY_DRIVERS = "/api/location/customer/nearby-drivers"

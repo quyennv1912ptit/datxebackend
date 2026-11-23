@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test
 import org.mockito.Mockito.*
 import org.springframework.jdbc.core.JdbcTemplate
 import java.util.concurrent.*
+import java.util.concurrent.atomic.AtomicBoolean
 
 class NotificationParallelTests {
     @Test fun `WS and FCM start in parallel and share a bounded delivery deadline`() {
@@ -35,6 +36,42 @@ class NotificationParallelTests {
                 tools.jackson.module.kotlin.jacksonObjectMapper(), executor, 2000)
             assertEquals(DeliveryResult.SENT_WS, dispatcher.send(to, payload))
         } finally { executor.shutdownNow() }
+    }
+
+    @Test fun `delivery timeout cancels the in-flight channel so a late push cannot outlive the result`() {
+        val stomp = mock(StompChannel::class.java)
+        val fcm = mock(FcmChannel::class.java)
+        val to = Recipient.Customer(1)
+        val payload = RideUpdatedPayload(42, RideStatus.SEARCHING)
+        val dummy = WsEnvelope(PayloadType.RIDE_UPDATED, payload)
+        val entered = CountDownLatch(1)
+        val interrupted = CountDownLatch(1)
+        val deliveredLate = AtomicBoolean(false)
+        val action = org.mockito.stubbing.Answer<Boolean> {
+            entered.countDown()
+            try {
+                Thread.sleep(5_000)
+                deliveredLate.set(true)
+            } catch (_: InterruptedException) {
+                interrupted.countDown()
+            }
+            false
+        }
+        `when`(stomp.isAvailable(to)).thenReturn(false)
+        `when`(fcm.isAvailable(to)).thenReturn(true)
+        doAnswer(action).`when`(fcm).send(eq(to) ?: to, any(WsEnvelope::class.java) ?: dummy)
+
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val dispatcher = NotificationDispatcher(stomp, fcm, mock(JdbcTemplate::class.java),
+                tools.jackson.module.kotlin.jacksonObjectMapper(), executor, 30)
+            assertEquals(DeliveryResult.UNREACHABLE, dispatcher.send(to, payload))
+            assertTrue(entered.await(1, TimeUnit.SECONDS), "channel must have started")
+            assertTrue(interrupted.await(1, TimeUnit.SECONDS), "timed-out channel must be cancelled")
+            assertFalse(deliveredLate.get(), "cancelled channel must not deliver after the timeout")
+        } finally {
+            executor.shutdownNow()
+        }
     }
 
     @Test fun `executor overload fails gracefully so callers can retain REST fallback`() {

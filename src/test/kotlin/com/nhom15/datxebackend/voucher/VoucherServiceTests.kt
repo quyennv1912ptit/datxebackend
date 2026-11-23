@@ -130,4 +130,41 @@ class VoucherServiceTests {
         assertTrue(sqlSeen.any { it.contains("campaign_title") && it.contains("INSERT INTO vouchers") })
         assertTrue(sqlSeen.last().contains("LEFT JOIN vouchers c ON c.id = v.campaign_id"))
     }
+
+    @Test
+    fun `campaign list and claim subtract released budget so issued vouchers stay usable`() {
+        val jdbc = mock(JdbcTemplate::class.java)
+        val sqlSeen = mutableListOf<String>()
+        `when`(jdbc.query(anyString(), any<RowMapper<Any>>(), anyLong())).thenAnswer { inv ->
+            val sql = inv.getArgument<String>(0)
+            sqlSeen += sql
+            when {
+                sql.contains("budget_remaining") -> emptyList<Any>()
+                sql.contains("FROM vouchers WHERE id=?") -> listOf(
+                    arrayOf<Any?>("FIXED", 20_000L, 20_000L, 50_000L, 50, Instant.now(), Instant.now().plusSeconds(3600), null, 10_000L),
+                )
+                else -> emptyList<Any>()
+            }
+        }
+        `when`(jdbc.query(anyString(), any<RowMapper<Any>>(), anyLong(), anyLong(), anyLong(), anyLong())).thenAnswer { inv ->
+            sqlSeen += inv.getArgument<String>(0)
+            listOf(7)
+        }
+        `when`(jdbc.queryForObject(anyString(), org.mockito.ArgumentMatchers.eq(Long::class.java), any(), any(), any()))
+            .thenReturn(555L)
+        `when`(jdbc.queryForObject(anyString(), any<RowMapper<Any>>(), org.mockito.ArgumentMatchers.eq(555L))).thenAnswer { inv ->
+            @Suppress("UNCHECKED_CAST")
+            val mapper = inv.getArgument<RowMapper<Any>>(1)
+            mapper.mapRow(mockCampaignVoucherRow(id = 555L, claimSequence = 7), 0)
+        }
+
+        val service = VoucherService(jdbc)
+        service.listClaimableCampaigns(customer)
+        service.claimCampaign(customer, 99L)
+
+        val listSql = sqlSeen.single { it.contains("budget_remaining") }
+        assertTrue(listSql.contains("COALESCE(cb.released_amount,0)"))
+        val claimSql = sqlSeen.single { it.contains("UPDATE vouchers SET campaign_claim_count") }
+        assertTrue(claimSql.contains("held_amount+spent_amount+released_amount"))
+    }
 }

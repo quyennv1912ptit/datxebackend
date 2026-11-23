@@ -50,6 +50,22 @@ class RideDispatchRecoveryTask(
                 transactions.executeWithoutResult {
                     val ride = rideRepository.findByIdForUpdate(candidate.id).orElse(null) ?: return@executeWithoutResult
                     if (ride.status == RideStatus.PENDING && ride.scheduledAt == null) {
+                        // Instant rides land here when START_SEARCH was lost after DB commit. PENDING
+                        // is deliberately outside ACTIVE_RIDE_STATUSES, so the customer may have
+                        // created another ride meanwhile. Starting the search without re-checking
+                        // would breach uq_rides_active_customer, be swallowed by safely(), and be
+                        // retried forever with the voucher still held.
+                        if (rideRepository.existsByCustomerIdAndStatusIn(ride.customerId, ACTIVE_RIDE_STATUSES)) {
+                            stateMachine.transition(
+                                RideTransitionCommand(
+                                    ride.id,
+                                    RideTransitionEvent.EXPIRE,
+                                    SYSTEM_RIDE_ACTOR,
+                                    note = "Khách đã có chuyến khác đang hoạt động; bỏ qua chuyến chờ dispatch bị bỏ sót",
+                                ),
+                            )
+                            return@executeWithoutResult
+                        }
                         stateMachine.transition(RideTransitionCommand(ride.id, RideTransitionEvent.START_SEARCH, SYSTEM_RIDE_ACTOR))
                     }
                 }

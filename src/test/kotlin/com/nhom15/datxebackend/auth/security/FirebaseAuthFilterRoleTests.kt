@@ -129,6 +129,26 @@ class FirebaseAuthFilterRoleTests {
     }
 
     @Test
+    fun `admin can resolve shared routes while sending X-Role ADMIN`() {
+        adminResult = AuthUser(
+            id = 3, firebaseUid = "uid-1", role = Role.ADMIN,
+            fullName = null, email = null, phoneNumber = null, status = "ACTIVE",
+        )
+
+        listOf("/api/auth/me", "/api/uploads/signature", "/api/support/tickets").forEach { uri ->
+            SecurityContextHolder.clearContext()
+            lookups.clear()
+
+            filter.doFilter(request(uri, "ADMIN"), MockHttpServletResponse(), chain)
+
+            val authentication = SecurityContextHolder.getContext().authentication
+            assertNotNull(authentication, uri)
+            assertEquals(Role.ADMIN, (authentication.principal as AuthUser).role, uri)
+            assertEquals(listOf(listOf<Any?>("uid-1", Role.ADMIN)), lookups, uri)
+        }
+    }
+
+    @Test
     fun `onboarding paths stay available to an unverified driver`() {
         driverResult = AuthUser(
             id = 2, firebaseUid = "uid-1", role = Role.DRIVER,

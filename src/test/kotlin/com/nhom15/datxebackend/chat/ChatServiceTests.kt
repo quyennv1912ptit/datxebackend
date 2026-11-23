@@ -17,6 +17,7 @@ import com.nhom15.datxebackend.common.enums.RideStatus
 import com.nhom15.datxebackend.common.enums.Transmission
 import com.nhom15.datxebackend.common.enums.VehicleType
 import com.nhom15.datxebackend.common.exception.AppException
+import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.common.exception.NotFoundException
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.notification.api.Recipient
@@ -121,7 +122,7 @@ class ChatServiceTests {
     @Test
     fun `duplicate client id returns the stored message without publishing`() {
         val clientMessageId = UUID.randomUUID()
-        val stored = message(101L, clientMessageId, Role.CUSTOMER)
+        val stored = message(101L, clientMessageId, Role.CUSTOMER).apply { content = "Xin chào" }
         Mockito.`when`(messageRepository.findByConversationIdAndClientMessageId(conversationId, clientMessageId))
             .thenReturn(null, stored)
         Mockito.`when`(
@@ -138,6 +139,20 @@ class ChatServiceTests {
             conversationId, clientMessageId, Role.CUSTOMER, customerId, "TEXT", "Xin chào", null, null,
         )
         Mockito.verifyNoInteractions(eventPublisher)
+    }
+
+    @Test
+    fun `reusing a client id exposed in the dto with different content is rejected`() {
+        val clientMessageId = UUID.randomUUID()
+        val stored = message(101L, clientMessageId, Role.CUSTOMER).apply { content = "Tin cũ" }
+        Mockito.`when`(messageRepository.findByConversationIdAndClientMessageId(conversationId, clientMessageId))
+            .thenReturn(stored)
+
+        assertThrows(ConflictException::class.java) {
+            service.send(rideId, driver, SendMessageRequest(clientMessageId, content = "Tin mới"))
+        }
+
+        Mockito.verifyNoInteractions(messageWriter, eventPublisher)
     }
 
     @Test
