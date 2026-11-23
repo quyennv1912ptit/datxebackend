@@ -4,12 +4,20 @@ import org.springframework.data.redis.core.script.DefaultRedisScript
 
 object DispatchScripts {
 
-    /** Create the Redis search state once; retrying a durable outbox event must not reset an offer. */
+    /**
+     * Create the Redis search state once; retrying a durable outbox event must not reset an offer.
+     *
+     * KEYS[1] = ride:{id}:state        (HASH)
+     * KEYS[2] = ride:{id}:candidates   (LIST) - chỉ xoá khi thực sự reset generation
+     * ARGV[1..8] giữ nguyên: status, customerId, transmission, vehicleType,
+     * pickupLat, pickupLng, state TTL (seconds), generation.
+     */
     val INITIALIZE_SEARCH = DefaultRedisScript<Long>(
         """
         local status = redis.call('HGET', KEYS[1], 'status')
         if redis.call('HGET', KEYS[1], 'generation') == ARGV[8] and (status == 'SEARCHING' or status == 'DRIVER_ASSIGNED') then return 0 end
         redis.call('DEL', KEYS[1])
+        if KEYS[2] then redis.call('DEL', KEYS[2]) end
         redis.call('HSET', KEYS[1],
             'status', ARGV[1],
             'customerId', ARGV[2],

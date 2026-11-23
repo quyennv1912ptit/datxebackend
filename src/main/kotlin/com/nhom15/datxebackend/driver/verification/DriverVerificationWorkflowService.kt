@@ -99,11 +99,38 @@ class DriverVerificationWorkflowService @Autowired constructor(
     private val notificationPort: NotificationPort? = null,
     @Value("\${app.verification.uploads-per-minute:12}") private val uploadsPerMinute: Int = 12,
     @Value("\${app.verification.lookup-hmac-key:\${app.verification.encryption-key:}}") lookupHmacKey: String = "",
+    @Value("\${app.verification.encryption-key:}") encryptionKey: String = "",
+    @Value("\${app.verification.require-protected-storage:false}") requireProtectedStorage: Boolean = false,
     transactionManager: PlatformTransactionManager? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
     private val txTemplate: TransactionTemplate? = transactionManager?.let(::TransactionTemplate)
-    private val lookupHmacSecret: ByteArray = lookupHmacKey.trim().takeIf { it.isNotEmpty() }?.let { raw ->
+    // application.properties already falls back to the encryption key; keep the same behaviour for direct construction/tests.
+    private val effectiveLookupHmacKey = lookupHmacKey.trim().takeIf { it.isNotEmpty() } ?: encryptionKey.trim()
+    private val hasConfiguredLookupHmac = effectiveLookupHmacKey.isNotEmpty()
+
+    init {
+        // Production identity processing must never run on an ephemeral in-memory HMAC secret.
+        val faceEnabled = ekycClient?.faceComparisonEnabled == true
+        if ((requireProtectedStorage || faceEnabled) &&
+            (encryptionKey.trim().isEmpty() || !hasConfiguredLookupHmac)
+        ) {
+            throw IllegalStateException(
+                "Protected verification storage / face comparison requires DATXE_VERIFICATION_ENCRYPTION_KEY " +
+                    "and DATXE_VERIFICATION_LOOKUP_HMAC_KEY to be configured.",
+            )
+        }
+        if (!hasConfiguredLookupHmac) {
+            log.warn(
+                "No verification lookup HMAC key configured; using an ephemeral random secret " +
+                    "(local/test only). Stored HMAC values will not survive a restart.",
+            )
+        }
+    }
+
+    // HMAC là một chiều: không thể đảo ngược secret random của bản ghi cũ để sửa cccd_id_hmac/qr_cccd_id_hmac.
+    // Dữ liệu đã phát hành cần job repair riêng (guarded) tính lại từ confirmed_fields/locked_cccd_id khi có key chính thức.
+    private val lookupHmacSecret: ByteArray = effectiveLookupHmacKey.takeIf { it.isNotEmpty() }?.let { raw ->
         MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(StandardCharsets.UTF_8))
     } ?: ByteArray(32).also { SecureRandom().nextBytes(it) }
 
@@ -155,6 +182,16 @@ class DriverVerificationWorkflowService @Autowired constructor(
             val capture: CaptureRow,
             val ocrMode: EkycOcrMode = EkycOcrMode.FULL,
         ) : ExtractStageA
+    }
+
+    private sealed interface FaceComparisonStageA {
+        data class Skip(val response: Any) : FaceComparisonStageA
+        data class Pending(
+            val applicationId: UUID,
+            val revision: Long,
+            val submissionRevision: Long,
+            val captureIds: Map<String, UUID>,
+        ) : FaceComparisonStageA
     }
 
     private inline fun <T : Any> inTransaction(crossinline block: () -> T): T =
@@ -345,12 +382,15 @@ class DriverVerificationWorkflowService @Autowired constructor(
         val approvedConfirmed = row.confirmedFieldsJson ?: row.approvedSubmissionRevision?.let { rev ->
             runCatching { mapper.writeValueAsString(loadSubmissionSnapshot(row.id, rev)["confirmed"]) }.getOrNull()
         }
+        // QR bị xoá thì HMAC của QR cũ cũng phải mất; HMAC CCCD khớp lại snapshot đã duyệt.
+        val approvedCccdHmac = cccdHmacFromConfirmedJson(approvedConfirmed)
         val nextRevision = expectedRevision + 1L
         val clearUnapprovedHold = row.approvedRevision == null
         jdbc.update(
             """UPDATE driver_verification_applications
                SET status = 'DRAFT', revision = ?, confirmed_fields = COALESCE(confirmed_fields, ?),
                    confirmation_current = false, decision_reason = NULL, requested_changes = NULL,
+                   cccd_id_hmac = ?, qr_cccd_id_hmac = NULL,
                    qr_live_scan_json = NULL, gplx_qr_live_scan_json = NULL,
                    identity_hold = CASE WHEN ? THEN false ELSE identity_hold END,
                    identity_hold_reason = CASE WHEN ? THEN NULL ELSE identity_hold_reason END,
@@ -358,6 +398,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
                WHERE id = ?""",
             nextRevision,
             SqlParameterValue(Types.VARCHAR, approvedConfirmed),
+            SqlParameterValue(Types.VARCHAR, approvedCccdHmac),
             clearUnapprovedHold,
             clearUnapprovedHold,
             row.id,
@@ -400,17 +441,23 @@ class DriverVerificationWorkflowService @Autowired constructor(
                 capId,
             )
         }
+        @Suppress("UNCHECKED_CAST")
+        val approvedConfirmed = approvedSnapshot["confirmed"] as? Map<String, Any?>
+        // Khôi phục HMAC của CCCD đã duyệt, xoá HMAC của QR/CCCD nháp còn sót lại.
+        val approvedCccdHmac = cccdHmacFromConfirmed(approvedConfirmed)
         val nextRevision = expectedRevision + 1L
         jdbc.update(
             """UPDATE driver_verification_applications
                SET status = 'APPROVED', revision = ?, submission_revision = ?,
                    confirmed_fields = ?, confirmation_current = true,
+                   cccd_id_hmac = ?, qr_cccd_id_hmac = NULL,
                    qr_live_scan_json = NULL, gplx_qr_live_scan_json = NULL,
                    requested_changes = NULL, updated_at = CURRENT_TIMESTAMP
                WHERE id = ?""",
             nextRevision,
             row.approvedSubmissionRevision,
-            SqlParameterValue(Types.VARCHAR, approvedSnapshot["confirmed"]?.let { mapper.writeValueAsString(it) }),
+            SqlParameterValue(Types.VARCHAR, approvedConfirmed?.let { mapper.writeValueAsString(it) }),
+            SqlParameterValue(Types.VARCHAR, approvedCccdHmac),
             row.id,
         )
         audit(row.id, nextRevision, actor, "CANCEL_REVERIFICATION", emptyMap(), review = false)
@@ -850,8 +897,7 @@ class DriverVerificationWorkflowService @Autowired constructor(
         enforceLockedIdentity(row, validated)
 
         val nextRevision = expectedRevision + 1L
-        val cccdIdHmac = (validated["cccd_id"] as? String)?.trim()?.takeIf { it.matches(Regex("^[0-9]{12}$")) }
-            ?.let { CccdQrParser.computeLookupHmac(it, lookupHmacSecret) }
+        val cccdIdHmac = cccdHmacFromConfirmed(validated)
         jdbc.update(
             """UPDATE driver_verification_applications
                SET revision = ?, confirmed_fields = ?, confirmed_at = CURRENT_TIMESTAMP,
@@ -1196,7 +1242,6 @@ class DriverVerificationWorkflowService @Autowired constructor(
         )
     }
 
-    @Transactional
     fun faceComparison(
         actor: AuthUser,
         applicationId: UUID,
@@ -1204,81 +1249,124 @@ class DriverVerificationWorkflowService @Autowired constructor(
         submissionRevision: Long,
     ): Any {
         requireAdmin(actor)
-        val row = requireAccessibleApp(applicationId, actor, review = true, forUpdate = true)
-        if (row.ownerUid == actor.firebaseUid) {
-            throw VerificationWorkflowException(403, "FORBIDDEN", "Không thể tự đối chiếu hồ sơ của chính mình.")
-        }
-        checkRevision(row, revision, editable = false)
-        if (submissionRevision != row.submissionRevision) {
-            throw VerificationWorkflowException(409, "REVISION_CONFLICT", "Bản nộp đã thay đổi.")
-        }
-        if (row.status !in setOf("SUBMITTED", "UNDER_REVIEW")) {
-            throw VerificationWorkflowException(409, "INVALID_TRANSITION", "Trạng thái hồ sơ không hỗ trợ đối chiếu.")
-        }
-        val snapshot = loadSubmissionSnapshot(row.id, submissionRevision)
-        @Suppress("UNCHECKED_CAST")
-        val faceConsent = snapshot["faceConsent"] as? Map<String, Any?>
-        val consented = faceConsent?.get("version") == FACE_CONSENT_VERSION
         val client = ekycClient
-        if (client == null || !client.faceComparisonEnabled) {
-            return client?.disabledFaceResult("DISABLED") ?: mapOf(
-                "mode" to "NOT_EVALUATED",
-                "reason" to "DISABLED",
-                "liveness" to "NOT_EVALUATED",
-                "quality" to emptyMap<String, String>(),
-                "pairs" to emptyList<Any>(),
-            )
+
+        // Stage A: validate ownership/revision/submission inside a short transaction, then release the row lock.
+        val stageA: FaceComparisonStageA = inTransaction {
+            val row = requireAccessibleApp(applicationId, actor, review = true, forUpdate = true)
+            if (row.ownerUid == actor.firebaseUid) {
+                throw VerificationWorkflowException(403, "FORBIDDEN", "Không thể tự đối chiếu hồ sơ của chính mình.")
+            }
+            checkRevision(row, revision, editable = false)
+            if (submissionRevision != row.submissionRevision) {
+                throw VerificationWorkflowException(409, "REVISION_CONFLICT", "Bản nộp đã thay đổi.")
+            }
+            if (row.status !in setOf("SUBMITTED", "UNDER_REVIEW")) {
+                throw VerificationWorkflowException(409, "INVALID_TRANSITION", "Trạng thái hồ sơ không hỗ trợ đối chiếu.")
+            }
+            val snapshot = loadSubmissionSnapshot(row.id, submissionRevision)
+            @Suppress("UNCHECKED_CAST")
+            val faceConsent = snapshot["faceConsent"] as? Map<String, Any?>
+            when {
+                client == null -> FaceComparisonStageA.Skip(
+                    mapOf(
+                        "mode" to "NOT_EVALUATED",
+                        "reason" to "DISABLED",
+                        "liveness" to "NOT_EVALUATED",
+                        "quality" to emptyMap<String, String>(),
+                        "pairs" to emptyList<Any>(),
+                    ),
+                )
+                !client.faceComparisonEnabled -> FaceComparisonStageA.Skip(client.disabledFaceResult("DISABLED"))
+                faceConsent?.get("version") != FACE_CONSENT_VERSION ->
+                    FaceComparisonStageA.Skip(client.disabledFaceResult("CONSENT_MISSING"))
+                else -> FaceComparisonStageA.Pending(
+                    applicationId = row.id,
+                    revision = revision,
+                    submissionRevision = submissionRevision,
+                    captureIds = faceCaptureIds(snapshot),
+                )
+            }
         }
-        if (!consented) {
-            return client.disabledFaceResult("CONSENT_MISSING")
-        }
-        @Suppress("UNCHECKED_CAST")
-        val captures = snapshot["captures"] as? Map<String, Any?> ?: emptyMap()
+        if (stageA is FaceComparisonStageA.Skip) return stageA.response
+        val pending = stageA as FaceComparisonStageA.Pending
+        val activeClient = requireNotNull(client)
+
+        // Stage B: read captures and call eKYC strictly outside any DB transaction or PostgreSQL lock.
         val images = linkedMapOf<String, ByteArray>()
-        for (slot in DriverVerificationWarnings.FACE_SLOTS) {
-            val capIdStr = (captures[slot] as? Map<*, *>)?.get("id") as? String ?: continue
+        for ((slot, capId) in pending.captureIds) {
             val capRow = jdbc.query(
                 "SELECT * FROM driver_verification_captures WHERE id = ? AND application_id = ?",
                 { rs, _ -> rs.toCaptureRow() },
-                UUID.fromString(capIdStr),
-                row.id,
+                capId,
+                pending.applicationId,
             ).firstOrNull() ?: continue
             runCatching { storage.read(capRow.storageKey, capRow.byteSize, capRow.sha256) }.getOrNull()?.let {
                 images[slot] = it
             }
         }
-        val result = client.evaluateFace(images, qualityOnly = false)
-        val signals = DriverVerificationWarnings.normalizedFaceSignals(result)
-        val updated = LinkedHashMap(snapshot)
-        updated["faceStatuses"] = signals.statuses
-        updated["faceQuality"] = signals.quality
-        updated["faceComparison"] = linkedMapOf<String, Any?>(
-            "mode" to result.path("mode").asString(""),
-            "liveness" to result.path("liveness").asString(""),
-            "evaluatedAt" to Instant.now().toString(),
-        )
-        // The application row is locked (FOR UPDATE) and the submission revision re-checked above;
-        // the UPDATE is still revision-guarded so a concurrent write can never be overwritten.
-        val written = jdbc.update(
-            """UPDATE driver_verification_submissions
-               SET snapshot_json = ?
-               WHERE application_id = ? AND revision = ?""",
-            mapper.writeValueAsString(updated),
-            row.id,
-            submissionRevision,
-        )
-        if (written != 1) {
-            throw VerificationWorkflowException(409, "REVISION_CONFLICT", "Bản nộp đã thay đổi trong lúc đối chiếu.")
+        val result = activeClient.evaluateFace(images, qualityOnly = false)
+
+        // Stage C: re-acquire the row lock briefly and fail closed on any submission/capture change during HTTP I/O.
+        return inTransaction {
+            val row = requireAccessibleApp(pending.applicationId, actor, review = true, forUpdate = true)
+            if (row.ownerUid == actor.firebaseUid) {
+                throw VerificationWorkflowException(403, "FORBIDDEN", "Không thể tự đối chiếu hồ sơ của chính mình.")
+            }
+            checkRevision(row, pending.revision, editable = false)
+            if (row.submissionRevision != pending.submissionRevision || row.status !in setOf("SUBMITTED", "UNDER_REVIEW")) {
+                throw VerificationWorkflowException(409, "REVISION_CONFLICT", "Bản nộp đã thay đổi trong lúc đối chiếu.")
+            }
+            val currentSnapshot = loadSubmissionSnapshot(row.id, pending.submissionRevision)
+            @Suppress("UNCHECKED_CAST")
+            val currentConsent = currentSnapshot["faceConsent"] as? Map<String, Any?>
+            if (currentConsent?.get("version") != FACE_CONSENT_VERSION ||
+                faceCaptureIds(currentSnapshot) != pending.captureIds
+            ) {
+                throw VerificationWorkflowException(409, "REVISION_CONFLICT", "Bản nộp đã thay đổi trong lúc đối chiếu.")
+            }
+            val signals = DriverVerificationWarnings.normalizedFaceSignals(result)
+            val updated = LinkedHashMap(currentSnapshot)
+            updated["faceStatuses"] = signals.statuses
+            updated["faceQuality"] = signals.quality
+            updated["faceComparison"] = linkedMapOf<String, Any?>(
+                "mode" to result.path("mode").asString(""),
+                "liveness" to result.path("liveness").asString(""),
+                "evaluatedAt" to Instant.now().toString(),
+            )
+            // Re-checks above run under FOR UPDATE; the UPDATE is still revision-guarded so a concurrent write cannot be overwritten.
+            val written = jdbc.update(
+                """UPDATE driver_verification_submissions
+                   SET snapshot_json = ?
+                   WHERE application_id = ? AND revision = ?""",
+                mapper.writeValueAsString(updated),
+                row.id,
+                pending.submissionRevision,
+            )
+            if (written != 1) {
+                throw VerificationWorkflowException(409, "REVISION_CONFLICT", "Bản nộp đã thay đổi trong lúc đối chiếu.")
+            }
+            audit(
+                row.id,
+                pending.revision,
+                actor,
+                "FACE_COMPARISON",
+                mapOf("submissionRevision" to pending.submissionRevision, "statuses" to signals.statuses),
+                review = true,
+            )
+            result
         }
-        audit(
-            row.id,
-            revision,
-            actor,
-            "FACE_COMPARISON",
-            mapOf("submissionRevision" to submissionRevision, "statuses" to signals.statuses),
-            review = true,
-        )
-        return result
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun faceCaptureIds(snapshot: Map<String, Any?>): Map<String, UUID> {
+        val captures = snapshot["captures"] as? Map<String, Any?> ?: emptyMap()
+        return linkedMapOf<String, UUID>().apply {
+            for (slot in DriverVerificationWarnings.FACE_SLOTS) {
+                val id = (captures[slot] as? Map<*, *>)?.get("id") as? String ?: continue
+                runCatching { UUID.fromString(id) }.getOrNull()?.let { put(slot, it) }
+            }
+        }
     }
 
     @Transactional
@@ -1790,6 +1878,17 @@ class DriverVerificationWorkflowService @Autowired constructor(
         }
         return null
     }
+
+    private fun cccdHmacFromConfirmedJson(json: String?): String? =
+        json?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { readMap(it) }.getOrNull() }
+            ?.let(::cccdHmacFromConfirmed)
+
+    @Suppress("UNCHECKED_CAST")
+    private fun cccdHmacFromConfirmed(confirmed: Map<String, Any?>?): String? =
+        (confirmed?.get("cccd_id") as? String)?.trim()
+            ?.takeIf { it.matches(Regex("^[0-9]{12}$")) }
+            ?.let { CccdQrParser.computeLookupHmac(it, lookupHmacSecret) }
 
     private fun syncQrCccdIdHmac(row: ApplicationRow, doc: Map<String, Any?>) {
         val qrId = extractQrCccdId(doc)

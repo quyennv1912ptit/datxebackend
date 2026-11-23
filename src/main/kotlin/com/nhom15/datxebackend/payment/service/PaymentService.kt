@@ -138,6 +138,8 @@ class PaymentService(
             || ride.finalFare != event.finalFare.amount) throw InvalidTripStateException("Dữ liệu quyết toán không khớp chuyến")
         if (ride.paymentMethod !in setOf(PaymentMethod.CASH, PaymentMethod.WALLET))
             throw PaymentMethodMismatchException()
+        // settle() có thể đổi paymentMethod trên entity: giữ lại phương thức khách yêu cầu để báo event.
+        val requestedMethod = ride.paymentMethod
         val acquired = jdbcTemplate.update(
             "INSERT INTO ride_wallet_settlements(ride_id) VALUES (?) ON CONFLICT DO NOTHING", ride.id)
         if (acquired == 0) return
@@ -147,7 +149,7 @@ class PaymentService(
         // Driver's 80% share is based on the original fare before the voucher.
         val rawFare = ride.fareEstimate
         val settledMethod = wallets.settle(ride.id, ride.customerId, event.driverId, event.finalFare.amount, ride.paymentMethod, rawFare)
-        if (ride.paymentMethod != settledMethod) ride.paymentMethod = settledMethod
+        if (requestedMethod != settledMethod) ride.paymentMethod = settledMethod
         val paidNow = settledMethod == PaymentMethod.WALLET || event.finalFare.amount == 0L
         val paidAt = if (paidNow) java.sql.Timestamp.from(Instant.now()) else null
         jdbcTemplate.update(
@@ -158,6 +160,11 @@ class PaymentService(
             if (paidNow) PaymentStatus.PAID.name else PaymentStatus.PENDING.name,
             paidAt,
         )
+        // ride_wallet_settlements ở trên là guard idempotency: event cũng chỉ phát một lần cho mỗi chuyến.
+        events.publishEvent(com.nhom15.datxebackend.payment.event.PaymentUpdated(
+            event.rideId, event.customerId, event.driverId, requestedMethod, settledMethod,
+            if (paidNow) PaymentStatus.PAID.name else PaymentStatus.PENDING.name, event.finalFare.amount,
+        ))
     }
 
     @Transactional(readOnly = true)

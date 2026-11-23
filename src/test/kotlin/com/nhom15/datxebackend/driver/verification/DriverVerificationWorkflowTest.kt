@@ -181,7 +181,42 @@ class DriverVerificationWorkflowTest {
         assertEquals(false, svcOff.me(actor).containsKey("faceConsentVersion"))
 
         val onClient = EkycClient(RestClient.builder().baseUrl("https://fixture.modal.run").build(), mapper, faceComparisonEnabled = true)
-        val svcOn = DriverVerificationWorkflowService(jdbc, mapper, storage, projection, drivers, ekycClient = onClient)
+        val svcOn = DriverVerificationWorkflowService(
+            jdbc, mapper, storage, projection, drivers,
+            ekycClient = onClient,
+            encryptionKey = "synthetic-encryption-key",
+            lookupHmacKey = "synthetic-lookup-hmac-key",
+        )
         assertEquals("face-comparison-v1", svcOn.me(actor)["faceConsentVersion"])
+    }
+
+    @Test
+    fun `workflow service fails fast when protected storage or face comparison lacks secrets`() {
+        val jdbc = mock(JdbcTemplate::class.java)
+        val mapper = JsonMapper.builder().build()
+        val storage = DriverVerificationStorageService(tempDir.toString(), "")
+        val projection = mock(VerificationProjectionRepository::class.java)
+        val drivers = mock(DriverRepository::class.java)
+        val faceOff = mock(EkycClient::class.java)
+        val faceOn = mock(EkycClient::class.java)
+        `when`(faceOn.faceComparisonEnabled).thenReturn(true)
+
+        assertFailsWith<IllegalStateException> {
+            DriverVerificationWorkflowService(
+                jdbc, mapper, storage, projection, drivers,
+                ekycClient = faceOff, requireProtectedStorage = true,
+            )
+        }
+        assertFailsWith<IllegalStateException> {
+            DriverVerificationWorkflowService(jdbc, mapper, storage, projection, drivers, ekycClient = faceOn)
+        }
+        // Local/test defaults stay usable without any configured secret.
+        DriverVerificationWorkflowService(jdbc, mapper, storage, projection, drivers)
+        DriverVerificationWorkflowService(
+            jdbc, mapper, storage, projection, drivers,
+            ekycClient = faceOn,
+            encryptionKey = "synthetic-encryption-key",
+            lookupHmacKey = "synthetic-lookup-hmac-key",
+        )
     }
 }

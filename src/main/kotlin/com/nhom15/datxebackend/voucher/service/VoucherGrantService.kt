@@ -29,11 +29,31 @@ class VoucherGrantService(
             customerId,
         ) ?: 0L
 
-        val template = VoucherRewardPolicy.milestoneReward(completed)
+        // Chọn mốc CAO NHẤT <= completed mà khách chưa nhận thay vì khớp đúng completed:
+        // nếu một mốc bị bỏ sót (chuyến 6/11/21) thì các chuyến sau tự phục hồi mà không cấp trùng.
+        val milestone = VoucherRewardPolicy.milestonesDesc()
+            .firstOrNull { it <= completed && !alreadyGranted(customerId, it) }
+            ?: return false
+        val template = VoucherRewardPolicy.milestoneReward(milestone)
             ?: return false
 
-        return grant(customerId, completed.toInt(), template)
+        return grant(customerId, milestone.toInt(), template)
     }
+
+    private fun alreadyGranted(customerId: Long, milestone: Long): Boolean = jdbcTemplate.queryForObject(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM vouchers
+            WHERE owner_customer_id = ?
+              AND source = 'SYSTEM_REWARD'
+              AND milestone = ?
+        )
+        """.trimIndent(),
+        Boolean::class.javaObjectType,
+        customerId,
+        milestone,
+    ) ?: false
 
     private fun grant(
         customerId: Long,
@@ -53,22 +73,8 @@ class VoucherGrantService(
             customerId,
         ) ?: return false
 
-        val alreadyGranted = jdbcTemplate.queryForObject(
-            """
-            SELECT EXISTS (
-                SELECT 1
-                FROM vouchers
-                WHERE owner_customer_id = ?
-                  AND source = 'SYSTEM_REWARD'
-                  AND milestone = ?
-            )
-            """.trimIndent(),
-            Boolean::class.javaObjectType,
-            customerId,
-            milestone,
-        ) ?: false
-
-        if (alreadyGranted) return false
+        // Kiểm tra lại trong grant(): grantMilestoneIfReached và các luồng khác có thể cùng chọn một mốc.
+        if (alreadyGranted(customerId, milestone.toLong())) return false
         val forecastPerUse = (template.maxDiscount ?: template.value) / 2
         if (promoBudget?.reserveIssuance(forecastPerUse) == false) return false
 

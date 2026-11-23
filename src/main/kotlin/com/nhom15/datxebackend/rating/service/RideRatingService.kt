@@ -331,7 +331,7 @@ class RideRatingService(
             actor.id,
             direction,
             size,
-            page * size,
+            page.toLong() * size,
         )
 
         val visibleTotal = jdbcTemplate.queryForObject(
@@ -431,6 +431,15 @@ class RideRatingService(
         if (page < 0 || size !in 1..100) {
             throw BadRequestException(message = "page phải >= 0 và size phải từ 1 đến 100")
         }
+        // Chặn offset vô lý: page * size kiểu Int có thể wrap thành âm, khiến Postgres báo
+        // "OFFSET must not be negative" và trả 503 thay vì 400.
+        if (page > MAX_PAGE) {
+            throw BadRequestException(message = "page không được vượt quá 1.000.000")
+        }
+    }
+
+    private companion object {
+        const val MAX_PAGE = 1_000_000
     }
 
     private data class RatingTarget(

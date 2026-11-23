@@ -9,6 +9,7 @@ import org.mockito.ArgumentMatchers.contains
 import org.mockito.ArgumentMatchers.eq
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
+import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
 import org.springframework.jdbc.core.JdbcTemplate
@@ -184,6 +185,59 @@ class PromoBudgetServiceTests {
 
         verify(jdbc, never()).update(contains("spent_amount = spent_amount + ?"), any<Any>(), any<Any>())
         verify(jdbc, never()).update(contains("'SPEND'"), any<Any>(), any<Any>(), any<Any>(), any<Any>(), any<Any>())
+    }
+
+    @Test
+    fun `expired personal reward reserve is released once with the exact forecast`() {
+        val jdbc = mock(JdbcTemplate::class.java)
+        stubUpdates(jdbc)
+        var released = false
+        val expiredVoucher = mock(ResultSet::class.java)
+        `when`(expiredVoucher.getLong(1)).thenReturn(701L)
+        `when`(expiredVoucher.getLong(2)).thenReturn(5_000L)
+        `when`(jdbc.queryForObject(contains("SELECT id FROM promo_budget"), eq(Long::class.java))).thenReturn(1L)
+        `when`(jdbc.query(contains("reserve_released = FALSE"), any<RowMapper<Any>>())).thenAnswer { inv ->
+            @Suppress("UNCHECKED_CAST")
+            val mapper = inv.getArgument<RowMapper<Any>>(1)
+            if (released) mutableListOf<Any>() else mutableListOf(mapper.mapRow(expiredVoucher, 0))
+        }
+        `when`(jdbc.update(contains("UPDATE vouchers SET reserve_released = TRUE"), any<Any>())).thenAnswer {
+            released = true
+            1
+        }
+
+        val service = PromoBudgetService(jdbc)
+        service.releaseExpiredPersonalRewardReserves()
+        service.releaseExpiredPersonalRewardReserves()
+
+        verify(jdbc, times(1)).update(contains("UPDATE vouchers SET reserve_released = TRUE"), eq(701L))
+        verify(jdbc, times(1)).update(contains("issuance_reserved = GREATEST(issuance_reserved - ?"), eq(5_000L))
+        verify(jdbc, times(1)).update(contains("'RELEASE'"), eq(701L), eq(5_000L))
+    }
+
+    @Test
+    fun `reserveIssuance releases expired personal reserves before reserving new ones`() {
+        val jdbc = mock(JdbcTemplate::class.java)
+        stubUpdates(jdbc)
+        val expiredVoucher = mock(ResultSet::class.java)
+        `when`(expiredVoucher.getLong(1)).thenReturn(702L)
+        `when`(expiredVoucher.getLong(2)).thenReturn(3_000L)
+        `when`(jdbc.queryForObject(anyString(), any<RowMapper<Any>>())).thenAnswer { inv ->
+            @Suppress("UNCHECKED_CAST")
+            val mapper = inv.getArgument<RowMapper<Any>>(1)
+            mapper.mapRow(budgetRs(reserved = 0L), 0)
+        }
+        `when`(jdbc.queryForObject(contains("SELECT id FROM promo_budget"), eq(Long::class.java))).thenReturn(1L)
+        `when`(jdbc.query(contains("reserve_released = FALSE"), any<RowMapper<Any>>())).thenAnswer { inv ->
+            @Suppress("UNCHECKED_CAST")
+            val mapper = inv.getArgument<RowMapper<Any>>(1)
+            mutableListOf<Any>(mapper.mapRow(expiredVoucher, 0))
+        }
+
+        assertTrue(PromoBudgetService(jdbc).reserveIssuance(1_000L))
+
+        verify(jdbc).update(contains("issuance_reserved = GREATEST(issuance_reserved - ?"), eq(3_000L))
+        verify(jdbc).update(contains("issuance_reserved = issuance_reserved + ?"), eq(1_000L))
     }
 
     @Test

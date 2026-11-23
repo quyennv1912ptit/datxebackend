@@ -66,13 +66,17 @@ class ChatService(
         if (actor.role == Role.DRIVER && context.ride.driverId != conversation.driverId) {
             throw ForbiddenException(message = "Cuộc hội thoại đã kết thúc khi chuyến xe được giao lại")
         }
-        rateLimiter.check(actor)
         val (content, attachmentUrl, publicId) = validateMessage(conversation, actor, request)
 
         messageRepository.findByConversationIdAndClientMessageId(conversation.id, request.clientMessageId)?.let {
             requireSameMessage(it, actor, request, content, attachmentUrl, publicId)
             return ChatSendResult(ChatMessageDto.from(it), duplicated = true)
         }
+
+        // Thứ tự quan trọng: validate nội dung/trạng thái và tra cứu idempotency xong mới
+        // tiêu quota. Client retry đúng clientMessageId sau khi mất response phải nhận lại
+        // tin cũ dù bucket đã cạn, nếu check ở trên sẽ trả 429 thay vì kết quả cũ.
+        rateLimiter.check(actor)
 
         val insertedId = messageWriter.insertIfAbsent(
             conversationId = conversation.id,

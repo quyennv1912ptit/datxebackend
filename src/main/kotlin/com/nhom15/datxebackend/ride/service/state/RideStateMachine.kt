@@ -285,6 +285,16 @@ class RideStateMachine(
             )
         }
 
+        if (previousStatus == RideStatus.NO_DRIVER_FOUND && ride.discountAmount > 0) {
+            // Chuyến terminal đã bị releaseForRide() hoàn voucher (xoá voucher_usages,
+            // hoàn usage_count và ngân sách). Không giữ discountAmount hay finalFare cũ,
+            // nếu không khi complete sẽ giảm giá dù không còn lượt dùng voucher nào.
+            // API hiện tại không re-consume được: promo_budget_ledger có unique (ride_id, action)
+            // nên HOLD mới sau RELEASE bị từ chối. Vì vậy xoá chiết khấu thay vì giảm giá ảo.
+            ride.discountAmount = 0
+            ride.finalFare = null
+        }
+
         if (rideRepository.compareAndSetStatus(ride.id, previousStatus.name, RideStatus.DRIVER_ASSIGNED.name, ride.version) != 1) {
             throw ConflictException(ErrorCode.INVALID_RIDE_STATE)
         }

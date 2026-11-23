@@ -29,7 +29,9 @@ class StompAuthInterceptor(
             ?: return message
 
         when (accessor.command) {
-            StompCommand.CONNECT -> authenticate(accessor)
+            // STOMP 1.2 clients may send the STOMP frame instead of the legacy CONNECT
+            // frame; both are the same handshake and both must establish the principal.
+            StompCommand.CONNECT, StompCommand.STOMP -> authenticate(accessor)
             StompCommand.SUBSCRIBE -> {
                 requireAuthenticated(accessor)
                 requireAllowedDestination(accessor)

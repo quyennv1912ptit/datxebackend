@@ -112,7 +112,14 @@ class RideService(
             .roundToNearestThousandVnd()
 
         if (request.paymentMethod == PaymentMethod.WALLET) {
-            wallets.checkBooking(actor.id, payableFare)
+            // checkBooking chỉ đọc số dư: cộng thêm số ví đã cam kết ở chuyến đang đi/đặt lịch
+            // để một khách không dùng cùng một số dư cho nhiều chuyến chưa thanh toán.
+            val committed = rideRepository.sumCommittedWalletFare(
+                actor.id,
+                ACTIVE_RIDE_STATUSES + RideStatus.PENDING,
+                PaymentMethod.WALLET,
+            )
+            wallets.checkBooking(actor.id, payableFare + committed)
         }
         val pendingRide = rideRepository.saveAndFlush(
             RideFactory.create(

@@ -30,9 +30,15 @@ class OfferReleaseService(
         val released = redisTemplate.execute(DispatchScripts.RELEASE,
             listOf(RedisKeys.rideState(id), RedisKeys.DISPATCH_TIMEOUTS, RedisKeys.rideRejected(id), RedisKeys.GEO_KEY),
             driverId.toString(), id, stat, properties.rejectedTtl.seconds.toString(), offerId) == 1L
-        // Closing the durable offer is conditional too; a delayed old timeout cannot close a newer one.
-        val closed = offers.close(offerId, if (stat == "rejected") "REJECTED" else "IGNORED", driverId, rideId)
-        return released || closed
+        if (!released) {
+            // RELEASE trả 0 khi ACCEPT đã thắng ở Redis. Đừng đóng offer DB ở đây:
+            // RideAcceptanceService cần offer vẫn OFFERED để CAS gán tài xế thành công,
+            // sau đó path thành công sẽ đóng offer với ACCEPTED.
+            return false
+        }
+        // Chỉ đóng durable offer khi script Redis xác nhận đây vẫn là lời mời hiện tại.
+        offers.close(offerId, if (stat == "rejected") "REJECTED" else "IGNORED", driverId, rideId)
+        return true
     }
 
     fun expire(offer: DispatchOffer) {
@@ -47,8 +53,15 @@ class OfferReleaseService(
                         RedisKeys.rideCandidates(offer.rideId.toString()), RedisKeys.GEO_KEY),
                     offer.driverId.toString(), offer.rideId.toString(), "SEARCHING", properties.rejectedTtl.seconds.toString())
             }
-            if (release(offer.rideId, offer.driverId, "ignored", offer.offerId)) {
+            val released = release(offer.rideId, offer.driverId, "ignored", offer.offerId)
+            if (released) {
                 runCatching { notificationPort.send(Recipient.Driver(offer.driverId), OfferClosedPayload.expired(offer.rideId)) }
+            } else {
+                // Khác với reject(): expire() đã xử lý riêng cửa sổ Redis ACCEPT ở trên.
+                // Nếu state/timeout Redis đã mất (restart/eviction), RELEASE trả 0 và
+                // release() cố tình không đóng offer DB. Phải đóng ở đây, nếu không
+                // outstanding() có thể trả offer hết hạn này cho vòng dispatch sau.
+                offers.close(offer.offerId, "IGNORED", offer.driverId, offer.rideId)
             }
         }
     }

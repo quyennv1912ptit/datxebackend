@@ -59,7 +59,8 @@ class RideDispatchService(
                 return null
             }
             val isScheduled = ride.type == RideType.SCHEDULED
-            redisTemplate.execute(DispatchScripts.INITIALIZE_SEARCH, listOf(RedisKeys.rideState(id)),
+            redisTemplate.execute(DispatchScripts.INITIALIZE_SEARCH,
+                listOf(RedisKeys.rideState(id), RedisKeys.rideCandidates(id)),
                 ride.status.name, ride.customerId.toString(), ride.transmission.name, ride.vehicleType.name,
                 ride.pickup.geoPoint.lat.toString(), ride.pickup.geoPoint.lng.toString(),
                 RedisTtl.RIDE_STATE.seconds.toString(), ride.redispatchCount.toString())

@@ -1,5 +1,6 @@
 package com.nhom15.datxebackend.ride.repository
 
+import com.nhom15.datxebackend.common.enums.PaymentMethod
 import com.nhom15.datxebackend.common.enums.RideStatus
 import com.nhom15.datxebackend.ride.entity.Ride
 import com.nhom15.datxebackend.ride.entity.RideType
@@ -53,6 +54,21 @@ interface RideRepository : JpaRepository<Ride, Long>, org.springframework.data.j
     ): Boolean
 
     fun existsByCustomerIdAndTypeAndStatus(customerId: Long, type: RideType, status: RideStatus): Boolean
+
+    /** Tổng số tiền ví còn cam kết ở các chuyến chưa kết thúc (đã giữ chỗ nhưng chưa trừ ví). */
+    @Query(
+        """SELECT COALESCE(SUM(CASE WHEN r.fareEstimate > r.discountAmount
+                                THEN r.fareEstimate - r.discountAmount ELSE 0L END), 0L)
+           FROM Ride r
+           WHERE r.customerId = :customerId
+             AND r.status IN :statuses
+             AND r.paymentMethod = :paymentMethod""",
+    )
+    fun sumCommittedWalletFare(
+        @Param("customerId") customerId: Long,
+        @Param("statuses") statuses: Collection<RideStatus>,
+        @Param("paymentMethod") paymentMethod: PaymentMethod,
+    ): Long
 
     fun existsByCustomerIdAndStatusNotIn(
         customerId: Long,

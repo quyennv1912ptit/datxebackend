@@ -20,6 +20,7 @@ class PromoBudgetService(private val jdbc: JdbcTemplate) {
     @Transactional
     fun summary(): PromoBudgetSummary {
         releaseExpiredCampaignBudgets()
+        releaseExpiredPersonalRewardReserves()
         return jdbc.queryForObject(
             "SELECT budget_limit, held_amount, spent_amount, issuance_reserved FROM promo_budget WHERE id = 1",
             { rs, _ -> PromoBudgetSummary(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getLong(4)) },
@@ -216,6 +217,7 @@ class PromoBudgetService(private val jdbc: JdbcTemplate) {
     fun reserveIssuance(amount: Long, campaignId: Long? = null): Boolean {
         if (amount <= 0) return true
         releaseExpiredCampaignBudgets()
+        releaseExpiredPersonalRewardReserves()
         val budget = jdbc.queryForObject(
             "SELECT budget_limit, held_amount, spent_amount, issuance_reserved FROM promo_budget WHERE id = 1 FOR UPDATE",
         ) { rs, _ -> PromoBudgetSummary(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getLong(4)) }!!
@@ -430,6 +432,48 @@ class PromoBudgetService(private val jdbc: JdbcTemplate) {
                     campaignId,
                 )
             }
+        }
+    }
+
+    /**
+     * Voucher thưởng cá nhân hết hạn mà chưa từng giữ/chi thì không bao giờ tiêu dự phòng phát hành.
+     * Cờ reserve_released (V47) đảm bảo mỗi voucher chỉ hoàn lại quỹ đúng một lần.
+     */
+    @Transactional
+    fun releaseExpiredPersonalRewardReserves() {
+        val expired = jdbc.query(
+            """SELECT v.id, v.forecast_reserve_per_use
+               FROM vouchers v
+               WHERE v.source = 'SYSTEM_REWARD'
+                 AND v.campaign_id IS NULL
+                 AND v.forecast_reserve_per_use > 0
+                 AND v.valid_to <= CURRENT_TIMESTAMP
+                 AND v.reserve_released = FALSE
+                 AND NOT EXISTS (
+                     SELECT 1 FROM promo_budget_ledger l
+                     WHERE l.voucher_id = v.id AND l.action IN ('HOLD', 'SPEND')
+                 )
+               FOR UPDATE OF v""".trimIndent(),
+            { rs, _ -> rs.getLong(1) to rs.getLong(2) },
+        )
+
+        expired.forEach { (voucherId, forecast) ->
+            // Khoá quỹ tổng trước khi trừ để không race với hold/spend/reserve cùng lúc.
+            jdbc.queryForObject("SELECT id FROM promo_budget WHERE id = 1 FOR UPDATE", Long::class.java)
+            val released = jdbc.update(
+                "UPDATE vouchers SET reserve_released = TRUE WHERE id = ? AND reserve_released = FALSE",
+                voucherId,
+            )
+            if (released != 1) return@forEach
+            jdbc.update(
+                "UPDATE promo_budget SET issuance_reserved = GREATEST(issuance_reserved - ?, 0), updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+                forecast,
+            )
+            jdbc.update(
+                "INSERT INTO promo_budget_ledger(voucher_id, action, amount, note) VALUES (?, 'RELEASE', ?, 'Hoàn dự phòng phát hành voucher cá nhân hết hạn')",
+                voucherId,
+                forecast,
+            )
         }
     }
 

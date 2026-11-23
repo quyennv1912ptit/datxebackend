@@ -42,12 +42,37 @@ class StompAuthInterceptorTests {
         verifyNoInteractions(verifier)
     }
 
-    private fun connect(auth: String, role: String?): StompHeaderAccessor =
-        StompHeaderAccessor.create(StompCommand.CONNECT).apply {
+    @Test
+    fun `STOMP 1_2 handshake frame authenticates just like CONNECT`() {
+        `when`(verifier.verify("id-token", Role.DRIVER)).thenReturn(Recipient.Driver(12))
+        val accessor = connect("Bearer id-token", "DRIVER", StompCommand.STOMP)
+
+        interceptor.preSend(message(accessor), channel)
+
+        verify(verifier).verify("id-token", Role.DRIVER)
+        val principal = accessor.user as? StompPrincipal
+        assertNotNull(principal)
+        assertEquals("DRIVER:12", principal?.name)
+    }
+
+    @Test
+    fun `STOMP handshake without Authorization is rejected without calling the verifier`() {
+        val message = message(connect(null, null, StompCommand.STOMP))
+
+        assertThrows(MessagingException::class.java) { interceptor.preSend(message, channel) }
+        verifyNoInteractions(verifier)
+    }
+
+    private fun connect(
+        auth: String?,
+        role: String?,
+        command: StompCommand = StompCommand.CONNECT,
+    ): StompHeaderAccessor =
+        StompHeaderAccessor.create(command).apply {
             // Keep the same accessor attached to the message so we can assert the principal
             // the interceptor assigns on CONNECT.
             setLeaveMutable(true)
-            setNativeHeader("Authorization", auth)
+            auth?.let { setNativeHeader("Authorization", it) }
             role?.let { setNativeHeader("X-Role", it) }
             setSessionId("s-1")
         }

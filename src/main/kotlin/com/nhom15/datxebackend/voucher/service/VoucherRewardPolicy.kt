@@ -20,4 +20,7 @@ object VoucherRewardPolicy {
     )
 
     fun milestoneReward(completedRides: Long): VoucherTemplate? = MILESTONES[completedRides]
+
+    /** Xét mốc từ cao xuống thấp để có thể tự phục hồi mốc bị bỏ sót ở chuyến 6/11/21. */
+    fun milestonesDesc(): List<Long> = MILESTONES.keys.sortedDescending()
 }

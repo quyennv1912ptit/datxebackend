@@ -25,7 +25,9 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager
 import org.springframework.jdbc.datasource.DriverManagerDataSource
 import tools.jackson.databind.json.JsonMapper
 import tools.jackson.module.kotlin.KotlinModule
+import java.nio.charset.StandardCharsets
 import java.nio.file.Path
+import java.security.MessageDigest
 import java.sql.Timestamp
 import java.time.Instant
 import java.util.LinkedHashMap
@@ -83,6 +85,7 @@ class VerificationFacePersistencePostgresTest {
         service = DriverVerificationWorkflowService(
             jdbc, mapper, storage, projection, drivers,
             ekycClient = ekyc,
+            lookupHmacKey = "synthetic-hmac-test-key",
             transactionManager = DataSourceTransactionManager(dataSource),
         )
     }
@@ -103,6 +106,17 @@ class VerificationFacePersistencePostgresTest {
         val type = mapper.typeFactory.constructMapType(LinkedHashMap::class.java, String::class.java, Any::class.java)
         return mapper.readValue(raw, type)
     }
+
+    private fun lookupHmac(cccdId: String): String = CccdQrParser.computeLookupHmac(
+        cccdId,
+        MessageDigest.getInstance("SHA-256").digest("synthetic-hmac-test-key".toByteArray(StandardCharsets.UTF_8)),
+    )
+
+    private fun readHmac(applicationId: UUID, column: String): String? = jdbc.queryForObject(
+        "SELECT $column FROM driver_verification_applications WHERE id = ?",
+        String::class.java,
+        applicationId,
+    )
 
     private fun faceResult(): tools.jackson.databind.JsonNode {
         val result = mapper.createObjectNode()
@@ -265,5 +279,88 @@ class VerificationFacePersistencePostgresTest {
                 appId,
             ),
         )
+    }
+
+    @Test
+    fun `reverify and cancel restore approved CCCD hmac and clear stale QR hmac`() {
+        val approvedId = "999206000001"
+        val draftId = "999206000002"
+        val appId = UUID.randomUUID()
+        val otherAppId = UUID.randomUUID()
+        val otherOwner = "uid-face-driver-2"
+        val approvedConfirmed = mapOf(
+            "cccd_name" to "NGUYEN VAN A",
+            "cccd_id" to approvedId,
+            "cccd_dob" to "2000-01-01",
+            "gplx_number" to "999999000001",
+            "gplx_name" to "NGUYEN VAN A",
+            "gplx_dob" to "2000-01-01",
+            "gplx_classes" to listOf("A1"),
+            "no_expiry" to true,
+            "expiry_date" to null,
+        )
+        jdbc.update(
+            """INSERT INTO driver_verification_applications
+               (id, owner_uid, status, revision, submission_revision, submitted_at,
+                approved_revision, approved_submission_revision,
+                confirmed_fields, confirmation_current, cccd_id_hmac, qr_cccd_id_hmac, qr_live_scan_json)
+               VALUES (?, ?, 'APPROVED', 4, 4, ?, 4, 4, ?, true, ?, ?, ?)""",
+            appId,
+            owner,
+            Timestamp.from(Instant.now()),
+            mapper.writeValueAsString(approvedConfirmed),
+            lookupHmac(approvedId),
+            lookupHmac(draftId),
+            """{"status":"DECODED_VALID"}""",
+        )
+        jdbc.update(
+            """INSERT INTO driver_verification_submissions
+               (application_id, revision, submitted_at, snapshot_json) VALUES (?, 4, ?, ?)""",
+            appId,
+            Timestamp.from(Instant.now()),
+            mapper.writeValueAsString(
+                linkedMapOf<String, Any?>(
+                    "captures" to emptyMap<String, Any?>(),
+                    "confirmed" to approvedConfirmed,
+                    "revision" to 4L,
+                ),
+            ),
+        )
+        jdbc.update(
+            """INSERT INTO driver_verification_applications
+               (id, owner_uid, status, revision, confirmed_fields, confirmation_current)
+               VALUES (?, ?, 'DRAFT', 0, ?, true)""",
+            otherAppId,
+            otherOwner,
+            mapper.writeValueAsString(mapOf("cccd_id" to draftId, "cccd_name" to "NGUYEN VAN B")),
+        )
+        val otherActor = AuthUser(8L, otherOwner, Role.DRIVER, "Other Driver", null, "+84900000008", "OFFLINE")
+        fun hasDuplicateWarning(): Boolean =
+            (service.detail(otherActor, otherAppId)["verificationWarnings"] as List<*>).any {
+                it is VerificationWarningDto && it.code == "DUPLICATE_CCCD_ACROSS_ACCOUNTS"
+            }
+
+        val reverted = service.reverify(driver, appId, 4L)
+        assertEquals("DRAFT", reverted["status"])
+        assertEquals(5L, (reverted["revision"] as Number).toLong())
+        assertEquals(lookupHmac(approvedId), readHmac(appId, "cccd_id_hmac"))
+        assertEquals(null, readHmac(appId, "qr_cccd_id_hmac"))
+
+        val draftConfirmed = service.confirmFields(driver, appId, 5L, approvedConfirmed + ("cccd_id" to draftId))
+        val draftRevision = (draftConfirmed["revision"] as Number).toLong()
+        assertEquals(lookupHmac(draftId), readHmac(appId, "cccd_id_hmac"))
+        // Giả lập QR của người khác vẫn còn sót sau khi xác nhận CCCD nháp.
+        jdbc.update(
+            "UPDATE driver_verification_applications SET qr_cccd_id_hmac = ? WHERE id = ?",
+            lookupHmac(draftId),
+            appId,
+        )
+        assertTrue(hasDuplicateWarning())
+
+        val cancelled = service.cancelReverify(driver, appId, draftRevision)
+        assertEquals("APPROVED", cancelled["status"])
+        assertEquals(lookupHmac(approvedId), readHmac(appId, "cccd_id_hmac"))
+        assertEquals(null, readHmac(appId, "qr_cccd_id_hmac"))
+        assertTrue(!hasDuplicateWarning())
     }
 }

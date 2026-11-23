@@ -10,6 +10,7 @@ import com.nhom15.datxebackend.chat.repository.ConversationRepository
 import com.nhom15.datxebackend.chat.service.ChatRateLimiter
 import com.nhom15.datxebackend.chat.service.ChatService
 import com.nhom15.datxebackend.chat.service.ConversationService
+import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.domain.Location
 import com.nhom15.datxebackend.common.enums.PaymentMethod
 import com.nhom15.datxebackend.common.enums.Role
@@ -139,6 +140,40 @@ class ChatServiceTests {
             conversationId, clientMessageId, Role.CUSTOMER, customerId, "TEXT", "Xin chào", null, null,
         )
         Mockito.verifyNoInteractions(eventPublisher)
+    }
+
+    @Test
+    fun `retry of a stored message bypasses an exhausted rate limit`() {
+        val clientMessageId = UUID.randomUUID()
+        val stored = message(101L, clientMessageId, Role.CUSTOMER).apply { content = "Xin chào" }
+        Mockito.`when`(messageRepository.findByConversationIdAndClientMessageId(conversationId, clientMessageId))
+            .thenReturn(stored)
+        Mockito.doThrow(AppException(ErrorCode.RATE_LIMITED)).`when`(rateLimiter).check(customer)
+
+        val result = service.send(rideId, customer, SendMessageRequest(clientMessageId, content = "Xin chào"))
+
+        assertTrue(result.duplicated)
+        assertEquals(stored.id, result.message.id)
+        // Idempotent retry must not touch the quota; otherwise a lost response turns
+        // into a 429 instead of the original message.
+        Mockito.verify(rateLimiter, Mockito.never()).check(customer)
+        Mockito.verifyNoInteractions(messageWriter, eventPublisher)
+    }
+
+    @Test
+    fun `a new message is still rejected when the rate limit bucket is exhausted`() {
+        val clientMessageId = UUID.randomUUID()
+        Mockito.`when`(messageRepository.findByConversationIdAndClientMessageId(conversationId, clientMessageId))
+            .thenReturn(null)
+        Mockito.doThrow(AppException(ErrorCode.RATE_LIMITED)).`when`(rateLimiter).check(customer)
+
+        val error = assertThrows(AppException::class.java) {
+            service.send(rideId, customer, SendMessageRequest(clientMessageId, content = "Xin chào"))
+        }
+
+        assertEquals(ErrorCode.RATE_LIMITED, error.errorCode)
+        Mockito.verify(rateLimiter).check(customer)
+        Mockito.verifyNoInteractions(messageWriter, eventPublisher)
     }
 
     @Test
