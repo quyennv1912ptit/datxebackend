@@ -1,5 +1,8 @@
 package com.nhom15.datxebackend.payment
 
+import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
+import com.nhom15.datxebackend.common.exception.BadRequestException
+import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.customer.repository.CustomerRepository
 import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.payment.entity.*
@@ -65,7 +68,10 @@ class WalletPostgresTests {
         payments = PaymentService(jdbc, driverRepo, repos.getRepository(com.nhom15.datxebackend.ride.repository.RideRepository::class.java), wallets, org.mockito.Mockito.mock(org.springframework.context.ApplicationEventPublisher::class.java))
         methodChanges = PaymentMethodService(repos.getRepository(com.nhom15.datxebackend.ride.repository.RideRepository::class.java), payments, wallets, jdbc, org.mockito.Mockito.mock(org.springframework.context.ApplicationEventPublisher::class.java))
         withdrawals = WithdrawalService(repos.getRepository(WithdrawalRepository::class.java), ledgerRepo, driverRepo, wallets, org.mockito.Mockito.mock(org.springframework.context.ApplicationEventPublisher::class.java))
-        jdbc.update("INSERT INTO drivers(id,firebase_uid,phone_number,status,credit_balance,income_balance) VALUES (7001,'wallet-test','wallet-test','ONLINE',100000,100000)")
+        jdbc.update("""
+            INSERT INTO drivers(id,firebase_uid,phone_number,status,credit_balance,income_balance,bank_name,bank_account_number)
+            VALUES (7001,'wallet-test','wallet-test','ONLINE',100000,100000,'Vietcombank','0123456789')
+        """.trimIndent())
     }
 
     @AfterEach fun cleanup() {
@@ -266,8 +272,9 @@ class WalletPostgresTests {
     }
 
     @Test fun `admin withdrawal queue filters by status and exposes driver bank details`() {
-        jdbc.update("UPDATE drivers SET bank_name='Vietcombank', bank_account_number='0123456789' WHERE id=7001")
-        tx.execute { withdrawals.create(7001, 50_000, "admin-1") }
+        val id = tx.execute { withdrawals.create(7001, 50_000, "admin-1").id }
+        jdbc.update("UPDATE drivers SET bank_name='ACB', bank_account_number='99887766' WHERE id=7001")
+        assertEquals(id, tx.execute { withdrawals.create(7001, 50_000, "admin-1").id })
 
         val pending = withdrawals.adminList(WithdrawalStatus.PENDING, 0, 20)
 
@@ -275,7 +282,77 @@ class WalletPostgresTests {
         assertEquals(50_000L, pending.content.single().amount)
         assertEquals("Vietcombank", pending.content.single().bankName)
         assertEquals("0123456789", pending.content.single().bankAccountNumber)
+        assertEquals(id, withdrawals.adminList(null, 0, 20, AdminSearchFilter(q = "0123456789")).content.single().id)
+        assertTrue(withdrawals.adminList(null, 0, 20, AdminSearchFilter(q = "99887766")).content.isEmpty())
         assertTrue(withdrawals.adminList(WithdrawalStatus.REJECTED, 0, 20).content.isEmpty())
         assertEquals(1, withdrawals.adminList(null, 0, 20).content.size)
+        assertEquals(WithdrawalStatus.SUCCESS, tx.execute { withdrawals.review(id, 1, WithdrawalAction.APPROVE).status })
+        assertEquals(50_000L, balance(7001, "CASH"))
+    }
+
+    @Test fun `incomplete payout details leave no withdrawal or ledger and existing replay succeeds`() {
+        val id = tx.execute { withdrawals.create(7001, 50_000, "valid-bank").id }
+        jdbc.update("UPDATE drivers SET bank_name='  ' WHERE id=7001")
+        assertThrows(BadRequestException::class.java) {
+            tx.execute { withdrawals.create(7001, 20_000, "missing-bank") }
+        }
+        assertEquals(id, tx.execute { withdrawals.create(7001, 50_000, "valid-bank").id })
+        assertEquals(50_000L, balance(7001, "CASH"))
+        assertEquals(1L, jdbc.queryForObject("SELECT count(*) FROM withdrawal_requests", Long::class.java))
+        assertEquals(1L, jdbc.queryForObject("SELECT count(*) FROM wallet_transactions", Long::class.java))
+    }
+
+    @Test fun `legacy pending withdrawal can be refunded using the existing review flow`() {
+        val id = jdbc.queryForObject(
+            "INSERT INTO withdrawal_requests(driver_id,amount,idempotency_key) VALUES(7001,50000,'legacy') RETURNING id",
+            Long::class.java,
+        )!!
+        tx.executeWithoutResult { wallets.hold(7001, 50_000, id) }
+
+        assertEquals(null, withdrawals.adminList(null, 0, 20).content.single().bankAccountNumber)
+        assertThrows(ConflictException::class.java) {
+            tx.execute { withdrawals.review(id, 1, WithdrawalAction.APPROVE) }
+        }
+        assertEquals(WithdrawalStatus.PENDING, withdrawals.get(7001, id).status)
+        tx.executeWithoutResult { withdrawals.review(id, 1, WithdrawalAction.REJECT, "Yêu cầu chưa có thông tin nhận tiền") }
+        assertEquals(WithdrawalStatus.REJECTED, withdrawals.get(7001, id).status)
+        assertEquals(100_000L, balance(7001, "CASH"))
+    }
+
+    @Test fun `legacy driver wallet pairs cash balance only with cash transactions`() {
+        val cashTransaction = tx.execute {
+            wallets.topUp(7001, WalletOwner.DRIVER, WalletType.CASH, 25_000)
+        }!!
+        tx.execute { wallets.topUp(7001, WalletOwner.DRIVER, WalletType.CREDIT, 30_000) }
+
+        val wallet = payments.getDriverWallet(7001)
+        assertEquals(125_000L, wallet.incomeBalance)
+        assertEquals(listOf(cashTransaction.id), wallet.transactions.map { it.id })
+        assertEquals(wallet.incomeBalance, wallet.transactions.single().balanceAfter)
+    }
+
+    @Test fun `financial timestamp defaults store UTC independently of session timezone`() {
+        seedRide("CASH")
+        tx.executeWithoutResult {
+            jdbc.execute("SET LOCAL TIME ZONE 'Asia/Ho_Chi_Minh'")
+            val withdrawalUtc = jdbc.queryForObject(
+                """INSERT INTO withdrawal_requests(driver_id,amount,idempotency_key) VALUES(7001,50000,'tz')
+                   RETURNING created_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC'""",
+                Boolean::class.java,
+            )
+            val ledgerUtc = jdbc.queryForObject(
+                """INSERT INTO wallet_transactions(driver_id,wallet_type,amount,type,transaction_type)
+                   VALUES(7001,'CASH',50000,'DEPOSIT','TOP_UP')
+                   RETURNING created_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC'
+                         AND updated_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC'""",
+                Boolean::class.java,
+            )
+            val settlementUtc = jdbc.queryForObject(
+                """INSERT INTO ride_wallet_settlements(ride_id) VALUES(9001)
+                   RETURNING created_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC'""",
+                Boolean::class.java,
+            )
+            assertEquals(listOf(true, true, true), listOf(withdrawalUtc, ledgerUtc, settlementUtc))
+        }
     }
 }

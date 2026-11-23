@@ -43,27 +43,39 @@ class TicketService(
 
     @Transactional(readOnly = true)
     fun list(actor: AuthUser, page: Int, status: TicketStatus?): List<TicketSummary> =
-        support.list(actor, page, status?.name).map { it.toSummary() }
+        support.listWithoutImages(actor, page, status?.name).map { it.toSummary() }
 
     @Transactional(readOnly = true)
     fun detail(actor: AuthUser, id: Long): TicketDetail {
-        val ticket = support.detail(actor, id)
-        return TicketDetail(ticket.toSummary(), messageDtos(id))
+        val ticket = support.detailWithoutImages(actor, id)
+        val latest = messageDtos(id, includePrevious = true)
+        return TicketDetail(ticket.toSummary(), latest.takeLast(MESSAGE_PAGE_SIZE), latest.size > MESSAGE_PAGE_SIZE)
     }
 
     @Transactional(readOnly = true)
-    fun messages(actor: AuthUser, id: Long): List<TicketMessageDto> {
-        support.detail(actor, id) // kiểm tra quyền sở hữu
-        return messageDtos(id)
+    fun messages(
+        actor: AuthUser, id: Long, beforeId: Long? = null, afterId: Long? = null, size: Int = MESSAGE_PAGE_SIZE,
+    ): List<TicketMessageDto> {
+        support.detailWithoutImages(actor, id) // kiểm tra quyền sở hữu
+        return messageDtos(id, beforeId, afterId, size)
     }
 
-    /** Khách/tài xế trả lời: đưa ticket về OPEN và giải phóng admin đang xử lý. */
+    /** Khách/tài xế trả lời: khóa hàng FOR UPDATE, chặn ticket CLOSED, đưa về OPEN và giải phóng admin đang xử lý. */
     @Transactional
     fun sendUserMessage(actor: AuthUser, id: Long, request: SendTicketMessageRequest): TicketMessageDto {
-        support.detail(actor, id)
-        val (body, imageUrl) = validateMessage(actor, request.body, request.imageUrl)
+        val locked = tickets.findForUpdate(id) ?: throw NotFoundException()
+        if (actor.role != Role.ADMIN && (locked.ownerId != actor.id || locked.ownerRole != actor.role)) {
+            throw NotFoundException()
+        }
         val senderRole = if (actor.role == Role.DRIVER) TicketSenderRole.DRIVER else TicketSenderRole.CUSTOMER
-        val message = messages.save(TicketMessageEntity(id, actor.id, senderRole, body, imageUrl))
+        retryMessage(actor, id, senderRole, request, null)?.let { return it }
+        if (locked.status == TicketStatus.CLOSED) {
+            throw ConflictException(message = "Yêu cầu hỗ trợ đã đóng, không thể gửi thêm tin nhắn")
+        }
+        val (body, imageUrl) = validateMessage(actor, request.body, request.imageUrl)
+        val message = messages.save(TicketMessageEntity(
+            id, actor.id, senderRole, body, imageUrl, clientMessageId = request.clientMessageId,
+        ))
         jdbc.update(
             """UPDATE support_tickets
                SET status = 'OPEN', handled_by = NULL,
@@ -99,14 +111,18 @@ class TicketService(
     @Transactional
     fun sendAdminMessage(admin: AuthUser, id: Long, request: SendTicketMessageRequest): TicketMessageDto {
         val ticket = tickets.findForUpdate(id) ?: throw NotFoundException()
+        val status = request.status ?: TicketStatus.WAITING_FOR_USER
+        retryMessage(admin, id, TicketSenderRole.ADMIN, request, status)?.let { return it }
         if (ticket.status == TicketStatus.IN_PROGRESS && ticket.handledBy != null && ticket.handledBy != admin.id) {
             throw ConflictException(message = "Ticket đang được xử lý bởi admin khác")
         }
-        val status = request.status ?: TicketStatus.WAITING_FOR_USER
         if (status !in ADMIN_STATUSES) throw BadRequestException(message = "Trạng thái ticket không hợp lệ")
         val (body, imageUrl) = validateMessage(admin, request.body, request.imageUrl)
 
-        val message = messages.save(TicketMessageEntity(id, admin.id, TicketSenderRole.ADMIN, body, imageUrl))
+        val message = messages.save(TicketMessageEntity(
+            id, admin.id, TicketSenderRole.ADMIN, body, imageUrl,
+            clientMessageId = request.clientMessageId, requestedStatus = status,
+        ))
         ticket.status = status
         ticket.handledBy = admin.id
         ticket.response = body // giữ cột response cũ cho màn admin/app cũ
@@ -164,7 +180,10 @@ class TicketService(
     fun adminDetail(admin: AuthUser, id: Long): AdminTicketDetail {
         val ticket = support.detail(admin, id)
         val summary = adminSummary(id) ?: throw NotFoundException()
-        return AdminTicketDetail(summary, ticket.description, ticket.images, messageDtos(id))
+        val latest = messageDtos(id, includePrevious = true)
+        return AdminTicketDetail(
+            summary, ticket.description, ticket.images, latest.takeLast(MESSAGE_PAGE_SIZE), latest.size > MESSAGE_PAGE_SIZE,
+        )
     }
 
     private fun adminSummary(id: Long): AdminTicketSummary? = jdbc.query(
@@ -180,8 +199,58 @@ class TicketService(
         id,
     ).firstOrNull()
 
-    private fun messageDtos(ticketId: Long): List<TicketMessageDto> =
-        messages.findByTicketIdOrderByCreatedAtAscIdAsc(ticketId).map { it.toDto() }
+    private fun messageDtos(
+        ticketId: Long, beforeId: Long? = null, afterId: Long? = null, size: Int = MESSAGE_PAGE_SIZE,
+        includePrevious: Boolean = false,
+    ): List<TicketMessageDto> {
+        if (size !in 1..MESSAGE_PAGE_SIZE) throw BadRequestException(message = "size phải nằm trong khoảng 1 đến 100")
+        if (beforeId != null && afterId != null) throw BadRequestException(message = "Chỉ dùng một trong beforeId và afterId")
+        val cursor = beforeId ?: afterId
+        if (cursor != null && cursor <= 0) throw BadRequestException(message = "Mã tin nhắn phải lớn hơn 0")
+
+        val ascending = afterId != null
+        val direction = if (ascending) "ASC" else "DESC"
+        val parameters = mutableListOf<Any>(ticketId)
+        val boundary = if (cursor == null) "" else {
+            val operator = if (ascending) ">" else "<"
+            parameters.addAll(listOf(ticketId, cursor))
+            "AND (created_at, id) $operator (SELECT created_at, id FROM support_ticket_messages WHERE ticket_id = ? AND id = ?)"
+        }
+        parameters.add(if (includePrevious) size + 1 else size)
+        val page = jdbc.query(
+            """SELECT id, ticket_id, sender_id, sender_role, body, image_url, created_at
+               FROM support_ticket_messages WHERE ticket_id = ? $boundary
+               ORDER BY created_at $direction, id $direction LIMIT ?""".trimIndent(),
+            { row, _ ->
+                TicketMessageDto(
+                    id = row.getLong("id"),
+                    ticketId = row.getLong("ticket_id"),
+                    senderId = row.getLong("sender_id"),
+                    senderRole = TicketSenderRole.valueOf(row.getString("sender_role")),
+                    body = row.getString("body"),
+                    imageUrl = row.getString("image_url"),
+                    createdAt = row.getTimestamp("created_at").toInstant(),
+                )
+            },
+            *parameters.toTypedArray(),
+        )
+        return if (ascending) page else page.asReversed()
+    }
+
+    /** The caller already holds the ticket row lock for the whole lookup and write. */
+    private fun retryMessage(
+        actor: AuthUser, ticketId: Long, senderRole: TicketSenderRole,
+        request: SendTicketMessageRequest, status: TicketStatus?,
+    ): TicketMessageDto? {
+        val key = request.clientMessageId ?: return null
+        val prior = messages.findByTicketIdAndSenderIdAndSenderRoleAndClientMessageId(ticketId, actor.id, senderRole, key)
+            ?: return null
+        val image = request.imageUrl?.trim()?.takeIf(String::isNotEmpty)
+        if (prior.body != request.body.trim() || prior.imageUrl != image || prior.requestedStatus != status) {
+            throw ConflictException(message = "Mã tin nhắn đã được dùng cho nội dung khác")
+        }
+        return prior.toDto()
+    }
 
     /** Một tin nhắn hợp lệ phải có text hoặc ảnh; nếu có ảnh, ảnh phải thuộc thư mục Cloudinary của chính người gửi. */
     private fun validateMessage(actor: AuthUser, body: String, imageUrl: String?): Pair<String, String?> {
@@ -193,14 +262,7 @@ class TicketService(
         if (text.length > 4_000) throw BadRequestException(message = "Nội dung tin nhắn tối đa 4000 ký tự")
         if (image != null) {
             if (image.length > 2_048) throw BadRequestException(message = "Đường dẫn ảnh quá dài")
-            val uri = runCatching { java.net.URI(image) }.getOrNull()
-            if (uri?.scheme != "https" || uri.host != "res.cloudinary.com") {
-                throw BadRequestException(message = "Ảnh phải được tải lên Cloudinary bằng API upload của hệ thống")
-            }
-            val folder = "/app_dat_xe/${actor.role.name.lowercase()}/${actor.id}/"
-            if (uri.path?.contains(folder) != true) {
-                throw BadRequestException(message = "Ảnh không thuộc tài khoản đang đăng nhập")
-            }
+            support.validateMessageImage(actor, image)
         }
         return text to image
     }
@@ -243,8 +305,10 @@ class TicketService(
         handledBy = getObject("handled_by", Long::class.javaObjectType),
     )
 
-    private companion object {
-        val ADMIN_STATUSES = setOf(
+    companion object {
+        const val MESSAGE_PAGE_SIZE = 100
+
+        private val ADMIN_STATUSES = setOf(
             TicketStatus.OPEN,
             TicketStatus.IN_PROGRESS,
             TicketStatus.WAITING_FOR_USER,

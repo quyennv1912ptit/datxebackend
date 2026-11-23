@@ -27,10 +27,15 @@ class VoucherCampaignPublishedListener(
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     fun onCampaignPublished(event: VoucherCampaignPublished) {
-        val customerIds = jdbc.queryForList(
-            "SELECT id FROM users WHERE role = 'CUSTOMER' AND active = TRUE",
-            Long::class.java,
-        )
+        val customerIds = try {
+            jdbc.queryForList(
+                "SELECT id FROM customers WHERE status = 'ACTIVE' AND deleted_at IS NULL",
+                Long::class.java,
+            )
+        } catch (ex: Exception) {
+            log.error("Could not load active customers for voucher campaign {}", event.id, ex)
+            return
+        }
         val fullBody = buildString {
             append(event.discountSummary)
             append(" · Giới hạn ${event.claimLimit} suất.")

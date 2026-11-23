@@ -48,7 +48,7 @@ class RideRatingService(
         val average = if (total == 0L) null else distribution.entries.sumOf { (stars, count) -> stars * count }.toDouble() / total
         val recent = jdbcTemplate.query(
             """SELECT id, stars, comment, created_at FROM ratings
-               WHERE ratee_id = ? AND direction = 'CUSTOMER_TO_DRIVER'
+               WHERE ratee_id = ? AND direction = 'CUSTOMER_TO_DRIVER' AND is_hidden = false
                ORDER BY created_at DESC, id DESC LIMIT 10""",
             { rs, _ -> DriverReview(rs.getLong("id"), rs.getInt("stars"), rs.getString("comment"), rs.getTimestamp("created_at").toInstant()) },
             driverId,
@@ -202,6 +202,13 @@ class RideRatingService(
             "customers"
         }
 
+        // Lock ratee row FOR UPDATE to serialize concurrent average_rating recomputations (F-048).
+        jdbcTemplate.queryForList(
+            "SELECT id FROM $targetTable WHERE id = ? FOR UPDATE",
+            Long::class.java,
+            target.rateeId,
+        )
+
         val updated = jdbcTemplate.update(
             """
             UPDATE $targetTable
@@ -223,19 +230,17 @@ class RideRatingService(
         }
 
         val cleanComment = request.comment?.trim()?.takeIf(String::isNotEmpty)
-        // App tài xế không hiển thị thông báo "đánh giá mới": chỉ phát thông báo cho khách hàng.
-        // Đánh giá CUSTOMER_TO_DRIVER vẫn được lưu và xem trong hồ sơ tài xế qua /driver/ratings/received.
+        // App tài xế không hiển thị thông báo "đánh giá mới": chỉ phát thông báo cho khách hàng sau commit (F-047).
         if (target.direction == "DRIVER_TO_CUSTOMER") {
-            runCatching {
-                notifications.send(
-                    Recipient.Customer(target.rateeId),
-                    RatingReceivedNotificationPayload(
-                        rideId = rideId,
-                        stars = request.stars,
-                        comment = cleanComment,
-                        tags = tags,
-                    ),
-                )
+            val payload = RatingReceivedNotificationPayload(
+                stars = request.stars,
+                comment = cleanComment,
+                tags = tags,
+            )
+            afterCommit {
+                runCatching {
+                    notifications.send(Recipient.Customer(target.rateeId), payload)
+                }
             }
         }
 
@@ -248,6 +253,18 @@ class RideRatingService(
             comment = request.comment?.trim()?.takeIf(String::isNotEmpty),
             tip = request.tip,
             tags = tags,
+        )
+    }
+
+    private fun afterCommit(action: () -> Unit) {
+        if (!org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            action()
+            return
+        }
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+            object : org.springframework.transaction.support.TransactionSynchronization {
+                override fun afterCommit() = action()
+            },
         )
     }
 

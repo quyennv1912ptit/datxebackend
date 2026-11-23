@@ -37,8 +37,13 @@ class TicketController(private val service: TicketService) {
         ApiResponse.ok(service.detail(actor, id))
 
     @GetMapping("/{id}/messages")
-    fun messages(@CurrentUser actor: AuthUser, @PathVariable id: Long): ApiResponse<List<TicketMessageDto>> =
-        ApiResponse.ok(service.messages(actor, id))
+    fun messages(
+        @CurrentUser actor: AuthUser,
+        @PathVariable id: Long,
+        @RequestParam(required = false) beforeId: Long?,
+        @RequestParam(required = false) afterId: Long?,
+        @RequestParam(defaultValue = "${TicketService.MESSAGE_PAGE_SIZE}") size: Int,
+    ): ApiResponse<List<TicketMessageDto>> = ApiResponse.ok(service.messages(actor, id, beforeId, afterId, size))
 
     @PostMapping("/{id}/messages")
     fun sendMessage(
@@ -70,6 +75,15 @@ class AdminTicketController(private val service: TicketService) {
     @PostMapping("/{id}/claim")
     fun claim(@CurrentUser admin: AuthUser, @PathVariable id: Long): ApiResponse<AdminTicketDetail> =
         ApiResponse.ok(service.claim(admin, id))
+
+    @GetMapping("/{id}/messages")
+    fun messages(
+        @CurrentUser admin: AuthUser,
+        @PathVariable id: Long,
+        @RequestParam(required = false) beforeId: Long?,
+        @RequestParam(required = false) afterId: Long?,
+        @RequestParam(defaultValue = "${TicketService.MESSAGE_PAGE_SIZE}") size: Int,
+    ): ApiResponse<List<TicketMessageDto>> = ApiResponse.ok(service.messages(admin, id, beforeId, afterId, size))
 
     @PostMapping("/{id}/messages")
     fun sendMessage(

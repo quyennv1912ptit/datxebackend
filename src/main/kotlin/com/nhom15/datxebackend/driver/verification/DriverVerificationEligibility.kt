@@ -34,7 +34,14 @@ class DriverVerificationEligibility @Autowired constructor(
     }
 
     fun statusAfterRide(driver: Driver): DriverStatus {
-        if (displayedStatus(driver) == "APPROVED") return DriverStatus.ONLINE
+        if (driver.status == DriverStatus.BLOCKED) {
+            driver.onlineVehicleType = null
+            return DriverStatus.BLOCKED
+        }
+        val onlineType = driver.onlineVehicleType
+        if (onlineType != null && mayGoOnline(driver, onlineType)) {
+            return DriverStatus.ONLINE
+        }
         driver.onlineVehicleType = null
         return DriverStatus.OFFLINE
     }

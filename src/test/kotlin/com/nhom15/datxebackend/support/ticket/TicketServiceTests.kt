@@ -1,18 +1,18 @@
 package com.nhom15.datxebackend.support.ticket
 
+import com.cloudinary.Cloudinary
 import com.nhom15.datxebackend.common.enums.Role
 import com.nhom15.datxebackend.common.exception.BadRequestException
 import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.support.SupportService
-import com.nhom15.datxebackend.support.SupportTicket
+import com.nhom15.datxebackend.uploads.CloudinaryAssetService
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.mockito.ArgumentMatchers.any
 import org.mockito.Mockito.*
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.jdbc.core.JdbcTemplate
-import java.time.Instant
 import java.util.UUID
 
 class TicketServiceTests {
@@ -36,14 +36,8 @@ class TicketServiceTests {
         id = 42,
     )
 
-    private fun legacyTicket() = SupportTicket(
-        id = 42, code = "HT-42", rideId = null, category = "OTHER", description = "Cần hỗ trợ",
-        status = "OPEN", response = null, images = emptyList(), createdAt = Instant.now(), updatedAt = Instant.now(),
-        ownerId = 11, ownerRole = "CUSTOMER",
-    )
-
     @Test fun `user reply reopens ticket and frees the admin claim`() {
-        `when`(support.detail(customer, 42)).thenReturn(legacyTicket())
+        `when`(tickets.findForUpdate(42)).thenReturn(entity())
         `when`(messages.save(any(TicketMessageEntity::class.java))).thenAnswer {
             (it.arguments[0] as TicketMessageEntity).apply { id = 1 }
         }
@@ -83,22 +77,27 @@ class TicketServiceTests {
     }
 
     @Test fun `image-only message is accepted and stores the image url`() {
-        `when`(support.detail(customer, 42)).thenReturn(legacyTicket())
+        `when`(tickets.findForUpdate(42)).thenReturn(entity())
         `when`(messages.save(any(TicketMessageEntity::class.java))).thenAnswer {
             (it.arguments[0] as TicketMessageEntity).apply { id = 3 }
         }
         val url = "https://res.cloudinary.com/demo/image/upload/v1/app_dat_xe/customer/11/photo.jpg"
+        val assets = CloudinaryAssetService(Cloudinary(mapOf("cloud_name" to "demo")))
+        doAnswer { assets.validateOwnedImage(customer, url) }.`when`(support).validateMessageImage(customer, url)
 
         val message = service.sendUserMessage(customer, 42, SendTicketMessageRequest("", imageUrl = url))
 
         assertEquals("", message.body)
         assertEquals(url, message.imageUrl)
+        verify(support).validateMessageImage(customer, url)
         verify(messages).save(any(TicketMessageEntity::class.java))
     }
 
     @Test fun `image from another account is rejected`() {
-        `when`(support.detail(customer, 42)).thenReturn(legacyTicket())
+        `when`(tickets.findForUpdate(42)).thenReturn(entity())
         val foreign = "https://res.cloudinary.com/demo/image/upload/v1/app_dat_xe/customer/99/photo.jpg"
+        val assets = CloudinaryAssetService(Cloudinary(mapOf("cloud_name" to "demo")))
+        doAnswer { assets.validateOwnedImage(customer, foreign) }.`when`(support).validateMessageImage(customer, foreign)
 
         assertThrows(BadRequestException::class.java) {
             service.sendUserMessage(customer, 42, SendTicketMessageRequest("", imageUrl = foreign))
@@ -107,11 +106,33 @@ class TicketServiceTests {
     }
 
     @Test fun `empty message is rejected before writing`() {
-        `when`(support.detail(customer, 42)).thenReturn(legacyTicket())
+        `when`(tickets.findForUpdate(42)).thenReturn(entity())
 
         assertThrows(BadRequestException::class.java) {
             service.sendUserMessage(customer, 42, SendTicketMessageRequest("   "))
         }
         verify(messages, never()).save(any(TicketMessageEntity::class.java))
+    }
+
+    @Test fun `lost admin reply response can be retried without another save or event`() {
+        val ticket = entity()
+        `when`(tickets.findForUpdate(42)).thenReturn(ticket)
+        val key = UUID.randomUUID()
+        val reply = SendTicketMessageRequest("Đã xử lý", TicketStatus.CLOSED, clientMessageId = key)
+        var previous: TicketMessageEntity? = null
+        `when`(messages.findByTicketIdAndSenderIdAndSenderRoleAndClientMessageId(42, admin.id, TicketSenderRole.ADMIN, key)).thenAnswer {
+            previous
+        }
+        `when`(messages.save(any(TicketMessageEntity::class.java))).thenAnswer {
+            (it.arguments[0] as TicketMessageEntity).apply { id = 1; previous = this }
+        }
+
+        val first = service.sendAdminMessage(admin, 42, reply)
+        assertEquals(first, service.sendAdminMessage(admin, 42, reply))
+        assertThrows(ConflictException::class.java) {
+            service.sendAdminMessage(admin, 42, reply.copy(status = TicketStatus.OPEN))
+        }
+        verify(messages).save(any(TicketMessageEntity::class.java))
+        verify(events).publishEvent(any(TicketReplied::class.java))
     }
 }

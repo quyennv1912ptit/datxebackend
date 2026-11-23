@@ -48,6 +48,7 @@ data class TicketMessageDto(
 data class TicketDetail(
     val ticket: TicketSummary,
     val messages: List<TicketMessageDto>,
+    val hasOlderMessages: Boolean = false,
 )
 
 data class SendTicketMessageRequest(
@@ -60,6 +61,8 @@ data class SendTicketMessageRequest(
 
     @field:Size(max = 2_048)
     val imageUrl: String? = null,
+
+    val clientMessageId: UUID? = null,
 )
 
 data class AdminTicketSummary(
@@ -82,4 +85,5 @@ data class AdminTicketDetail(
     val description: String,
     val images: List<SupportImage>,
     val messages: List<TicketMessageDto>,
+    val hasOlderMessages: Boolean = false,
 )

@@ -142,6 +142,9 @@ class Ride(
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "vehicle_booking_snapshot", columnDefinition = "jsonb", updatable = false)
     val vehicleBookingSnapshot: VehicleBookingDetails? = null,
+
+    @Embedded
+    val fareSnapshot: RideFareSnapshot? = null,
 ) : BaseEntity() {
 
     @Version

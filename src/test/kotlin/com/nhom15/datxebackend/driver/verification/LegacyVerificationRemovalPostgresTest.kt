@@ -146,7 +146,7 @@ class LegacyVerificationRemovalPostgresTest {
                 VALUES (?, ?, 'cccd_front', 'encrypted-test', 'image/jpeg', 43, repeat('0',64), '{}', 5)
             """, UUID.randomUUID(), mixed)
 
-            val flyway = Flyway.configure().dataSource(ds).schemas(schema).load()
+            val flyway = Flyway.configure().dataSource(ds).schemas(schema).target("42").load()
             assertEquals(1, flyway.migrate().migrationsExecuted)
             flyway.validate()
             assertEquals("42", flyway.info().current().version.version)

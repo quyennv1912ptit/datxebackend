@@ -16,16 +16,20 @@ class RideCreationValidator(
     private val serviceArea: ServiceAreaProperties,
 ) {
     fun validate(request: CreateRideRequest) {
-        listOf(request.pickupLat to request.pickupLng, request.dropoffLat to request.dropoffLng).forEach { (lat, lng) ->
+        validateRouteCoordinates(request.pickupLat, request.pickupLng, request.dropoffLat, request.dropoffLng)
+        validateFields(request)
+        validateSchedule(request)
+    }
+
+    fun validateRouteCoordinates(pickupLat: Double, pickupLng: Double, dropoffLat: Double, dropoffLng: Double) {
+        listOf(pickupLat to pickupLng, dropoffLat to dropoffLng).forEach { (lat, lng) ->
             if (!lat.isFinite() || lat !in -85.05112878..85.05112878 || !lng.isFinite() || lng !in -180.0..180.0) {
                 throw AppException(
                     ErrorCode.VALIDATION_ERROR, "Tọa độ không hợp lệ",
                     org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY)
             }
         }
-        validateServiceArea(GeoPoint(request.pickupLat, request.pickupLng), GeoPoint(request.dropoffLat, request.dropoffLng))
-        validateFields(request)
-        validateSchedule(request)
+        validateServiceArea(GeoPoint(pickupLat, pickupLng), GeoPoint(dropoffLat, dropoffLng))
     }
 
     private fun validateServiceArea(pickup: GeoPoint, dropoff: GeoPoint) {

@@ -77,7 +77,8 @@ class PaymentService(
         }
         val transactions = jdbcTemplate.query(
             """SELECT id, ride_id, type, amount, balance_after, description, created_at
-               FROM wallet_transactions WHERE driver_id = ? ORDER BY created_at DESC, id DESC LIMIT 100""".trimIndent(),
+               FROM wallet_transactions WHERE driver_id = ? AND wallet_type = 'CASH'
+               ORDER BY created_at DESC, id DESC LIMIT 100""".trimIndent(),
             { row, _ ->
                 WalletTransactionResponse(
                     id = row.getLong("id"), rideId = row.getObject("ride_id", Long::class.javaObjectType),
@@ -146,18 +147,33 @@ class PaymentService(
 
         // Driver's 80% share is based on the original fare before the voucher.
         val rawFare = ride.fareEstimate
-        val settledMethod = wallets.settle(ride.id, ride.customerId, event.driverId, event.finalFare.amount, ride.paymentMethod, rawFare)
-        if (ride.paymentMethod != settledMethod) ride.paymentMethod = settledMethod
+        val originalMethod = ride.paymentMethod
+        val settledMethod = wallets.settle(ride.id, ride.customerId, event.driverId, event.finalFare.amount, originalMethod, rawFare)
+        if (originalMethod != settledMethod) ride.paymentMethod = settledMethod
         val paidNow = settledMethod == PaymentMethod.WALLET || event.finalFare.amount == 0L
+        val status = if (paidNow) PaymentStatus.PAID.name else PaymentStatus.PENDING.name
         val paidAt = if (paidNow) java.sql.Timestamp.from(Instant.now()) else null
         jdbcTemplate.update(
             """INSERT INTO payments (ride_id, customer_id, driver_id, amount, method, status, paid_at)
                VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (ride_id) DO UPDATE
                SET status = EXCLUDED.status, method = EXCLUDED.method, paid_at = EXCLUDED.paid_at, updated_at = CURRENT_TIMESTAMP""".trimIndent(),
             event.rideId, event.customerId, event.driverId, event.finalFare.amount, settledMethod.name,
-            if (paidNow) PaymentStatus.PAID.name else PaymentStatus.PENDING.name,
+            status,
             paidAt,
         )
+        if (originalMethod != settledMethod) {
+            events.publishEvent(
+                com.nhom15.datxebackend.payment.event.PaymentUpdated(
+                    rideId = ride.id,
+                    customerId = ride.customerId,
+                    driverId = event.driverId,
+                    fromMethod = originalMethod,
+                    method = settledMethod,
+                    status = status,
+                    amount = event.finalFare.amount,
+                ),
+            )
+        }
     }
 
     @Transactional(readOnly = true)

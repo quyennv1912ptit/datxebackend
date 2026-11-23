@@ -29,11 +29,22 @@ class PromoBudgetService(private val jdbc: JdbcTemplate) {
     @Transactional
     fun setLimit(amount: Long) {
         if (amount < 0) throw BadRequestException(message = "Ngân sách không được âm")
-        val current = summary()
+        releaseExpiredCampaignBudgets()
+        val current = jdbc.queryForObject(
+            "SELECT budget_limit, held_amount, spent_amount, issuance_reserved FROM promo_budget WHERE id = 1 FOR UPDATE",
+            { rs, _ -> PromoBudgetSummary(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getLong(4)) },
+        )!!
         if (amount < current.heldAmount + current.spentAmount + current.issuanceReserved) {
             throw BadRequestException(message = "Hạn mức không được thấp hơn ngân sách đang giữ, đã chi và đã phân bổ")
         }
-        jdbc.update("UPDATE promo_budget SET budget_limit = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1", amount)
+        val updated = jdbc.update(
+            "UPDATE promo_budget SET budget_limit = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1 AND ? >= held_amount + spent_amount + issuance_reserved",
+            amount,
+            amount,
+        )
+        if (updated != 1) {
+            throw BadRequestException(message = "Hạn mức không được thấp hơn ngân sách đang giữ, đã chi và đã phân bổ")
+        }
         jdbc.update("INSERT INTO promo_budget_ledger(action, amount, note) VALUES ('BUDGET_SET', ?, 'Admin cập nhật hạn mức quỹ tổng')", amount)
     }
 
@@ -330,7 +341,8 @@ class PromoBudgetService(private val jdbc: JdbcTemplate) {
             }
 
             val holdAmount = hold[0] as Long
-            val canRestoreAmount = if (canRestore) holdAmount else 0L
+            val forecastAmount = hold[1] as Long
+            val canRestoreAmount = if (canRestore) forecastAmount else 0L
             jdbc.update(
                 "UPDATE promo_budget SET held_amount = GREATEST(held_amount - ?, 0), issuance_reserved = issuance_reserved + ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
                 holdAmount,
@@ -366,11 +378,17 @@ class PromoBudgetService(private val jdbc: JdbcTemplate) {
         val amount = hold[0] as Long
         val campaignId = hold[1] as Long?
         val spent = jdbc.update(
-            "INSERT INTO promo_budget_ledger(ride_id, voucher_id, campaign_id, action, amount) VALUES (?, ?, ?, 'SPEND', ?) ON CONFLICT DO NOTHING",
+            """INSERT INTO promo_budget_ledger(ride_id, voucher_id, campaign_id, action, amount)
+               SELECT ?, ?, ?, 'SPEND', ?
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM promo_budget_ledger WHERE ride_id = ? AND action = 'RELEASE'
+               )
+               ON CONFLICT DO NOTHING""",
             rideId,
             hold[2],
             campaignId,
             amount,
+            rideId,
         )
         if (spent == 1) {
             jdbc.update(

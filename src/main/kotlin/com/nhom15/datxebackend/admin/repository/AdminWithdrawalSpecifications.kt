@@ -18,9 +18,13 @@ object AdminWithdrawalSpecifications {
             val drivers = query.subquery(Long::class.javaObjectType)
             val driver = drivers.from(Driver::class.java)
             val pattern = filter.pattern()
-            drivers.select(driver.get("id")).where(cb.or(*listOf("fullName", "phoneNumber", "bankName", "bankAccountNumber")
+            drivers.select(driver.get("id")).where(cb.or(*listOf("fullName", "phoneNumber")
                 .map { cb.like(cb.lower(driver.get(it)), pattern, '!') }.toTypedArray()))
-            val matches = mutableListOf<Predicate>(request.get<Long>("driverId").`in`(drivers))
+            val matches = mutableListOf(
+                request.get<Long>("driverId").`in`(drivers),
+                cb.like(cb.lower(request.get("bankNameSnapshot")), pattern, '!'),
+                cb.like(cb.lower(request.get("bankAccountNumberSnapshot")), pattern, '!'),
+            )
             term.removePrefix("#").toLongOrNull()?.let { matches += cb.equal(request.get<Long>("id"), it) }
             predicates += cb.or(*matches.toTypedArray())
         }

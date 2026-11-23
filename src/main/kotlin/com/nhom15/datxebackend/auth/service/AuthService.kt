@@ -24,17 +24,20 @@ import com.nhom15.datxebackend.driver.entity.Driver
 import com.nhom15.datxebackend.driver.repository.DriverRepository
 import com.nhom15.datxebackend.notification.token.DeviceTokenService
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
 @Service
-class AuthService(
+class AuthService @Autowired constructor(
     private val firebaseAuth: FirebaseAuth,
     private val customerRepository: CustomerRepository,
     private val driverRepository: DriverRepository,
     private val adminRepository: AdminRepository,
     private val deviceTokenService: DeviceTokenService,
     private val authenticatedUserCache: AuthenticatedUserCache,
+    private val jdbcTemplate: JdbcTemplate? = null,
 ) : AuthenticatedUserProvider {
     @Transactional
     fun loginCustomer(request: AuthLoginRequest): AuthProfileResponse {
@@ -218,6 +221,12 @@ class AuthService(
     }
 
     private fun ensureUidAvailableFor(firebaseUid: String, requestedRole: Role) {
+        if (requestedRole == Role.DRIVER && isTombstonedDriverUid(firebaseUid)) {
+            throw AppException(
+                ErrorCode.ACCOUNT_LOCKED,
+                "Firebase account đã bị xóa và không thể dùng để đăng nhập tài xế",
+            )
+        }
         val existsForAnotherRole = when (requestedRole) {
             // Customer and driver profiles may share a Firebase identity; admin stays exclusive.
             Role.CUSTOMER -> adminRepository.existsByFirebaseUid(firebaseUid)
@@ -227,6 +236,15 @@ class AuthService(
         if (existsForAnotherRole) {
             throw AppException(ErrorCode.ACCOUNT_ALREADY_EXISTS, "Firebase account đã được liên kết với role khác")
         }
+    }
+
+    private fun isTombstonedDriverUid(firebaseUid: String): Boolean {
+        val jdbc = jdbcTemplate ?: return false
+        return jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM deleted_firebase_uids WHERE firebase_uid = ?)",
+            Boolean::class.java,
+            firebaseUid,
+        ) == true
     }
 
     /**
@@ -240,26 +258,44 @@ class AuthService(
         if (verifiedPhone == null) return null
         val existing = customerRepository.findByPhoneNumber(verifiedPhone).orElse(null)
             ?.takeIf { it.deletedAt == null } ?: return null
+        val oldUid = existing.firebaseUid
         log.warn(
             "Firebase UID changed for customer {}: {} -> {}; re-attached by verified phone",
-            existing.id, existing.firebaseUid, firebaseUid,
+            existing.id, oldUid, firebaseUid,
         )
-        authenticatedUserCache.evict(existing.firebaseUid)
         existing.firebaseUid = firebaseUid
-        return customerRepository.save(existing)
+        val saved = customerRepository.save(existing)
+        authenticatedUserCache.evictAfterCommit(oldUid)
+        authenticatedUserCache.evictAfterCommit(firebaseUid)
+        return saved
     }
 
     private fun attachDriverByPhone(firebaseUid: String, verifiedPhone: String?): Driver? {
         if (verifiedPhone == null) return null
         val existing = driverRepository.findByPhoneNumber(verifiedPhone).orElse(null)
             ?.takeIf { it.deletedAt == null } ?: return null
+        val oldUid = existing.firebaseUid
         log.warn(
             "Firebase UID changed for driver {}: {} -> {}; re-attached by verified phone",
-            existing.id, existing.firebaseUid, firebaseUid,
+            existing.id, oldUid, firebaseUid,
         )
-        authenticatedUserCache.evict(existing.firebaseUid)
         existing.firebaseUid = firebaseUid
-        return driverRepository.save(existing)
+        val saved = driverRepository.save(existing)
+        if (oldUid != firebaseUid) {
+            jdbcTemplate?.update(
+                "UPDATE driver_verification_applications SET owner_uid = ? WHERE owner_uid = ?",
+                firebaseUid,
+                oldUid,
+            )
+            jdbcTemplate?.update(
+                "UPDATE driver_verification_projection SET owner_uid = ? WHERE owner_uid = ?",
+                firebaseUid,
+                oldUid,
+            )
+        }
+        authenticatedUserCache.evictAfterCommit(oldUid)
+        authenticatedUserCache.evictAfterCommit(firebaseUid)
+        return saved
     }
 
     private fun toAuthUser(customer: Customer) = AuthUser(

@@ -99,6 +99,32 @@ class ChatServiceTests {
     }
 
     @Test
+    fun `admin can list and select chat from an earlier ride assignment`() {
+        val admin = customer.copy(role = Role.ADMIN)
+        val previous = Conversation().apply {
+            id = 89
+            rideId = this@ChatServiceTests.rideId
+            driverId = 10
+        }
+        Mockito.`when`(conversationRepository.findAllByRideIdOrderByIdDesc(rideId))
+            .thenReturn(listOf(previous, conversation))
+        Mockito.`when`(conversationRepository.findByRideIdAndDriverId(rideId, previous.driverId))
+            .thenReturn(previous)
+        val previousMessage = message(101L, UUID.randomUUID(), Role.DRIVER)
+        Mockito.`when`(messageRepository.before(previous.id, 102, PageRequest.of(0, 31)))
+            .thenReturn(listOf(previousMessage))
+
+        val threads = service.adminConversations(rideId, admin)
+
+        assertEquals(listOf(10L, driverId), threads.map { it.driverId })
+        assertEquals(listOf(false, true), threads.map { it.current })
+        assertEquals(
+            listOf(101L),
+            service.adminMessages(rideId, admin, 102, null, 30, previous.driverId).messages.map { it.id },
+        )
+    }
+
+    @Test
     fun `a non participant gets not found`() {
         val outsider = customer.copy(id = 90L)
         assertThrows(NotFoundException::class.java) {
@@ -158,6 +184,8 @@ class ChatServiceTests {
 
     @Test
     fun `mark read only updates messages from the other role up to requested id`() {
+        Mockito.`when`(messageRepository.findMaxIdInConversation(conversationId))
+            .thenReturn(105L)
         Mockito.`when`(messageRepository.markRead(conversationId, "CUSTOMER", 105L, now))
             .thenReturn(2)
 

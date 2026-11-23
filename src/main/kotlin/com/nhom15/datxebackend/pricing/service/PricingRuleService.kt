@@ -14,12 +14,14 @@ import com.nhom15.datxebackend.pricing.entity.PricingRule
 import com.nhom15.datxebackend.pricing.repository.PricingRuleRepository
 import java.time.LocalTime
 import org.springframework.data.domain.Sort
+import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
 @Service
 class PricingRuleService(
     private val pricingRuleRepository: PricingRuleRepository,
+    private val jdbc: JdbcTemplate,
 ) {
     @Transactional(readOnly = true)
     fun listRules(actor: AuthUser): List<PricingRuleResponse> {
@@ -77,6 +79,14 @@ class PricingRuleService(
         val rule = pricingRuleRepository.findByIdForUpdate(ruleId)
             ?: throw NotFoundException(ErrorCode.PRICING_RULE_NOT_FOUND, message = "Bảng giá không tồn tại")
 
+        jdbc.update(
+            """
+            INSERT INTO pricing_rule_changes (pricing_rule_id, admin_id, previous_rule)
+            SELECT rule.id, ?, to_jsonb(rule) FROM pricing_rules rule WHERE rule.id = ?
+            """.trimIndent(),
+            actor.id,
+            ruleId,
+        )
         rule.baseFare = request.baseFare
         rule.perKm = request.perKm
         rule.perMinuteWaiting = request.perMinuteWaiting

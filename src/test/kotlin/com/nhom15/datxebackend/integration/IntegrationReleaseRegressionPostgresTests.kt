@@ -13,6 +13,7 @@ import com.nhom15.datxebackend.ride.repository.RideRepository
 import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
@@ -23,11 +24,11 @@ import java.util.Optional
 import java.util.Properties
 import java.util.UUID
 
-/** Kiểm thử nâng cấp Flyway V1..V33 -> V34..V42 trên dữ liệu tổng hợp và tương tác các tính năng tích hợp. */
+/** Kiểm thử nâng cấp Flyway từ V33 trên dữ liệu tổng hợp và tương tác các tính năng tích hợp. */
 @EnabledIfEnvironmentVariable(named = "TEST_DB_URL", matches = ".+")
 class IntegrationReleaseRegressionPostgresTests {
     @Test
-    fun `upgrades from origin V33 schema to V42 preserving existing rows and supporting integrated features`() {
+    fun `upgrades from origin V33 preserving existing rows and supporting integrated features`() {
         val schema = "rel_upgrade_" + UUID.randomUUID().toString().replace("-", "")
         val ds = DriverManagerDataSource(
             System.getenv("TEST_DB_URL"),
@@ -47,7 +48,7 @@ class IntegrationReleaseRegressionPostgresTests {
             ds.connectionProperties = Properties().apply { setProperty("currentSchema", schema) }
             val jdbc = JdbcTemplate(ds)
 
-            // 2. Tạo dữ liệu tổng hợp giống database hiện có trước khi nâng cấp V34..V39
+            // 2. Tạo dữ liệu tổng hợp ở phiên bản nguồn.
             jdbc.update(
                 """INSERT INTO customers(id, firebase_uid, full_name, phone_number, status)
                    VALUES (101, 'upg-c1', 'Khách Tổng Hợp', '0901000101', 'ACTIVE')""",
@@ -84,22 +85,33 @@ class IntegrationReleaseRegressionPostgresTests {
                 """INSERT INTO ratings(id, ride_id, direction, ratee_id, rater_id, stars, comment, is_hidden)
                    VALUES (601, 401, 'CUSTOMER_TO_DRIVER', 201, 101, 2, 'Bình luận cần ẩn', TRUE)""",
             )
+            jdbc.update(
+                """INSERT INTO support_tickets(id, owner_id, owner_role, client_request_id, category, description, status)
+                   VALUES (701, 101, 'CUSTOMER', ?, 'TRIP', 'Yêu cầu cũ', 'OPEN')""",
+                UUID.randomUUID(),
+            )
+            jdbc.update(
+                """INSERT INTO support_ticket_messages(ticket_id, sender_id, sender_role, body)
+                   VALUES (701, 101, 'CUSTOMER', 'Tin nhắn cũ')""",
+            )
 
-            // 3. Chạy nâng cấp Flyway lên phiên bản mới nhất V34..V42
-            val result = Flyway.configure()
+            val flyway = Flyway.configure()
                 .dataSource(ds)
                 .schemas(schema)
                 .load()
-                .migrate()
 
-            assertTrue(result.migrationsExecuted >= 9, "Phải chạy tối thiểu 9 migration mới V34..V42")
+            val pendingVersions = flyway.info().pending().map { it.version.version }
+            assertTrue(pendingVersions.containsAll(listOf("43", "44", "45", "46")))
+            assertEquals(pendingVersions.size, flyway.migrate().migrationsExecuted)
+            flyway.validate()
             val appliedVersions = jdbc.queryForList(
-                "SELECT version FROM flyway_schema_history WHERE success = TRUE ORDER BY installed_rank",
+                "SELECT version FROM flyway_schema_history WHERE success AND version IS NOT NULL ORDER BY installed_rank",
                 String::class.java,
             )
             assertTrue(appliedVersions.contains("39"))
             assertTrue(appliedVersions.contains("40"))
-            assertEquals("42", appliedVersions.last())
+            assertTrue(appliedVersions.contains("42"))
+            assertEquals(pendingVersions, appliedVersions.drop(33))
 
             // 4. Dữ liệu avatar_url, rating moderation và voucher campaign được bảo toàn nguyên vẹn
             assertEquals(
@@ -114,6 +126,12 @@ class IntegrationReleaseRegressionPostgresTests {
                 true,
                 jdbc.queryForObject("SELECT is_hidden FROM ratings WHERE id = 601", Boolean::class.java),
             )
+            val historicalMessage = jdbc.queryForMap(
+                "SELECT body, client_message_id FROM support_ticket_messages WHERE ticket_id = 701",
+            )
+            assertEquals("Tin nhắn cũ", historicalMessage["body"])
+            assertNull(historicalMessage["client_message_id"])
+            assertNull(jdbc.queryForObject("SELECT pricing_rule_id FROM rides WHERE id = 401", Long::class.javaObjectType))
 
             // 5. Legacy APPROVED driver cần xác minh lại sau khi hoàn tất chuỗi migration
             val appStatus = jdbc.queryForObject(
@@ -142,6 +160,9 @@ class IntegrationReleaseRegressionPostgresTests {
             )
             assertTrue(ratingService.hasRatedDriver(401, 101))
             assertFalse(ratingService.hasRatedCustomer(401, 201))
+            val customerActor = AuthUser(101, "upg-c1", Role.CUSTOMER, "Khách", null, null, "ACTIVE")
+            assertTrue(ratingService.reviewsForRide(customerActor, 401).recent.isEmpty())
+            assertTrue(ratingService.driverReviews(201).recent.isEmpty())
 
             val driverActor = AuthUser(201, "upg-d1", Role.DRIVER, "Tài Xế Đã Duyệt", null, null, "ACTIVE")
             val received = ratingService.received(driverActor, 0, 20)
@@ -153,6 +174,9 @@ class IntegrationReleaseRegressionPostgresTests {
             assertTrue(ratingService.hasRatedCustomer(401, 201))
             assertEquals(1, notified.size)
             assertTrue(notified.single().body.contains("ẩn danh"))
+            assertNull(notified.single().rideId)
+            val payloadJson = tools.jackson.databind.ObjectMapper().valueToTree<tools.jackson.databind.JsonNode>(notified.single())
+            assertFalse(payloadJson.has("rideId"))
         } finally {
             admin.execute("DROP SCHEMA IF EXISTS $schema CASCADE")
         }

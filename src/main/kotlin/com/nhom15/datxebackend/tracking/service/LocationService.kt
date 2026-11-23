@@ -1,9 +1,9 @@
 package com.nhom15.datxebackend.tracking.service
 
 import com.nhom15.datxebackend.matching.service.DispatchScripts
-import com.nhom15.datxebackend.ride.repository.ACTIVE_RIDE_STATUSES
+import com.nhom15.datxebackend.common.port.ActiveRideQueryPort
+import com.nhom15.datxebackend.common.port.ActiveRideSnapshot
 import com.nhom15.datxebackend.ride.repository.DispatchOfferRepository
-import com.nhom15.datxebackend.ride.repository.RideRepository
 import java.time.Duration
 import java.time.Instant
 import com.nhom15.datxebackend.driver.repository.DriverRepository
@@ -30,21 +30,23 @@ class LocationService(
     private val driverRepository: DriverRepository,
     private val matchingProperties: MatchingProperties,
     private val offers: DispatchOfferRepository,
-    private val rides: RideRepository,
+    private val activeRideQueryPort: ActiveRideQueryPort,
 ) : NearbyDriverQueryPort {
 
     private val log = LoggerFactory.getLogger(javaClass)
 
     companion object {
         private const val MAX_LAT = 85.05112878
+        private const val SAMPLE_INTERVAL_MS = 1_000L
 
         private val SAVE_SAMPLE = DefaultRedisScript<Long>(
             """
             local incoming = tonumber(ARGV[5])
             local saved = tonumber(redis.call('HGET', KEYS[1], 'sampledAtMs'))
             if saved and incoming <= saved then return 0 end
+            if not redis.call('SET', KEYS[4], '1', 'NX', 'PX', ARGV[6]) then return 0 end
             redis.call('HSET', KEYS[1], 'lat', ARGV[2], 'lng', ARGV[3], 'sampledAt', ARGV[4], 'sampledAtMs', ARGV[5])
-            redis.call('PSETEX', KEYS[2], ARGV[6], '1')
+            redis.call('PSETEX', KEYS[2], ARGV[7], '1')
             redis.call('ZADD', KEYS[3], incoming, ARGV[1])
             return 1
             """.trimIndent(),
@@ -66,31 +68,30 @@ class LocationService(
     }
 
     /** Lưu/cập nhật vị trí driver và gia hạn heartbeat. */
-    fun saveDriverLocation(driverId: Long, location: GeoPoint, sampledAt: Instant = Instant.now()): Boolean {
+    fun saveDriverLocation(driverId: Long, location: GeoPoint, sampledAt: Instant): StoredDriverLocation? {
         validate(location)
         val id = driverId.toString()
         // An old GPS sample must not renew dispatch eligibility merely because it was resent.
         val remainingFreshness = Duration.between(Instant.now(), sampledAt.plus(matchingProperties.driverAliveTtl))
         val ttlMillis = minOf(matchingProperties.driverAliveTtl, remainingFreshness).toMillis()
-        if (ttlMillis <= 0) return false
+        if (ttlMillis <= 0) return null
         val sampledAtMillis = sampledAt.toEpochMilli().toString()
-        // REST and STOMP may arrive out of order. The stored fix and its expiry advance together.
+        // Store one fix per interval across REST and STOMP. A dropped fix never renews the heartbeat.
+        val intervalMillis = minOf(SAMPLE_INTERVAL_MS, matchingProperties.driverAliveTtl.toMillis())
         if (redisTemplate.execute(
                 SAVE_SAMPLE,
-                listOf(RedisKeys.driverLocation(id), RedisKeys.driverAlive(id), RedisKeys.DRIVERS_LASTSEEN),
-                id, location.lat.toString(), location.lng.toString(), sampledAt.toString(), sampledAtMillis, ttlMillis.toString(),
-            ) != 1L) return false
+                listOf(RedisKeys.driverLocation(id), RedisKeys.driverAlive(id), RedisKeys.DRIVERS_LASTSEEN,
+                    RedisKeys.driverLocationIngest(id)),
+                id, location.lat.toString(), location.lng.toString(), sampledAt.toString(), sampledAtMillis,
+                intervalMillis.toString(), ttlMillis.toString(),
+            ) != 1L) return null
 
         // PostgreSQL prevents a Redis restart from making an assigned driver available again.
-        val activeRide = rides.findFirstByDriverIdAndStatusInOrderByCreatedAtDesc(driverId,
-            ACTIVE_RIDE_STATUSES)
-        if (activeRide != null) {
+        val activeRide = activeRideQueryPort.findActiveRideForDriver(driverId)
+        val stored = StoredDriverLocation(activeRide)
+        if (activeRide != null || offers.driverHasOffer(driverId)) {
             redisTemplate.opsForGeo().remove(RedisKeys.GEO_KEY, id)
-            return true
-        }
-        if (offers.driverHasOffer(driverId)) {
-            redisTemplate.opsForGeo().remove(RedisKeys.GEO_KEY, id)
-            return true
+            return stored
         }
 
         // Driver đã bật nhận chuyến ở DB nhưng Redis vừa được khởi động lại, hoặc Redis đã
@@ -114,12 +115,12 @@ class LocationService(
 
         if (unavailable || redisTemplate.opsForValue().get(statusKey) != "ONLINE") {
             redisTemplate.opsForGeo().remove(RedisKeys.GEO_KEY, id)
-            return true
+            return stored
         }
 
         redisTemplate.execute(DispatchScripts.ADD_AVAILABLE,
             listOf(RedisKeys.GEO_KEY), id, location.lng.toString(), location.lat.toString(), sampledAtMillis)
-        return true
+        return stored
     }
 
     /** Đưa tài xế đã bật nhận chuyến vào GEO khi đã có vị trí và heartbeat mới. */
@@ -222,3 +223,5 @@ class LocationService(
         require(p.lat in -MAX_LAT..MAX_LAT) { "lat phải trong khoảng -85.05..85.05" }
     }
 }
+
+data class StoredDriverLocation(val activeRide: ActiveRideSnapshot?)

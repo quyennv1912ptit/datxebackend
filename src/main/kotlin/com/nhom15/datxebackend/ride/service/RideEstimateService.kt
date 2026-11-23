@@ -25,8 +25,8 @@ class RideEstimateService(
     private val voucherService: VoucherService,
     private val vehicleQueryPort: CustomerVehicleQueryPort,
     private val rateLimiter: RedisRateLimiter,
+    private val creationValidator: RideCreationValidator,
 ) {
-    @org.springframework.transaction.annotation.Transactional
     fun estimateRide(actor: AuthUser, request: EstimateRideRequest): EstimateRideResponse {
         if (actor.role != Role.CUSTOMER) {
             throw ForbiddenException(message = "Chỉ khách hàng mới có thể báo giá chuyến đi")
@@ -50,7 +50,9 @@ class RideEstimateService(
         quoteProvider.requirePricing(vehicle.vehicleType)
         val savedRoute = rideRoutes.resolve(actor.id, request.vehicleId, vehicle.vehicleType, input.pickup, input.dropoff, request.routeQuoteId)
         val quote = quoteProvider.quote(input.copy(route = savedRoute.drivingRoute()))
-        val voucher = voucherService.calculate(actor, request.voucherCode, quote.estimatedFare, request.paymentMethod, request.voucherId)
+        val voucher = voucherService.calculate(
+            actor, request.voucherCode, quote.estimatedFare, request.paymentMethod, request.voucherId, scheduledAt,
+        )
         return RideResponseMapper.estimate(quote, voucher?.discountAmount ?: 0, savedRoute)
     }
 
@@ -64,18 +66,9 @@ class RideEstimateService(
         if (request.dropoffAddress.isBlank() || request.dropoffAddress.length > 255) {
             throw BadRequestException(message = "Địa chỉ đến phải có nội dung và không vượt quá 255 ký tự")
         }
-        if (!request.pickupLat.isFinite() || request.pickupLat < -90.0 || request.pickupLat > 90.0) {
-            throw BadRequestException(message = "pickupLat phải hữu hạn và từ -90 đến 90")
-        }
-        if (!request.pickupLng.isFinite() || request.pickupLng < -180.0 || request.pickupLng > 180.0) {
-            throw BadRequestException(message = "pickupLng phải hữu hạn và từ -180 đến 180")
-        }
-        if (!request.dropoffLat.isFinite() || request.dropoffLat < -90.0 || request.dropoffLat > 90.0) {
-            throw BadRequestException(message = "dropoffLat phải hữu hạn và từ -90 đến 90")
-        }
-        if (!request.dropoffLng.isFinite() || request.dropoffLng < -180.0 || request.dropoffLng > 180.0) {
-            throw BadRequestException(message = "dropoffLng phải hữu hạn và từ -180 đến 180")
-        }
+        creationValidator.validateRouteCoordinates(
+            request.pickupLat, request.pickupLng, request.dropoffLat, request.dropoffLng,
+        )
     }
 
     private companion object {

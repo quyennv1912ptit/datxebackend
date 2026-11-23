@@ -1,5 +1,6 @@
 package com.nhom15.datxebackend.driver.verification
 
+import com.nhom15.datxebackend.auth.security.AuthenticatedUserCache
 import com.nhom15.datxebackend.common.api.ApiResponse
 import com.nhom15.datxebackend.common.enums.DriverStatus
 import com.nhom15.datxebackend.common.enums.VehicleType
@@ -9,12 +10,16 @@ import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.common.security.CurrentUser
 import com.nhom15.datxebackend.driver.entity.Driver
 import com.nhom15.datxebackend.driver.repository.DriverRepository
+import com.nhom15.datxebackend.tracking.service.LocationService
 import jakarta.validation.Valid
 import jakarta.validation.constraints.Positive
 import jakarta.validation.constraints.PositiveOrZero
+import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PutMapping
@@ -47,10 +52,12 @@ data class DriverCapabilitiesView(
 )
 
 @Service
-class DriverCapabilityService(
+class DriverCapabilityService @Autowired constructor(
     private val drivers: DriverRepository,
     private val projection: VerificationProjectionRepository?,
     private val verification: DriverVerificationEligibility,
+    private val locationService: LocationService? = null,
+    private val userCache: AuthenticatedUserCache? = null,
 ) {
     fun forDriver(actor: AuthUser): DriverCapabilitiesView {
         val driver = drivers.findById(actor.id).orElseThrow { ForbiddenException() }
@@ -74,6 +81,9 @@ class DriverCapabilityService(
         if (input.enabled && (!group.approved || group.reasonCode != null)) {
             throw ForbiddenException(message = "Nhóm xe chưa đủ điều kiện để bật")
         }
+        if (!input.enabled && driver.status == DriverStatus.BUSY) {
+            throw ConflictException(message = "Không thể tắt nhóm xe khi tài xế đang thực hiện chuyến đi")
+        }
         val next = if (input.enabled) record.enabledGroups + groupId else record.enabledGroups - groupId
         if (next == record.enabledGroups) return state
         val updated = record.copy(enabledGroups = next, preferenceVersion = record.preferenceVersion + 1)
@@ -83,8 +93,20 @@ class DriverCapabilityService(
             driver.status = DriverStatus.OFFLINE
             driver.onlineVehicleType = null
             drivers.save(driver)
+            userCache?.evictAfterCommit(driver.firebaseUid)
+            afterCommit { runCatching { locationService?.removeDriver(driver.id) } }
         }
         return result
+    }
+
+    private fun afterCommit(action: () -> Unit) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action()
+            return
+        }
+        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+            override fun afterCommit() = action()
+        })
     }
 
     private fun Driver.canUseCapabilities() =

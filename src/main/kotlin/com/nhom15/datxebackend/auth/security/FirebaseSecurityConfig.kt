@@ -86,26 +86,18 @@ class FirebaseSecurityConfig(
     @Bean
     fun corsConfigurationSource(): CorsConfigurationSource {
         val config = CorsConfiguration().apply {
-            allowedOriginPatterns = listOf(
-                "https://go-admin-mu.vercel.app",
-                "http://localhost:3000",
-                "http://localhost:5173",
-                *corsProperties.allowedOrigins.toTypedArray()
-            )
+            allowedOrigins = corsProperties.frontendOrigins()
 
             allowedMethods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
             allowedHeaders = listOf("*")
             allowCredentials = true
             maxAge = 3600
         }
-        // Handshake WebSocket của app mobile có thể mang Origin do proxy/tunnel (Cloudflare)
-        // thêm vào. Xác thực nằm ở token trong STOMP CONNECT chứ không dùng cookie, nên chỉ
-        // nới CORS cho đúng endpoint handshake; CORS của HTTP API giữ nguyên.
         val websocketConfig = CorsConfiguration().apply {
-            allowedOriginPatterns = listOf("*")
+            allowedOrigins = corsProperties.frontendOrigins()
             allowedMethods = listOf("GET")
             allowedHeaders = listOf("*")
-            allowCredentials = true
+            allowCredentials = false
             maxAge = 3600
         }
         return UrlBasedCorsConfigurationSource().apply {

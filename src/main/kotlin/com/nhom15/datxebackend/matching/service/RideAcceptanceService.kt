@@ -4,16 +4,18 @@ import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.config.properties.MatchingProperties
 import com.nhom15.datxebackend.ride.repository.ACTIVE_RIDE_STATUSES
+import com.nhom15.datxebackend.ride.repository.DispatchOffer
 import com.nhom15.datxebackend.ride.repository.DispatchOfferRepository
 import java.time.Instant
 import com.nhom15.datxebackend.common.enums.RideStatus
 import com.nhom15.datxebackend.common.port.RideAssignmentPort
 import com.nhom15.datxebackend.common.redis.RedisKeys
-import com.nhom15.datxebackend.common.redis.RedisTtl
 import com.nhom15.datxebackend.notification.dto.RideOfferPayload
 import com.nhom15.datxebackend.ride.repository.RideRepository
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.stereotype.Service
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.support.TransactionTemplate
 
 @Service
 class RideAcceptanceService(
@@ -25,7 +27,9 @@ class RideAcceptanceService(
     private val rideOfferBuilder: RideOfferBuilder,
     private val properties: MatchingProperties,
     private val offers: DispatchOfferRepository,
+    transactionManager: PlatformTransactionManager,
 ) {
+    private val transaction = TransactionTemplate(transactionManager)
 
     fun pendingOffer(driverId: Long): RideOfferPayload? {
         if (driverId <= 0) return null
@@ -48,85 +52,75 @@ class RideAcceptanceService(
     }
 
     fun accept(rideId: Long, driverId: Long, offerId: String): Boolean {
-        val current = rideRepository.findById(rideId).orElse(null)
-        if (current?.driverId == driverId && current.status in ACTIVE_RIDE_STATUSES && current.status != RideStatus.SEARCHING) {
-            return offers.accepted(offerId, rideId, driverId, current.redispatchCount)
-        }
-        if (current?.status != RideStatus.SEARCHING) return false
-        val offer = offers.outstanding(rideId) ?: return false
-        if (offer.offerId != offerId || offer.driverId != driverId || offer.generation != current.redispatchCount) return false
         val id = rideId.toString()
+        var reservedOffer: DispatchOffer? = null
+        val accepted = try {
+            transaction.execute {
+                // Reject and expiry take the same row lock before changing either offer store.
+                val ride = rideRepository.findByIdForUpdate(rideId).orElse(null) ?: return@execute false
+                if (ride.status != RideStatus.SEARCHING) {
+                    return@execute ride.driverId == driverId && ride.status in ACTIVE_RIDE_STATUSES &&
+                        offers.accepted(offerId, rideId, driverId, ride.redispatchCount)
+                }
+                val offer = offers.outstanding(rideId) ?: return@execute false
+                if (offer.offerId != offerId || offer.driverId != driverId || offer.generation != ride.redispatchCount) {
+                    return@execute false
+                }
+                val reserved = redisTemplate.execute(
+                    DispatchScripts.ACCEPT,
+                    listOf(RedisKeys.rideState(id), RedisKeys.DISPATCH_TIMEOUTS, RedisKeys.rideCandidates(id)),
+                    driverId.toString(), id, System.currentTimeMillis().toString(), offerId,
+                ) == 1L
+                if (!reserved) return@execute false
 
-        val accepted = redisTemplate.execute(
-            DispatchScripts.ACCEPT,
-            listOf(
-                RedisKeys.rideState(id),
-                RedisKeys.DISPATCH_TIMEOUTS,
-                RedisKeys.rideCandidates(id)
-            ),
-            driverId.toString(),
-            id,
-            System.currentTimeMillis().toString(), offerId
-        ) == 1L
-
-        if (!accepted) return false
-
-        val assignment = try {
-            rideAssignmentPort.assignDriver(rideId, driverId)
-        } catch (exception: Exception) {
-            // A listener can fail after the DB commit. Treat that case as success if DB confirms it.
-            val currentRide = runCatching { rideRepository.findById(rideId).orElse(null) }.getOrNull()
-            // If DB is unavailable, leave the lease intact. The durable tick reconciles once DB recovers.
-            if (currentRide == null) throw exception
-            if (currentRide.status in ACTIVE_RIDE_STATUSES && currentRide.status != RideStatus.SEARCHING && currentRide.driverId == driverId) {
-                redisTemplate.delete(RedisKeys.rideCandidates(id))
-                return true
+                reservedOffer = offer
+                if (rideAssignmentPort.assignDriver(rideId, driverId) == null) {
+                    throw ConflictException(ErrorCode.RIDE_NO_LONGER_AVAILABLE)
+                }
+                true
+            } == true
+        } catch (failure: Exception) {
+            val offer = reservedOffer ?: throw failure
+            val recovered = try {
+                recoverAcceptance(offer)
+            } catch (recoveryFailure: Exception) {
+                // If the database is unavailable, the durable tick can reconcile the reservation later.
+                failure.addSuppressed(recoveryFailure)
+                throw failure
             }
-            rollbackRedisAcceptance(id, rideId, driverId, currentRide.status)
-            offers.close(offerId, "CANCELLED", driverId, rideId)
-            if (currentRide.status == RideStatus.SEARCHING) dispatchService.sendOfferToNextDriver(rideId)
-            throw exception
+            if (!recovered) throw failure
+            true
         }
 
-        if (assignment == null) {
-            val currentRide = rideRepository.findById(rideId).orElse(null)
-            rollbackRedisAcceptance(id, rideId, driverId, currentRide?.status)
-            throw ConflictException(ErrorCode.RIDE_NO_LONGER_AVAILABLE)
-        }
-
-        redisTemplate.delete(RedisKeys.rideCandidates(id))
-
-        return true
+        if (accepted && reservedOffer != null) redisTemplate.delete(RedisKeys.rideCandidates(id))
+        return accepted
     }
 
-    private fun rollbackRedisAcceptance(
-        id: String,
-        rideId: Long,
-        driverId: Long,
-        databaseStatus: RideStatus?,
-    ) {
-        val status = databaseStatus?.name ?: "MISSING"
-        redisTemplate.execute(
-            DispatchScripts.ROLLBACK_ACCEPT,
-            listOf(
-                RedisKeys.rideState(id),
-                RedisKeys.DISPATCH_TIMEOUTS,
-                RedisKeys.rideRejected(id),
-                RedisKeys.rideCandidates(id),
-                RedisKeys.GEO_KEY,
-            ),
-            driverId.toString(),
-            id,
-            status,
-            properties.rejectedTtl.seconds.toString(),
-        )
-        offers.outstanding(rideId)?.takeIf { it.driverId == driverId }?.let {
-            offers.close(it.offerId, "CANCELLED", driverId, rideId)
+    private fun recoverAcceptance(offer: DispatchOffer): Boolean {
+        val recovery = transaction.execute {
+            val ride = rideRepository.findByIdForUpdate(offer.rideId).orElse(null)
+            val status = ride?.status
+            // An error after commit must preserve the durable receipt for this exact offer.
+            if (ride?.driverId == offer.driverId && status in ACTIVE_RIDE_STATUSES && status != RideStatus.SEARCHING &&
+                offers.accepted(offer.offerId, offer.rideId, offer.driverId, ride.redispatchCount)
+            ) return@execute AcceptanceRecovery.COMMITTED
+
+            val id = offer.rideId.toString()
+            redisTemplate.execute(
+                DispatchScripts.ROLLBACK_ACCEPT,
+                listOf(RedisKeys.rideState(id), RedisKeys.DISPATCH_TIMEOUTS, RedisKeys.rideRejected(id),
+                    RedisKeys.rideCandidates(id), RedisKeys.GEO_KEY),
+                offer.driverId.toString(), id, status?.name ?: "MISSING",
+                properties.rejectedTtl.seconds.toString(), offer.offerId,
+            )
+            offers.close(offer.offerId, "CANCELLED", offer.driverId, offer.rideId)
+            if (status == RideStatus.SEARCHING) AcceptanceRecovery.RETRY else AcceptanceRecovery.ROLLBACK
         }
-        if (databaseStatus == RideStatus.SEARCHING) {
-            dispatchService.sendOfferToNextDriver(rideId)
-        }
+        if (recovery == AcceptanceRecovery.RETRY) dispatchService.sendOfferToNextDriver(offer.rideId)
+        return recovery == AcceptanceRecovery.COMMITTED
     }
+
+    private enum class AcceptanceRecovery { COMMITTED, RETRY, ROLLBACK }
 
     fun reject(rideId: Long, driverId: Long, offerId: String) {
         if (releaseService.release(rideId, driverId, "rejected", offerId)) {

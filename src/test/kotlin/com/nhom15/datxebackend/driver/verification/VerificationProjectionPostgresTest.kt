@@ -32,12 +32,25 @@ import kotlin.test.assertTrue
 
 @EnabledIfEnvironmentVariable(named = "VERIFICATION_SYNC_TEST_DB", matches = ".+")
 class VerificationProjectionPostgresTest {
+    private fun withIsolatedSchema(block: (DriverManagerDataSource) -> Unit) {
+        val url = System.getenv("VERIFICATION_SYNC_TEST_DB")
+        val pass = System.getenv("VERIFICATION_SYNC_TEST_PASSWORD")
+        val schema = "vproj_" + UUID.randomUUID().toString().replace("-", "")
+        val admin = JdbcTemplate(DriverManagerDataSource(url, "sync_test", pass))
+        admin.execute("CREATE SCHEMA $schema")
+        try {
+            val source = DriverManagerDataSource(url, "sync_test", pass).apply {
+                connectionProperties = java.util.Properties().apply { setProperty("currentSchema", schema) }
+            }
+            Flyway.configure().dataSource(source).schemas(schema).defaultSchema(schema).load().migrate()
+            block(source)
+        } finally {
+            admin.execute("DROP SCHEMA IF EXISTS $schema CASCADE")
+        }
+    }
+
     @Test
-    fun `native approval and capability preferences survive a missing sync checkpoint`() {
-        val source = DriverManagerDataSource(
-            System.getenv("VERIFICATION_SYNC_TEST_DB"), "sync_test", System.getenv("VERIFICATION_SYNC_TEST_PASSWORD"),
-        )
-        Flyway.configure().dataSource(source).load().migrate()
+    fun `native approval and capability preferences survive a missing sync checkpoint`() = withIsolatedSchema { source ->
         val jdbc = JdbcTemplate(source)
         val mapper = JsonMapper.builder().findAndAddModules().build()
         val direct = VerificationProjectionRepository(jdbc, mapper, requireSyncCheckpoint = false)
@@ -90,11 +103,7 @@ class VerificationProjectionPostgresTest {
     }
 
     @Test
-    fun `checkpoint retry replay and stale revisions remain fail closed`() {
-        val source = DriverManagerDataSource(
-            System.getenv("VERIFICATION_SYNC_TEST_DB"), "sync_test", System.getenv("VERIFICATION_SYNC_TEST_PASSWORD"),
-        )
-        Flyway.configure().dataSource(source).load().migrate()
+    fun `checkpoint retry replay and stale revisions remain fail closed`() = withIsolatedSchema { source ->
         val jdbc = JdbcTemplate(source)
         val repo = VerificationProjectionRepository(jdbc, JsonMapper.builder().findAndAddModules().build())
         val tx = TransactionTemplate(DataSourceTransactionManager(source))

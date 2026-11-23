@@ -60,6 +60,7 @@ class VoucherGrantService(
                 FROM vouchers
                 WHERE owner_customer_id = ?
                   AND source = 'SYSTEM_REWARD'
+                  AND campaign_id IS NULL
                   AND milestone = ?
             )
             """.trimIndent(),

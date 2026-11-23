@@ -10,6 +10,7 @@ import jakarta.persistence.GenerationType
 import jakarta.persistence.Id
 import jakarta.persistence.Table
 import java.time.Instant
+import java.time.temporal.ChronoUnit
 import java.util.UUID
 
 /**
@@ -81,9 +82,16 @@ class TicketMessageEntity(
     val imageUrl: String? = null,
 
     @Column(name = "created_at", nullable = false)
-    val createdAt: Instant = Instant.now(),
+    val createdAt: Instant = Instant.now().truncatedTo(ChronoUnit.MICROS),
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     var id: Long = 0,
+
+    @Column(name = "client_message_id", updatable = false)
+    val clientMessageId: UUID? = null,
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "requested_status", length = 24, updatable = false)
+    val requestedStatus: TicketStatus? = null,
 )

@@ -5,6 +5,7 @@ import com.nhom15.datxebackend.common.domain.Location
 import com.nhom15.datxebackend.common.enums.PaymentMethod
 import com.nhom15.datxebackend.common.enums.RideStatus
 import com.nhom15.datxebackend.common.enums.Transmission
+import com.nhom15.datxebackend.common.enums.UserStatus
 import com.nhom15.datxebackend.common.enums.VehicleType
 import com.nhom15.datxebackend.config.properties.ScheduledRideProperties
 import com.nhom15.datxebackend.customer.entity.Customer
@@ -77,6 +78,29 @@ class ScheduledRideSchedulerTests {
         scanAt(pickup.plusSeconds(600), current)
         assertEquals(RideTransitionEvent.EXPIRE, transition())
         verify(rides, never()).existsByCustomerIdAndStatusIn(1, ACTIVE_RIDE_STATUSES)
+    }
+
+    @Test fun `dispatch waits while the account is inactive and activates after reactivation`() {
+        val customer = Customer().apply { status = UserStatus.INACTIVE }
+        val current = ride()
+        `when`(customers.findByIdForUpdate(1)).thenReturn(Optional.of(customer))
+        `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(current))
+
+        scanAt(pickup.minusSeconds(600), current)
+        verifyNoInteractions(state)
+
+        customer.status = UserStatus.ACTIVE
+        scanAt(pickup.minusSeconds(570), current)
+        assertEquals(RideTransitionEvent.START_SEARCH, transition())
+    }
+
+    @Test fun `a deleted account cannot activate its pending schedule`() {
+        val current = ride()
+        `when`(customers.findByIdForUpdate(1)).thenReturn(Optional.of(Customer().apply { deletedAt = pickup }))
+        `when`(rides.findByIdForUpdate(42)).thenReturn(Optional.of(current))
+
+        scanAt(pickup.minusSeconds(600), current)
+        verifyNoInteractions(state)
     }
 
     private fun scanAt(now: Instant, vararg candidates: Ride) {

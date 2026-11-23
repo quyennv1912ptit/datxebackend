@@ -8,6 +8,7 @@ object RedisKeys {
     fun driverAlive(id: String) = "$ALIVE_PREFIX$id"
     fun driverStatus(id: String) = "driver:$id:status"
     fun driverLocation(id: String) = "driver:$id:location"
+    fun driverLocationIngest(id: String) = "driver:$id:location-ingest"
     fun driverLock(id: String) = "driver:$id:lock"
     fun driverCurrentRide(id: String) = "driver:$id:current_ride"
     fun driverStats(id: String) = "driver:$id:stats"

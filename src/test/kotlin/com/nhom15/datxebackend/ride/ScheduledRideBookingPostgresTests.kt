@@ -31,6 +31,7 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
 import org.mockito.Answers
 import org.mockito.Mockito.`when`
@@ -59,6 +60,8 @@ import java.util.concurrent.TimeUnit
     "cloudinary.url=cloudinary://test:test@test",
     "firebase.credentials-location=classpath:unused-test-credentials.json",
     "app.bootstrap.admin.firebase-uid=",
+    "app.bootstrap.admin.email=",
+    "app.bootstrap.admin.full-name=",
     "app.scheduled-ride.expire-after=10m",
     "app.scheduled-ride.dispatch-lead-time=15m",
 ])
@@ -75,6 +78,93 @@ class ScheduledRideBookingPostgresTests {
     @Autowired lateinit var garage: VehicleService
     @Autowired lateinit var rideRepository: RideRepository
     @Autowired lateinit var scheduler: ScheduledRideScheduler
+    @Autowired lateinit var estimator: com.nhom15.datxebackend.ride.service.RideEstimateService
+    @Autowired lateinit var pricing: com.nhom15.datxebackend.pricing.service.PricingRuleService
+
+    @Test fun `estimate validates service area before resolving directions`() {
+        val actor = AuthUser(701, "route-estimate", Role.CUSTOMER, null, null, null, "ACTIVE")
+        val outside = com.nhom15.datxebackend.ride.dto.request.EstimateRideRequest(
+            vehicleId = 1L, pickupAddress = "Điểm đón", pickupLat = 20.0, pickupLng = 105.84,
+            dropoffAddress = "Điểm đến", dropoffLat = 21.04, dropoffLng = 105.85,
+        )
+
+        val error = assertThrows<AppException> { estimator.estimateRide(actor, outside) }
+        assertEquals(ErrorCode.OUT_OF_SERVICE_AREA, error.errorCode)
+        org.mockito.Mockito.verifyNoInteractions(routes)
+    }
+
+    @Test fun `scheduled checkout keeps a voucher that expires before pickup unused`() {
+        val customerId = jdbc.queryForObject("INSERT INTO customers(firebase_uid) VALUES ('test-voucher-schedule') RETURNING id", Long::class.java)!!
+        val actor = AuthUser(customerId, "test-voucher-schedule", Role.CUSTOMER, null, null, null, "ACTIVE")
+        val vehicleId = garage.create(actor, CreateVehicleRequest("SCH-VCHR", Transmission.AUTO, VehicleType.CAR)).id
+        val pickup = GeoPoint(21.03, 105.84)
+        val dropoff = GeoPoint(21.04, 105.85)
+        val request = CreateRideRequest(
+            vehicleId = vehicleId, type = RideType.SCHEDULED, scheduledAt = Instant.now().plusSeconds(7_200),
+            pickupAddress = "Đón", pickupLat = pickup.lat, pickupLng = pickup.lng,
+            dropoffAddress = "Đến", dropoffLat = dropoff.lat, dropoffLng = dropoff.lng,
+            voucherCode = "SCHEDULEVOUCHER",
+        )
+        jdbc.update("UPDATE promo_budget SET budget_limit=100000 WHERE id=1")
+        jdbc.update("""INSERT INTO vouchers(code,discount_type,value,minimum_order_amount,valid_from,valid_to,active,usage_limit,usage_count)
+            VALUES('SCHEDULEVOUCHER','FIXED',10000,0,CURRENT_TIMESTAMP - interval '1 hour', CURRENT_TIMESTAMP + interval '1 hour', TRUE, 100, 0)""")
+        `when`(routes.resolve(customerId, vehicleId, VehicleType.CAR, pickup, dropoff, null)).thenReturn(
+            SavedRideRoute("schedule-voucher-route", PolylineCodec.encode(listOf(pickup, dropoff)), 2_000.0, 300.0, "TEST", VehicleType.CAR),
+        )
+
+        val error = assertThrows<AppException> { rides.createRide(actor, request, "expires-before-pickup") }
+        assertEquals(ErrorCode.VOUCHER_INVALID, error.errorCode)
+        assertEquals(0, jdbc.queryForObject("SELECT usage_count FROM vouchers WHERE code='SCHEDULEVOUCHER'", Int::class.java))
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM rides WHERE customer_id=?", Int::class.java, customerId))
+        assertEquals(0L, jdbc.queryForObject("SELECT held_amount FROM promo_budget WHERE id=1", Long::class.java))
+
+        jdbc.update("UPDATE vouchers SET valid_to=CURRENT_TIMESTAMP + INTERVAL '3 hours' WHERE code='SCHEDULEVOUCHER'")
+        rides.createRide(actor, request, "valid-at-pickup")
+        assertEquals(10_000L, jdbc.queryForObject("SELECT held_amount FROM promo_budget WHERE id=1", Long::class.java))
+    }
+
+    @Test fun `tariff edits preserve the fare breakdown for an already booked ride`() {
+        val customerId = jdbc.queryForObject("INSERT INTO customers(firebase_uid) VALUES ('test-pricing-schedule') RETURNING id", Long::class.java)!!
+        val actor = AuthUser(customerId, "test-pricing-schedule", Role.CUSTOMER, null, null, null, "ACTIVE")
+        val admin = AuthUser(707, "test-pricing-admin", Role.ADMIN, null, null, null, "ACTIVE")
+        val vehicleId = garage.create(actor, CreateVehicleRequest("SCH-PRICE", Transmission.AUTO, VehicleType.CAR)).id
+        val pickup = GeoPoint(21.03, 105.84)
+        val dropoff = GeoPoint(21.04, 105.85)
+        val request = CreateRideRequest(
+            vehicleId = vehicleId, type = RideType.SCHEDULED, scheduledAt = Instant.now().plusSeconds(7_200),
+            pickupAddress = "Đón", pickupLat = pickup.lat, pickupLng = pickup.lng,
+            dropoffAddress = "Đến", dropoffLat = dropoff.lat, dropoffLng = dropoff.lng,
+        )
+        `when`(routes.resolve(customerId, vehicleId, VehicleType.CAR, pickup, dropoff, null)).thenReturn(
+            SavedRideRoute("schedule-pricing-route", PolylineCodec.encode(listOf(pickup, dropoff)), 2_000.0, 300.0, "TEST", VehicleType.CAR),
+        )
+        val rule = jdbc.queryForMap("SELECT * FROM pricing_rules WHERE active AND vehicle_type='CAR'")
+        val ruleId = (rule.getValue("id") as Number).toLong()
+        val baseFare = (rule.getValue("base_fare") as Number).toLong()
+        val ride = rides.createRide(actor, request, "preserve-booking-fare")
+
+        pricing.updateRule(admin, ruleId, com.nhom15.datxebackend.pricing.dto.UpdatePricingRuleRequest(
+            baseFare = baseFare + 10_000, perKm = 1_000, perMinuteWaiting = 0,
+            nightSurchargePercent = 0, returnFeeForDriver = 0, minFare = 0,
+        ))
+        try {
+            val booked = jdbc.queryForMap("SELECT * FROM rides WHERE id=?", ride.id)
+            assertEquals(ruleId, booked["pricing_rule_id"])
+            assertEquals(baseFare, booked["pricing_base_fare"])
+            assertEquals((rule.getValue("per_km") as Number).toLong() * 2, booked["pricing_distance_fare"])
+            assertEquals(ride.estimatedFare, booked["fare_estimate"])
+            assertEquals(baseFare, jdbc.queryForObject(
+                "SELECT (previous_rule->>'base_fare')::bigint FROM pricing_rule_changes WHERE pricing_rule_id=? AND admin_id=?",
+                Long::class.java, ruleId, admin.id,
+            ))
+        } finally {
+            jdbc.update("""UPDATE pricing_rules SET base_fare=?,per_km=?,per_minute_waiting=?,night_surcharge_percent=?,
+                night_start=?,night_end=?,return_fee_for_driver=?,min_fare=? WHERE id=?""",
+                rule["base_fare"], rule["per_km"], rule["per_minute_waiting"], rule["night_surcharge_percent"],
+                rule["night_start"], rule["night_end"], rule["return_fee_for_driver"], rule["min_fare"], ruleId,
+            )
+        }
+    }
 
     @Test fun `concurrent booking leaves one schedule and a customer can ride immediately while it waits`() {
         val customerId = jdbc.queryForObject("INSERT INTO customers(firebase_uid) VALUES ('test-customer') RETURNING id", Long::class.java)!!

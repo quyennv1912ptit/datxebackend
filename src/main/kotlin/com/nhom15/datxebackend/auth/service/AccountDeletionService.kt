@@ -46,7 +46,7 @@ class AccountDeletionService(
     }
 
     private fun deleteCustomer(customerId: Long, terminalStatuses: List<RideStatus>) {
-        val customer = customerRepository.findById(customerId).orElseThrow {
+        val customer = customerRepository.findByIdForUpdate(customerId).orElseThrow {
             AppException(ErrorCode.USER_NOT_FOUND)
         }
         if (customer.deletedAt != null) throw AppException(ErrorCode.ACCOUNT_LOCKED)
@@ -55,6 +55,9 @@ class AccountDeletionService(
         }
 
         val firebaseUid = customer.firebaseUid
+        val hasActiveSiblingDriver = driverRepository.findByFirebaseUid(firebaseUid)
+            .map { it.deletedAt == null }
+            .orElse(false)
         val avatarPublicId = customer.avatarPublicId
         val vehicleImagePublicIds = jdbcTemplate.query(
             """SELECT vi.cloudinary_public_id FROM vehicle_images vi
@@ -68,7 +71,7 @@ class AccountDeletionService(
         customer.status = UserStatus.INACTIVE
         customer.anonymize()
         customerRepository.saveAndFlush(customer)
-        evictAuthCacheAfterCommit(firebaseUid)
+        authenticatedUserCache.evictAfterCommit(firebaseUid)
 
         deviceTokenRepository.deleteAllByRoleAndOwnerId(Role.CUSTOMER, customerId)
         jdbcTemplate.update("DELETE FROM notifications WHERE recipient_customer_id = ?", customerId)
@@ -88,7 +91,7 @@ class AccountDeletionService(
             customerId,
         )
         cleanupOutbox.enqueue(
-            firebaseUid = firebaseUid,
+            firebaseUid = if (hasActiveSiblingDriver) "" else firebaseUid,
             ownerRole = Role.CUSTOMER.name,
             ownerId = customerId,
             publicIds = listOfNotNull(avatarPublicId) + vehicleImagePublicIds,
@@ -96,15 +99,26 @@ class AccountDeletionService(
     }
 
     private fun deleteDriver(driverId: Long, terminalStatuses: List<RideStatus>) {
-        val driver = driverRepository.findById(driverId).orElseThrow {
+        val driver = driverRepository.findByIdForUpdate(driverId).orElseThrow {
             AppException(ErrorCode.USER_NOT_FOUND)
         }
         if (driver.deletedAt != null) throw AppException(ErrorCode.ACCOUNT_LOCKED)
         if (rideRepository.existsByDriverIdAndStatusNotIn(driverId, terminalStatuses)) {
             throw ConflictException(ErrorCode.ACCOUNT_HAS_ACTIVE_RIDES)
         }
+        val hasPendingWithdrawal = jdbcTemplate.queryForObject(
+            "SELECT EXISTS(SELECT 1 FROM withdrawal_requests WHERE driver_id = ? AND status = 'PENDING')",
+            Boolean::class.java,
+            driverId,
+        ) == true
+        if (hasPendingWithdrawal) {
+            throw ConflictException(message = "Không thể xóa tài khoản khi đang có yêu cầu rút tiền chờ duyệt")
+        }
 
         val firebaseUid = driver.firebaseUid
+        val hasActiveSiblingCustomer = customerRepository.findByFirebaseUid(firebaseUid)
+            .map { it.deletedAt == null }
+            .orElse(false)
         val avatarPublicId = driver.avatarPublicId
         driver.deletedAt = Instant.now()
         driver.firebaseUid = tombstoneUid("driver", driverId)
@@ -124,13 +138,18 @@ class AccountDeletionService(
         driver.onlineVehicleType = null
         driver.verificationStatus = SUSPENDED_STATUS
         driverRepository.saveAndFlush(driver)
-        evictAuthCacheAfterCommit(firebaseUid)
+        // V47: permanently tombstone deleted driver Firebase UID so stale tokens or delayed eKYC events cannot resurrect it.
+        jdbcTemplate.update(
+            "INSERT INTO deleted_firebase_uids (firebase_uid) VALUES (?) ON CONFLICT DO NOTHING",
+            firebaseUid,
+        )
+        authenticatedUserCache.evictAfterCommit(firebaseUid)
 
         deviceTokenRepository.deleteAllByRoleAndOwnerId(Role.DRIVER, driverId)
         jdbcTemplate.update("DELETE FROM notifications WHERE recipient_driver_id = ?", driverId)
         jdbcTemplate.update("DELETE FROM driver_vehicle_skills WHERE driver_id = ?", driverId)
         cleanupOutbox.enqueue(
-            firebaseUid = firebaseUid,
+            firebaseUid = if (hasActiveSiblingCustomer) "" else firebaseUid,
             ownerRole = Role.DRIVER.name,
             ownerId = driverId,
             publicIds = listOfNotNull(avatarPublicId),

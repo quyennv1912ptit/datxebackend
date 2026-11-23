@@ -1,6 +1,8 @@
 package com.nhom15.datxebackend.driver.verification
 
 import com.nhom15.datxebackend.common.enums.Role
+import com.nhom15.datxebackend.common.api.ApiError
+import com.nhom15.datxebackend.common.exception.AppException
 import com.nhom15.datxebackend.common.security.AuthUser
 import com.nhom15.datxebackend.common.security.CurrentUser
 import jakarta.servlet.http.HttpServletRequest
@@ -63,11 +65,22 @@ class DriverVerificationWorkflowController(
 
     @ExceptionHandler(VerificationWorkflowException::class)
     fun handleWorkflowError(ex: VerificationWorkflowException): ResponseEntity<Map<String, Any?>> =
-        ResponseEntity.status(ex.httpStatus).body(
+        error(ex.httpStatus, ex.errorCode, ex.message)
+
+    @ExceptionHandler(AppException::class)
+    fun handleAppError(ex: AppException): ResponseEntity<Map<String, Any?>> =
+        error(ex.httpStatus.value(), ex.errorCode.name, ex.message ?: ex.errorCode.defaultMessage, ex.details)
+
+    private fun error(status: Int, code: String, message: String, details: Map<String, String>? = null):
+        ResponseEntity<Map<String, Any?>> =
+        ResponseEntity.status(status).body(
             mapOf(
                 "success" to false,
-                "errorCode" to ex.errorCode,
-                "message" to ex.message,
+                "errorCode" to code,
+                "error_code" to code,
+                "message" to message,
+                "error" to ApiError(code, message, details),
+                "status" to status,
             ),
         )
 

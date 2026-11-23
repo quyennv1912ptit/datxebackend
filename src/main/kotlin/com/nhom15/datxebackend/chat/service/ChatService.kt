@@ -36,6 +36,8 @@ import java.time.Clock
 
 data class ChatSendResult(val message: ChatMessageDto, val duplicated: Boolean)
 
+data class AdminChatConversation(val driverId: Long, val current: Boolean)
+
 data class ChatPushData(
     val recipient: Recipient,
     val payload: ChatMessageCreatedPayload,
@@ -118,14 +120,30 @@ class ChatService(
         beforeId: Long?,
         afterId: Long?,
         size: Int,
+        driverId: Long? = null,
     ): MessagePage {
-        if (actor.role != Role.ADMIN) throw ForbiddenException(message = "Chỉ admin được xem hội thoại")
-        if (rideId <= 0) throw BadRequestException(message = "rideId phải lớn hơn 0")
-        val ride = rideRepository.findById(rideId).orElseThrow { NotFoundException(ErrorCode.RIDE_NOT_FOUND) }
-        val conversation = (if (ride.driverId != null) conversationService.forAssignment(ride)
-            else conversationRepository.findFirstByRideIdOrderByIdDesc(rideId))
+        val ride = requireAdminRide(rideId, actor)
+        val conversation = when {
+            driverId != null -> conversationRepository.findByRideIdAndDriverId(rideId, driverId)
+            ride.driverId != null -> conversationService.forAssignment(ride)
+            else -> conversationRepository.findFirstByRideIdOrderByIdDesc(rideId)
+        }
             ?: return MessagePage(rideId, emptyList(), false)
         return readPage(rideId, conversation.id, beforeId, afterId, size)
+    }
+
+    @Transactional(readOnly = true)
+    fun adminConversations(rideId: Long, actor: AuthUser): List<AdminChatConversation> {
+        val ride = requireAdminRide(rideId, actor)
+        return conversationRepository.findAllByRideIdOrderByIdDesc(rideId).map {
+            AdminChatConversation(it.driverId, it.driverId == ride.driverId)
+        }
+    }
+
+    private fun requireAdminRide(rideId: Long, actor: AuthUser): Ride {
+        if (actor.role != Role.ADMIN) throw ForbiddenException(message = "Chỉ admin được xem hội thoại")
+        if (rideId <= 0) throw BadRequestException(message = "rideId phải lớn hơn 0")
+        return rideRepository.findById(rideId).orElseThrow { NotFoundException(ErrorCode.RIDE_NOT_FOUND) }
     }
 
     @Transactional
@@ -133,12 +151,14 @@ class ChatService(
         if (upToMessageId <= 0) throw BadRequestException(message = "upToMessageId phải lớn hơn 0")
         val context = conversationService.requireParticipant(rideId, actor)
         val conversation = context.conversation ?: return MarkReadResponse(rideId, 0)
-        val marked = messageRepository.markRead(conversation.id, actor.role.name, upToMessageId, clock.instant())
-        if (marked > 0) {
+        val maxIdInConversation = messageRepository.findMaxIdInConversation(conversation.id)?.takeIf { it > 0L }
+        val effectiveUpTo = if (maxIdInConversation != null) minOf(upToMessageId, maxIdInConversation) else upToMessageId
+        val marked = messageRepository.markRead(conversation.id, actor.role.name, effectiveUpTo, clock.instant())
+        if (marked > 0 && maxIdInConversation != null) {
             eventPublisher.publishEvent(
                 ChatMessagesRead(
                     rideId = rideId,
-                    upToMessageId = upToMessageId,
+                    upToMessageId = effectiveUpTo,
                     recipient = conversationService.otherParty(conversation, actor),
                 ),
             )

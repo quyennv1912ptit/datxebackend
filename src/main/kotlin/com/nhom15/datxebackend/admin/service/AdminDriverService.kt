@@ -2,11 +2,13 @@ package com.nhom15.datxebackend.admin.service
 
 import com.nhom15.datxebackend.admin.dto.AdminSearchFilter
 import com.nhom15.datxebackend.admin.repository.AdminDriverQueryRepository
+import com.nhom15.datxebackend.auth.security.AuthenticatedUserCache
 import com.nhom15.datxebackend.common.api.ErrorCode
 import com.nhom15.datxebackend.common.api.PageResponse
 import com.nhom15.datxebackend.common.enums.DriverStatus
 import com.nhom15.datxebackend.common.enums.Role
 import com.nhom15.datxebackend.common.exception.BadRequestException
+import com.nhom15.datxebackend.common.exception.ConflictException
 import com.nhom15.datxebackend.common.exception.ForbiddenException
 import com.nhom15.datxebackend.common.exception.NotFoundException
 import com.nhom15.datxebackend.common.security.AuthUser
@@ -35,6 +37,7 @@ class AdminDriverService @Autowired constructor(
     private val driverRepository: DriverRepository,
     private val locationService: LocationService,
     private val notificationPort: NotificationPort,
+    private val userCache: AuthenticatedUserCache? = null,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -73,16 +76,22 @@ class AdminDriverService @Autowired constructor(
     fun forceOffline(actor: AuthUser, driverId: Long) {
         requireAdmin(actor)
         val driver = lockDriver(driverId)
-        driver.status = DriverStatus.OFFLINE
+        if (driver.status == DriverStatus.BUSY) {
+            throw ConflictException(ErrorCode.INVALID_RIDE_STATE, "Không thể tắt kết nối khi tài xế đang thực hiện chuyến đi")
+        }
+        if (driver.status != DriverStatus.BLOCKED) {
+            driver.status = DriverStatus.OFFLINE
+        }
         driver.onlineVehicleType = null
         driverRepository.save(driver)
+        userCache?.evictAfterCommit(driver.firebaseUid)
         afterCommit {
             removeFromAvailability(driverId)
             sendNotification(
                 driverId,
                 DriverAccountNotificationPayload(
                     type = PayloadType.DRIVER_FORCE_OFFLINE,
-                    status = "OFFLINE",
+                    status = driver.status.name,
                 ),
             )
         }

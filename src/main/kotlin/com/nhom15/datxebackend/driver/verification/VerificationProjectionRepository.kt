@@ -45,9 +45,20 @@ class VerificationProjectionRepository @Autowired constructor(
         require(current.stream == null || current.stream == feed.streamId) { "Verification stream changed" }
         require(feed.head >= start)
         val owners = feed.events.map { it.ownerUid }.distinct()
-        if (owners.isNotEmpty()) {
+        val tombstonedOwners = if (owners.isNotEmpty()) {
             val marks = owners.joinToString(",") { "?" }
             jdbc.queryForList("SELECT id FROM drivers WHERE firebase_uid IN ($marks) ORDER BY id FOR UPDATE", *owners.toTypedArray())
+            if (hasTombstoneTable()) {
+                jdbc.queryForList(
+                    "SELECT firebase_uid FROM deleted_firebase_uids WHERE firebase_uid IN ($marks)",
+                    String::class.java,
+                    *owners.toTypedArray(),
+                ).toSet()
+            } else {
+                emptySet()
+            }
+        } else {
+            emptySet()
         }
         var cursor = start
         val today = capabilityToday()
@@ -55,6 +66,10 @@ class VerificationProjectionRepository @Autowired constructor(
             require(event.seq > cursor && event.seq <= feed.head && event.revision >= 0)
             require(event.ownerUid.isNotBlank() && event.ownerUid.length <= 128)
             require(event.entitlements.size <= 20)
+            if (event.ownerUid in tombstonedOwners) {
+                cursor = event.seq
+                continue
+            }
             val existingApplication = jdbc.query(
                 "SELECT application_id FROM driver_verification_projection WHERE owner_uid=? AND synced_workflow",
                 { rs, _ -> rs.getObject(1, UUID::class.java) }, event.ownerUid,
@@ -187,6 +202,9 @@ class VerificationProjectionRepository @Autowired constructor(
         )
     }
 
+    private fun hasTombstoneTable(): Boolean =
+        jdbc.queryForObject("SELECT to_regclass('deleted_firebase_uids') IS NOT NULL", Boolean::class.java) == true
+
     private fun find(column: String, value: Any): DriverVerificationProjection? {
         val provenanceClause = if (requireSyncCheckpoint) {
             """(p.native_workflow OR (p.synced_workflow AND EXISTS (
@@ -196,13 +214,18 @@ class VerificationProjectionRepository @Autowired constructor(
         } else {
             "p.native_workflow"
         }
+        val tombstoneClause = if (hasTombstoneTable()) {
+            " AND NOT EXISTS (SELECT 1 FROM deleted_firebase_uids t WHERE t.firebase_uid = p.owner_uid)"
+        } else {
+            ""
+        }
         return jdbc.query(
             """SELECT p.status, p.revision, p.entitlements, p.cccd_expires_on, p.approved_capabilities,
                       prefs.version, prefs.enabled_groups
                FROM driver_verification_projection p
                LEFT JOIN drivers d ON d.firebase_uid=p.owner_uid
                LEFT JOIN driver_capability_preferences prefs ON prefs.driver_id=d.id AND prefs.approval_revision=p.revision
-               WHERE $column=? AND $provenanceClause""",
+               WHERE $column=? AND $provenanceClause$tombstoneClause""",
             { rs, _ ->
                 val factory = mapper.typeFactory
                 fun <T> readList(columnName: String, element: Class<T>): List<T> =

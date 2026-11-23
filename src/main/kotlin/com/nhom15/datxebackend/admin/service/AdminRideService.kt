@@ -335,9 +335,9 @@ class AdminRideService(
             redis.call('SET', KEYS[6], ARGV[2])
             redis.call('SET', KEYS[7], 'ON_TRIP')
             redis.call('DEL', KEYS[5])
-            redis.call('ZREM', KEYS[4], ARGV[2])
+            redis.call('ZREM', KEYS[4], ARGV[3])
             if ARGV[4] ~= '' then
-                if redis.call('GET', KEYS[8]) == ARGV[3] then redis.call('DEL', KEYS[8]) end
+                if redis.call('GET', KEYS[8]) == ARGV[2] then redis.call('DEL', KEYS[8]) end
                 redis.call('SET', KEYS[9], 'OFFLINE')
                 redis.call('ZREM', KEYS[4], ARGV[4])
             end
