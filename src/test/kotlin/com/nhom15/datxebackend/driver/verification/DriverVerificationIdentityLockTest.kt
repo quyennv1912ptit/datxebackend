@@ -292,7 +292,11 @@ class DriverVerificationIdentityLockTest {
         // DB dùng lại giữa các lần chạy: UID/phone/CCCD/GPLX phải duy nhất cho mỗi lần chạy,
         // nếu không duplicate check sẽ thấy dữ liệu của lần trước và chặn submit.
         val runId = UUID.randomUUID().toString().replace("-", "").take(10)
-        val serial = (System.currentTimeMillis() % 100_000_000L).toString().padStart(8, '0')
+        // Serial số (đúng 8 chữ số) dẫn từ UUID: tránh chu kỳ lặp của currentTimeMillis
+        // khi chạy lại trên cùng một DB persistent (duplicate check CCCD/GPLX).
+        val serial = runId.map { ch ->
+            if (ch in '0'..'9') ch else ('0'.code + (ch.code - 'a'.code + 10) % 10).toChar()
+        }.take(8).joinToString("")
         val cccd1 = "9992$serial"
         val cccd2 = "9993$serial"
         val gplx1 = "9999$serial"
