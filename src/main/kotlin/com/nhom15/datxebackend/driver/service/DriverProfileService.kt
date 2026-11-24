@@ -32,7 +32,7 @@ class DriverProfileService(
         val driver = driverRepository.findByIdForUpdate(driverId).orElseThrow {
             NotFoundException(ErrorCode.USER_NOT_FOUND)
         }
-        if (driver.deletedAt != null) throw AppException(ErrorCode.ACCOUNT_LOCKED)
+        if (driver.deletedAt != null || driver.accountStatus == "BANNED") throw AppException(ErrorCode.ACCOUNT_LOCKED)
         driver.fullName = request.fullName.trim()
         driver.email = request.email?.trim()?.takeIf(String::isNotEmpty)
         request.bankName?.let { driver.bankName = it.trim().takeIf(String::isNotEmpty) }
@@ -57,7 +57,7 @@ class DriverProfileService(
         val driver = driverRepository.findByIdForUpdate(driverId).orElseThrow {
             NotFoundException(ErrorCode.USER_NOT_FOUND)
         }
-        if (driver.deletedAt != null) throw AppException(ErrorCode.ACCOUNT_LOCKED)
+        if (driver.deletedAt != null || driver.accountStatus == "BANNED") throw AppException(ErrorCode.ACCOUNT_LOCKED)
         val oldPublicId = driver.avatarPublicId
         driver.avatarUrl = request.secureUrl.trim()
         driver.avatarPublicId = request.publicId.trim()
@@ -77,6 +77,9 @@ class DriverProfileService(
             licenseVerified = driver.licenseVerified == true,
             bankName = driver.bankName,
             bankAccountNumber = driver.bankAccountNumber,
+            accountStatus = driver.accountStatus,
+            accountStatusReason = driver.accountStatusReason,
+            withdrawalFrozen = driver.withdrawalFrozen,
         )
     }
 

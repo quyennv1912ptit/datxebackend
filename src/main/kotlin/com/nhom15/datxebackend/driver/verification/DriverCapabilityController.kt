@@ -110,7 +110,7 @@ class DriverCapabilityService @Autowired constructor(
     }
 
     private fun Driver.canUseCapabilities() =
-        isFlagged != true && deletedAt == null && verificationStatus != "SUSPENDED" && status != DriverStatus.BLOCKED
+        isFlagged != true && deletedAt == null && verificationStatus != "SUSPENDED" && accountStatus == "ACTIVE" && status != DriverStatus.BLOCKED
 
     private fun view(record: DriverVerificationProjection?, usable: Boolean): DriverCapabilitiesView {
         val today = capabilityToday()

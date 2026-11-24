@@ -16,7 +16,7 @@ import org.springframework.web.filter.OncePerRequestFilter
 class FirebaseAuthFilter(
     private val firebaseAuth: FirebaseAuth,
     private val authService: AuthService,
-    private val onAccountLocked: ((HttpServletResponse) -> Unit)? = null,
+    private val onAccountLocked: ((HttpServletResponse, String) -> Unit)? = null,
 ) : OncePerRequestFilter() {
 
     override fun doFilterInternal(
@@ -51,9 +51,12 @@ class FirebaseAuthFilter(
                         SecurityContextHolder.getContext().authentication = authentication
                     } else {
                         SecurityContextHolder.clearContext()
-                        if (user == null && onAccountLocked != null && authService.isCustomerBanned(decodedToken.uid, routeRole ?: headerRole)) {
-                            onAccountLocked.invoke(response)
-                            return
+                        if (user == null && onAccountLocked != null) {
+                            val lockedReason = authService.bannedAccountReason(decodedToken.uid, routeRole ?: headerRole)
+                            if (lockedReason != null) {
+                                onAccountLocked.invoke(response, lockedReason)
+                                return
+                            }
                         }
                     }
                 } catch (exception: FirebaseAuthException) {

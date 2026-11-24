@@ -14,6 +14,7 @@ enum class PayloadType(val policy: DeliveryPolicy) {
     RIDE_ASSIGNED(DeliveryPolicy.PUSH_ALSO),
     DRIVER_VERIFICATION_UPDATED(DeliveryPolicy.PUSH_ALSO),
     DRIVER_FORCE_OFFLINE(DeliveryPolicy.PUSH_ALSO),
+    DRIVER_ACCOUNT_STATUS_UPDATED(DeliveryPolicy.PUSH_ALSO),
     PAYMENT_UPDATED(DeliveryPolicy.PUSH_ALSO),
     WITHDRAWAL_REVIEWED(DeliveryPolicy.PUSH_ALSO),
     CHAT_MESSAGE(DeliveryPolicy.PUSH_ALSO),

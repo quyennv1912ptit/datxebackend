@@ -22,6 +22,8 @@ data class DriverVerificationSummary(
 
 data class AdminDriverFilter(
     @JsonProperty("verification_status") val verificationStatus: String? = null,
+    @JsonProperty("account_status") val accountStatus: String? = null,
+    @JsonProperty("withdrawal_frozen") val withdrawalFrozen: Boolean? = null,
     val online: Boolean? = null,
     val flagged: Boolean? = null,
     val search: String? = null,
@@ -35,6 +37,9 @@ data class AdminDriverSummary(
     @JsonProperty("phone_number") val phoneNumber: String,
     val email: String?,
     val status: String,
+    @JsonProperty("account_status") val accountStatus: String = "ACTIVE",
+    @JsonProperty("account_status_reason") val accountStatusReason: String? = null,
+    @JsonProperty("withdrawal_frozen") val withdrawalFrozen: Boolean = false,
     @JsonProperty("verification_status") val verificationStatus: String,
     val flagged: Boolean,
     @JsonProperty("total_trips") val totalTrips: Int,
@@ -51,6 +56,23 @@ data class AdminDriverDetail(
     val driver: AdminDriverSummary,
     val verification: DriverVerificationApplicationSummary?,
     val skills: List<DriverSkillResponse>,
+)
+
+data class UpdateDriverAccountStatusRequest(
+    @JsonProperty("account_status")
+    @JsonAlias("accountStatus", "status")
+    val accountStatus: String,
+    val reason: String? = null,
+    @JsonProperty("withdrawal_frozen")
+    @JsonAlias("withdrawalFrozen")
+    val withdrawalFrozen: Boolean? = null,
+)
+
+data class UpdateDriverWithdrawalFreezeRequest(
+    @JsonProperty("withdrawal_frozen")
+    @JsonAlias("withdrawalFrozen")
+    val withdrawalFrozen: Boolean,
+    val reason: String? = null,
 )
 
 data class DriverVerificationApplicationSummary(val applicationId: UUID, val status: String)

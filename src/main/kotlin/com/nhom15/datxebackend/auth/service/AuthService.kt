@@ -83,7 +83,13 @@ class AuthService @Autowired constructor(
         val existing = driverRepository.findByFirebaseUid(token.uid).orElse(null)
             ?: attachDriverByPhone(token.uid, verifiedPhone)
             ?: throw AppException(ErrorCode.ACCOUNT_NOT_FOUND)
-        if (existing.deletedAt != null) throw AppException(ErrorCode.ACCOUNT_LOCKED)
+        if (existing.deletedAt != null || existing.accountStatus == BANNED_STATUS) {
+            throw AppException(
+                ErrorCode.ACCOUNT_LOCKED,
+                existing.accountStatusReason?.trim()?.takeIf(String::isNotEmpty)
+                    ?: ErrorCode.ACCOUNT_LOCKED.defaultMessage,
+            )
+        }
         if (existing.phoneNumber.isBlank() && verifiedPhone != null) existing.phoneNumber = verifiedPhone
 
         return profileOf(toAuthUser(driverRepository.save(existing)))
@@ -128,6 +134,24 @@ class AuthService @Autowired constructor(
         return customer.deletedAt == null && customer.status == UserStatus.BANNED
     }
 
+    @Transactional(readOnly = true)
+    fun bannedAccountReason(firebaseUid: String, roleHint: Role?): String? {
+        if (roleHint == null || roleHint == Role.CUSTOMER) {
+            val customer = customerRepository.findByFirebaseUid(firebaseUid).orElse(null)
+            if (customer != null && customer.deletedAt == null && customer.status == UserStatus.BANNED) {
+                return ErrorCode.ACCOUNT_LOCKED.defaultMessage
+            }
+        }
+        if (roleHint == null || roleHint == Role.DRIVER) {
+            val driver = driverRepository.findByFirebaseUid(firebaseUid).orElse(null)
+            if (driver != null && driver.deletedAt == null && driver.accountStatus == BANNED_STATUS && driver.status != DriverStatus.BUSY) {
+                return driver.accountStatusReason?.trim()?.takeIf(String::isNotEmpty)
+                    ?: ErrorCode.ACCOUNT_LOCKED.defaultMessage
+            }
+        }
+        return null
+    }
+
     /** Resolve token UID to an enabled database account; login endpoints create accounts separately. */
     @Transactional(readOnly = true)
     override fun findAuthenticatedUser(firebaseUid: String, roleHint: Role?): AuthUser? =
@@ -158,7 +182,9 @@ class AuthService @Autowired constructor(
             }
         }
 
-        val driver = driverProfile?.takeIf { it.deletedAt == null }
+        val driver = driverProfile?.takeIf {
+            it.deletedAt == null && (it.accountStatus != BANNED_STATUS || it.status == DriverStatus.BUSY)
+        }
         val customer = customerProfile?.takeIf { it.deletedAt == null && it.status != UserStatus.BANNED }
         return when (roleHint) {
             Role.CUSTOMER -> customer?.let(::toAuthUser)
@@ -189,6 +215,9 @@ class AuthService @Autowired constructor(
         status = user.status,
         verificationStatus = user.verificationStatus,
         onlineVehicleType = user.onlineVehicleType,
+        accountStatus = user.accountStatus,
+        accountStatusReason = user.accountStatusReason,
+        withdrawalFrozen = user.withdrawalFrozen,
     )
 
     private fun verifyToken(idToken: String): FirebaseToken {
@@ -327,6 +356,9 @@ class AuthService @Autowired constructor(
         onlineVehicleType = driver.onlineVehicleType?.takeIf {
             driver.status == DriverStatus.ONLINE || driver.status == DriverStatus.BUSY
         },
+        accountStatus = driver.accountStatus,
+        accountStatusReason = driver.accountStatusReason,
+        withdrawalFrozen = driver.withdrawalFrozen,
     )
 
     private fun toAuthUser(admin: Admin) = AuthUser(
@@ -342,6 +374,7 @@ class AuthService @Autowired constructor(
     private companion object {
         val log = LoggerFactory.getLogger(AuthService::class.java)
         const val ACTIVE_STATUS = "ACTIVE"
+        const val BANNED_STATUS = "BANNED"
         const val PENDING_VERIFICATION = "PENDING"
         const val PHONE_NUMBER_CLAIM = "phone_number"
     }

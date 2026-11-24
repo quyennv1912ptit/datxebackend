@@ -32,7 +32,11 @@ class AdminDriverQueryRepository(
     fun findPage(filter: AdminDriverFilter, status: String?): List<AdminDriverSummary> {
         val (where, args) = whereClause(filter, status)
         return jdbcTemplate.query(
-            """SELECT id, full_name, phone_number, email, status, $verificationStatusSql AS verification_status,
+            """SELECT id, full_name, phone_number, email, status,
+                      COALESCE(account_status, 'ACTIVE') AS account_status,
+                      account_status_reason,
+                      COALESCE(withdrawal_frozen, false) AS withdrawal_frozen,
+                      $verificationStatusSql AS verification_status,
                       COALESCE(is_flagged, false) AS flagged, COALESCE(total_trips, 0) AS total_trips,
                       average_rating, acceptance_rate, completion_rate, cancel_rate_30d,
                       COALESCE(credit_balance, 0) AS credit_balance, COALESCE(income_balance, 0) AS income_balance,
@@ -55,7 +59,11 @@ class AdminDriverQueryRepository(
     }
 
     fun findById(id: Long): AdminDriverSummary? = jdbcTemplate.query(
-        """SELECT id, full_name, phone_number, email, status, $verificationStatusSql AS verification_status,
+        """SELECT id, full_name, phone_number, email, status,
+                  COALESCE(account_status, 'ACTIVE') AS account_status,
+                  account_status_reason,
+                  COALESCE(withdrawal_frozen, false) AS withdrawal_frozen,
+                  $verificationStatusSql AS verification_status,
                   COALESCE(is_flagged, false) AS flagged, COALESCE(total_trips, 0) AS total_trips,
                   average_rating, acceptance_rate, completion_rate, cancel_rate_30d,
                   COALESCE(credit_balance, 0) AS credit_balance, COALESCE(income_balance, 0) AS income_balance,
@@ -79,6 +87,14 @@ class AdminDriverQueryRepository(
             predicates += "$verificationStatusSql = ?"
             args += status
         }
+        filter.accountStatus?.trim()?.takeIf(String::isNotEmpty)?.uppercase()?.let {
+            predicates += "COALESCE(account_status, 'ACTIVE') = ?"
+            args += it
+        }
+        filter.withdrawalFrozen?.let {
+            predicates += "COALESCE(withdrawal_frozen, false) = ?"
+            args += it
+        }
         filter.online?.let {
             predicates += if (it) "status IN ('ONLINE', 'BUSY')" else "status = 'OFFLINE'"
         }
@@ -101,6 +117,9 @@ class AdminDriverQueryRepository(
         phoneNumber = getString("phone_number"),
         email = getString("email"),
         status = getString("status"),
+        accountStatus = getString("account_status") ?: "ACTIVE",
+        accountStatusReason = getString("account_status_reason"),
+        withdrawalFrozen = getBoolean("withdrawal_frozen"),
         verificationStatus = getString("verification_status"),
         flagged = getBoolean("flagged"),
         totalTrips = getInt("total_trips"),

@@ -44,6 +44,21 @@ class DriverPresenceService(
             NotFoundException(ErrorCode.USER_NOT_FOUND, "Không tìm thấy tài xế")
         }
 
+        if (driver.accountStatus == "BANNED") {
+            throw com.nhom15.datxebackend.common.exception.AppException(
+                ErrorCode.ACCOUNT_LOCKED,
+                driver.accountStatusReason?.trim()?.takeIf(String::isNotEmpty)
+                    ?: ErrorCode.ACCOUNT_LOCKED.defaultMessage,
+            )
+        }
+        if (online && driver.accountStatus == "SUSPENDED") {
+            val reason = driver.accountStatusReason?.trim()?.takeIf(String::isNotEmpty)
+            throw com.nhom15.datxebackend.common.exception.AppException(
+                ErrorCode.DRIVER_SUSPENDED,
+                reason?.let { "Tài khoản đang bị tạm ngưng nhận chuyến. Lý do: $it" }
+                    ?: ErrorCode.DRIVER_SUSPENDED.defaultMessage,
+            )
+        }
         if (driver.status == DriverStatus.BLOCKED) throw com.nhom15.datxebackend.payment.exception.CreditWalletBelowMinimumException()
         val firebaseUid = driver.firebaseUid
         if (online) {

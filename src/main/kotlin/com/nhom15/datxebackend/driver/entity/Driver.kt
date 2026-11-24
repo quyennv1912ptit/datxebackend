@@ -58,6 +58,15 @@ class Driver : BaseEntity(), RoleAwareEntity {
     @Column(name = "status", nullable = false)
     var status: DriverStatus = DriverStatus.OFFLINE
 
+    @Column(name = "account_status", nullable = false)
+    var accountStatus: String = "ACTIVE"
+
+    @Column(name = "account_status_reason", columnDefinition = "text")
+    var accountStatusReason: String? = null
+
+    @Column(name = "withdrawal_frozen", nullable = false)
+    var withdrawalFrozen: Boolean = false
+
     @Enumerated(EnumType.STRING)
     @Column(name = "online_vehicle_type", length = 30)
     var onlineVehicleType: VehicleType? = null

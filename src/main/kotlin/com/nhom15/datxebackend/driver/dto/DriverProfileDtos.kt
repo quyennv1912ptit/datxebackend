@@ -15,6 +15,9 @@ data class DriverProfileResponse(
     @JsonProperty("license_verified") val licenseVerified: Boolean,
     @JsonProperty("bank_name") val bankName: String? = null,
     @JsonProperty("bank_account_number") val bankAccountNumber: String? = null,
+    @JsonProperty("account_status") val accountStatus: String = "ACTIVE",
+    @JsonProperty("account_status_reason") val accountStatusReason: String? = null,
+    @JsonProperty("withdrawal_frozen") val withdrawalFrozen: Boolean = false,
 )
 
 

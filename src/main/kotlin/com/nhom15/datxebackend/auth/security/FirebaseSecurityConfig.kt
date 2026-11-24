@@ -32,8 +32,8 @@ class FirebaseSecurityConfig(
 ) {
     @Bean
     fun securityFilterChain(http: HttpSecurity): SecurityFilterChain {
-        val firebaseAuthFilter = FirebaseAuthFilter(firebaseAuth, authService) { res ->
-            writeError(res, HttpServletResponse.SC_FORBIDDEN, ErrorCode.ACCOUNT_LOCKED, ErrorCode.ACCOUNT_LOCKED.defaultMessage)
+        val firebaseAuthFilter = FirebaseAuthFilter(firebaseAuth, authService) { res, reason ->
+            writeError(res, HttpServletResponse.SC_FORBIDDEN, ErrorCode.ACCOUNT_LOCKED, reason)
         }
         http
             .csrf { it.disable() }

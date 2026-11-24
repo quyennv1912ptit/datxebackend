@@ -12,7 +12,7 @@ RUN ./gradlew bootJar -x test --no-daemon
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 
-RUN addgroup -S app && adduser -S app -G app
+RUN addgroup -S app && adduser -S app -G app && mkdir -p /app/data && chown -R app:app /app/data
 COPY --from=build /workspace/build/libs/*-SNAPSHOT.jar app.jar
 USER app
 

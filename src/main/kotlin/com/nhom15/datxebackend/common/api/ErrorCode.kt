@@ -34,6 +34,14 @@ enum class ErrorCode(val httpStatus: HttpStatus, val defaultMessage: String) {
         HttpStatus.FORBIDDEN,
         "Tài khoản đang bị tạm ngưng tính năng đặt chuyến. Vui lòng thanh toán cước nợ hoặc liên hệ CSKH để được hỗ trợ.",
     ),
+    DRIVER_SUSPENDED(
+        HttpStatus.FORBIDDEN,
+        "Tài khoản tài xế đang bị tạm ngưng nhận chuyến. Vui lòng kiểm tra thông báo hoặc liên hệ hỗ trợ.",
+    ),
+    WITHDRAWAL_FROZEN(
+        HttpStatus.FORBIDDEN,
+        "Tính năng rút tiền đang bị tạm khóa để đối soát. Vui lòng liên hệ hỗ trợ.",
+    ),
     ACCOUNT_NOT_FOUND(HttpStatus.NOT_FOUND, "Tài khoản chưa được đăng ký"),
     DRIVER_NOT_VERIFIED(HttpStatus.FORBIDDEN, "Tài xế chưa được duyệt"),
     VEHICLE_NOT_FOUND(HttpStatus.NOT_FOUND, "Không tìm thấy xe"),

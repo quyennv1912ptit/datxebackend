@@ -54,7 +54,7 @@ class DriverVerificationEligibility @Autowired constructor(
     ): Boolean {
         if (type !in VehicleCatalog.bookingTypes) return false
         val today = LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh"))
-        if (driver.isFlagged == true || driver.deletedAt != null || driver.verificationStatus == "SUSPENDED" || driver.status == DriverStatus.BLOCKED) {
+        if (driver.isFlagged == true || driver.deletedAt != null || driver.verificationStatus == "SUSPENDED" || driver.accountStatus != "ACTIVE" || driver.status == DriverStatus.BLOCKED) {
             return false
         }
         val record = projection.current(driver.firebaseUid) ?: return false
@@ -70,7 +70,7 @@ class DriverVerificationEligibility @Autowired constructor(
         if (driver.onlineVehicleType != ride.vehicleType ||
             driver.status != (if (starting) DriverStatus.BUSY else DriverStatus.ONLINE)
         ) return false
-        if (driver.isFlagged == true || driver.deletedAt != null || driver.verificationStatus == "SUSPENDED") return false
+        if (driver.isFlagged == true || driver.deletedAt != null || driver.verificationStatus == "SUSPENDED" || (!starting && driver.accountStatus != "ACTIVE")) return false
         if (verifySource && !currentAtSource()) return false
         val record = projection.current(driver.firebaseUid) ?: return false
         val date = maxOf(now, ride.scheduledAt ?: now).atZone(ZoneId.of("Asia/Ho_Chi_Minh")).toLocalDate()
@@ -89,7 +89,7 @@ class DriverVerificationEligibility @Autowired constructor(
     }
 
     fun mayGoOnline(driver: Driver, type: VehicleType): Boolean {
-        if (driver.isFlagged == true || driver.deletedAt != null || driver.verificationStatus == "SUSPENDED" || driver.status == DriverStatus.BLOCKED) return false
+        if (driver.isFlagged == true || driver.deletedAt != null || driver.verificationStatus == "SUSPENDED" || driver.accountStatus != "ACTIVE" || driver.status == DriverStatus.BLOCKED) return false
         val record = projection.current(driver.firebaseUid) ?: return false
         if (!currentAtSource()) return false
         return coversOnline(record.effectiveGroups(capabilityToday()), type)

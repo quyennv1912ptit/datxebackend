@@ -33,6 +33,16 @@ class WithdrawalService(
             if (it.amount != amount) throw ConflictException(message = "Idempotency-Key đã dùng với số tiền khác")
             return it
         }
+        if (driver.deletedAt != null || driver.accountStatus == "BANNED") {
+            throw AppException(
+                com.nhom15.datxebackend.common.api.ErrorCode.ACCOUNT_LOCKED,
+                driver.accountStatusReason?.trim()?.takeIf(String::isNotEmpty)
+                    ?: com.nhom15.datxebackend.common.api.ErrorCode.ACCOUNT_LOCKED.defaultMessage,
+            )
+        }
+        if (driver.withdrawalFrozen) {
+            throw AppException(com.nhom15.datxebackend.common.api.ErrorCode.WITHDRAWAL_FROZEN)
+        }
         val bankName = driver.bankName?.trim()
         val bankAccountNumber = driver.bankAccountNumber?.trim()
         if (bankName.isNullOrBlank() || bankAccountNumber.isNullOrBlank()) {
@@ -53,6 +63,15 @@ class WithdrawalService(
     fun review(id: Long, adminId: Long, action: WithdrawalAction, rejectReason: String? = null): WithdrawalRequest {
         val request = requests.lockRequest(id) ?: throw WithdrawalRequestNotFoundException()
         if (request.status != WithdrawalStatus.PENDING) throw InvalidWithdrawalActionException()
+        if (action == WithdrawalAction.APPROVE) {
+            val driver = drivers.findById(request.driverId).orElse(null)
+            if (driver?.withdrawalFrozen == true) {
+                throw AppException(
+                    com.nhom15.datxebackend.common.api.ErrorCode.WITHDRAWAL_FROZEN,
+                    "Tài xế đang bị khóa rút tiền, không thể duyệt yêu cầu này",
+                )
+            }
+        }
         if (action == WithdrawalAction.APPROVE &&
             (request.bankNameSnapshot.isNullOrBlank() || request.bankAccountNumberSnapshot.isNullOrBlank())
         ) {

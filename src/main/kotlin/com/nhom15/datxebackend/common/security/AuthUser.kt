@@ -14,4 +14,7 @@ data class AuthUser(
     val status: String,
     val verificationStatus: String? = null,
     val onlineVehicleType: VehicleType? = null,
+    val accountStatus: String? = null,
+    val accountStatusReason: String? = null,
+    val withdrawalFrozen: Boolean = false,
 )

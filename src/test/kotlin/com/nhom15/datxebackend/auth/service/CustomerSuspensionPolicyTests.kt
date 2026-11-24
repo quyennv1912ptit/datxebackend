@@ -122,7 +122,7 @@ class CustomerSuspensionPolicyTests {
         assertTrue(authService.isCustomerBanned("uid-hard", Role.CUSTOMER))
 
         var lockedCallbackCalled = false
-        val filter = FirebaseAuthFilter(firebaseAuth, authService) { res ->
+        val filter = FirebaseAuthFilter(firebaseAuth, authService) { res, _ ->
             lockedCallbackCalled = true
             res.status = 403
         }

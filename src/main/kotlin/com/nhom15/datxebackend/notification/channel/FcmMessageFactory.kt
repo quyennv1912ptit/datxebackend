@@ -32,10 +32,11 @@ object FcmMessageFactory {
             PayloadType.HANDOVER_CONFIRMED -> "Biên bản đã được xác nhận"
             PayloadType.DRIVER_VERIFICATION_UPDATED -> "Hồ sơ tài xế có cập nhật"
             PayloadType.DRIVER_FORCE_OFFLINE -> "Đã tạm ngừng nhận chuyến"
+            PayloadType.DRIVER_ACCOUNT_STATUS_UPDATED -> (envelope.payload as? com.nhom15.datxebackend.notification.dto.NotificationPayload)?.title ?: "Cập nhật trạng thái tài khoản"
             else -> "Cập nhật chuyến đi"
         }
-        val body = if (envelope.type in setOf(PayloadType.WITHDRAWAL_REVIEWED, PayloadType.PAYMENT_UPDATED, PayloadType.TICKET_REPLY))
-            (envelope.payload as? com.nhom15.datxebackend.notification.dto.NotificationPayload)?.body ?: "Mở ứng dụng để xem kết quả rút tiền."
+        val body = if (envelope.type in setOf(PayloadType.WITHDRAWAL_REVIEWED, PayloadType.PAYMENT_UPDATED, PayloadType.TICKET_REPLY, PayloadType.DRIVER_FORCE_OFFLINE, PayloadType.DRIVER_ACCOUNT_STATUS_UPDATED))
+            (envelope.payload as? com.nhom15.datxebackend.notification.dto.NotificationPayload)?.body ?: "Mở ứng dụng để xem thông tin mới nhất."
             else if (offer) "Mở ứng dụng để xem và nhận chuyến trước khi hết hạn."
             else "Mở ứng dụng để xem thông tin mới nhất."
         val androidNotification = AndroidNotification.builder()
