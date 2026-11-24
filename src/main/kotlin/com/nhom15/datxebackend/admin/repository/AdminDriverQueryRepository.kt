@@ -29,13 +29,34 @@ class AdminDriverQueryRepository(
                ))
            ), 'PENDING') END"""
 
+    private fun hasSuspensionColumns(): Boolean = runCatching {
+        jdbcTemplate.queryForObject(
+            """SELECT EXISTS (
+                   SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = current_schema()
+                     AND table_name = 'drivers'
+                     AND column_name = 'account_status'
+               )""".trimIndent(),
+            Boolean::class.java,
+        ) == true
+    }.getOrDefault(false)
+
+    private fun suspensionSelectSql(hasCols: Boolean): String = if (hasCols) {
+        """COALESCE(account_status, 'ACTIVE') AS account_status,
+           account_status_reason,
+           COALESCE(withdrawal_frozen, false) AS withdrawal_frozen"""
+    } else {
+        """'ACTIVE'::text AS account_status,
+           NULL::text AS account_status_reason,
+           false AS withdrawal_frozen"""
+    }
+
     fun findPage(filter: AdminDriverFilter, status: String?): List<AdminDriverSummary> {
-        val (where, args) = whereClause(filter, status)
+        val hasCols = hasSuspensionColumns()
+        val (where, args) = whereClause(filter, status, hasCols)
         return jdbcTemplate.query(
             """SELECT id, full_name, phone_number, email, status,
-                      COALESCE(account_status, 'ACTIVE') AS account_status,
-                      account_status_reason,
-                      COALESCE(withdrawal_frozen, false) AS withdrawal_frozen,
+                      ${suspensionSelectSql(hasCols)},
                       $verificationStatusSql AS verification_status,
                       COALESCE(is_flagged, false) AS flagged, COALESCE(total_trips, 0) AS total_trips,
                       average_rating, acceptance_rate, completion_rate, cancel_rate_30d,
@@ -50,7 +71,7 @@ class AdminDriverQueryRepository(
     }
 
     fun count(filter: AdminDriverFilter, status: String?): Long {
-        val (where, args) = whereClause(filter, status)
+        val (where, args) = whereClause(filter, status, hasSuspensionColumns())
         return jdbcTemplate.queryForObject(
             "SELECT COUNT(*) FROM drivers d$where",
             Long::class.java,
@@ -58,20 +79,21 @@ class AdminDriverQueryRepository(
         ) ?: 0L
     }
 
-    fun findById(id: Long): AdminDriverSummary? = jdbcTemplate.query(
-        """SELECT id, full_name, phone_number, email, status,
-                  COALESCE(account_status, 'ACTIVE') AS account_status,
-                  account_status_reason,
-                  COALESCE(withdrawal_frozen, false) AS withdrawal_frozen,
-                  $verificationStatusSql AS verification_status,
-                  COALESCE(is_flagged, false) AS flagged, COALESCE(total_trips, 0) AS total_trips,
-                  average_rating, acceptance_rate, completion_rate, cancel_rate_30d,
-                  COALESCE(credit_balance, 0) AS credit_balance, COALESCE(income_balance, 0) AS income_balance,
-                  created_at
-           FROM drivers d WHERE id = ?""".trimIndent(),
-        { row, _ -> row.toSummary() },
-        id,
-    ).firstOrNull()
+    fun findById(id: Long): AdminDriverSummary? {
+        val hasCols = hasSuspensionColumns()
+        return jdbcTemplate.query(
+            """SELECT id, full_name, phone_number, email, status,
+                      ${suspensionSelectSql(hasCols)},
+                      $verificationStatusSql AS verification_status,
+                      COALESCE(is_flagged, false) AS flagged, COALESCE(total_trips, 0) AS total_trips,
+                      average_rating, acceptance_rate, completion_rate, cancel_rate_30d,
+                      COALESCE(credit_balance, 0) AS credit_balance, COALESCE(income_balance, 0) AS income_balance,
+                      created_at
+               FROM drivers d WHERE id = ?""".trimIndent(),
+            { row, _ -> row.toSummary() },
+            id,
+        ).firstOrNull()
+    }
 
     fun findVerification(driverId: Long): DriverVerificationApplicationSummary? = jdbcTemplate.query(
         """SELECT a.id, a.status FROM driver_verification_applications a
@@ -80,20 +102,22 @@ class AdminDriverQueryRepository(
         driverId,
     ).firstOrNull()
 
-    private fun whereClause(filter: AdminDriverFilter, status: String?): Pair<String, List<Any>> {
+    private fun whereClause(filter: AdminDriverFilter, status: String?, hasCols: Boolean = true): Pair<String, List<Any>> {
         val predicates = mutableListOf<String>()
         val args = mutableListOf<Any>()
         if (status != null) {
             predicates += "$verificationStatusSql = ?"
             args += status
         }
-        filter.accountStatus?.trim()?.takeIf(String::isNotEmpty)?.uppercase()?.let {
-            predicates += "COALESCE(account_status, 'ACTIVE') = ?"
-            args += it
-        }
-        filter.withdrawalFrozen?.let {
-            predicates += "COALESCE(withdrawal_frozen, false) = ?"
-            args += it
+        if (hasCols) {
+            filter.accountStatus?.trim()?.takeIf(String::isNotEmpty)?.uppercase()?.let {
+                predicates += "COALESCE(account_status, 'ACTIVE') = ?"
+                args += it
+            }
+            filter.withdrawalFrozen?.let {
+                predicates += "COALESCE(withdrawal_frozen, false) = ?"
+                args += it
+            }
         }
         filter.online?.let {
             predicates += if (it) "status IN ('ONLINE', 'BUSY')" else "status = 'OFFLINE'"

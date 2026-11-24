@@ -64,6 +64,7 @@ class ReconciliationPostgresTests {
             .schemas(freshSchema)
             .defaultSchema(freshSchema)
             .locations("classpath:db/migration")
+            .target("47")
             .load()
         val freshRes = freshFlyway.migrate()
         assertEquals(47, freshRes.migrationsExecuted)
@@ -86,11 +87,25 @@ class ReconciliationPostgresTests {
             .schemas(upgradeSchema)
             .defaultSchema(upgradeSchema)
             .locations("classpath:db/migration")
+            .target("47")
             .load()
         val res47 = stepV47.migrate()
         assertEquals(1, res47.migrationsExecuted)
         assertEquals("47", res47.targetSchemaVersion)
         stepV47.validate()
+
+        // 3. Upgrade V47 -> V48 (driver account suspension + withdrawal freeze + audit table)
+        val stepV48 = Flyway.configure()
+            .dataSource(url, user, pass)
+            .schemas(upgradeSchema)
+            .defaultSchema(upgradeSchema)
+            .locations("classpath:db/migration")
+            .target("48")
+            .load()
+        val res48 = stepV48.migrate()
+        assertEquals(1, res48.migrationsExecuted)
+        assertEquals("48", res48.targetSchemaVersion)
+        stepV48.validate()
 
         // Verify deleted_firebase_uids table exists and enforces primary key idempotency
         DriverManager.getConnection(url, user, pass).use { conn ->
